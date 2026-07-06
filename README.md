@@ -1,5 +1,10 @@
 # PIX Payment Platform — PlatinumCoin
 
+[![CI](https://github.com/filiperibolli/platinumcoin-pix/actions/workflows/ci.yml/badge.svg)](https://github.com/filiperibolli/platinumcoin-pix/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Java 21](https://img.shields.io/badge/Java-21_LTS-orange.svg)](https://openjdk.org/projects/jdk/21/)
+[![Spring Boot 3](https://img.shields.io/badge/Spring_Boot-3.x-brightgreen.svg)](https://spring.io/projects/spring-boot)
+
 A **Pix instant-payment platform** designed and built from scratch as a system-design + implementation exercise: send and receive Pix, ACID double-entry ledger, idempotent APIs, asynchronous settlement against a mock BACEN SPI, real-time fraud scoring under a 200ms budget, real-time notifications, cached balance/statement, and an immutable audit trail.
 
 Everything runs **100% locally** on a single machine via `docker-compose`, using **LocalStack** to emulate AWS (DynamoDB, SQS, SNS, S3) and a **Redis** container standing in for ElastiCache.
@@ -167,6 +172,11 @@ Detailed runbook, ports, env vars and per-flow test commands: [`docs/local-dev.m
 2. Read its spec in `docs/steps/step-XX.md` — it defines objective, tasks, tests (TDD) and acceptance criteria.
 3. Implement **one step at a time** (rules in [`CLAUDE.md`](CLAUDE.md)), tests first.
 4. When tests pass and acceptance criteria are met: update `CHANGELOG.md`, check the box in `PLAN.md`, commit (Conventional Commits).
+
+## Security
+
+Security policy and responsible disclosure: [`SECURITY.md`](SECURITY.md).
+STRIDE threat model over the money-moving flows: [`docs/threat-model.md`](docs/threat-model.md).
 
 ## License
 

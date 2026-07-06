@@ -1,0 +1,58 @@
+name: CI
+
+# Runs the full test suite on every push and PR to main.
+#
+# Note: the project is in its planning phase and the Maven parent POM is created
+# in Step 01. Until then this job intentionally stays GREEN by detecting the
+# absence of pom.xml and skipping the build — a red badge for "no code yet" would
+# be misleading. The moment Step 01 lands a root pom.xml, this same workflow starts
+# running `mvn verify` (Testcontainers included) with no changes required.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & test (JDK 21)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Maven project
+        id: mvn
+        run: |
+          if [ -f pom.xml ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK 21
+        if: steps.mvn.outputs.exists == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build & verify (unit + Testcontainers IT)
+        if: steps.mvn.outputs.exists == 'true'
+        run: mvn -B --no-transfer-progress verify
+
+      - name: Planning phase — no build yet
+        if: steps.mvn.outputs.exists == 'false'
+        run: |
+          echo "No root pom.xml found — project is still in the planning/spec phase."
+          echo "This job will run 'mvn verify' automatically once Step 01 adds the parent POM."
