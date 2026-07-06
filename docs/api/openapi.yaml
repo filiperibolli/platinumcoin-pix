@@ -1,0 +1,296 @@
+openapi: 3.0.3
+info:
+  title: PlatinumCoin PIX Platform API
+  version: 1.0.0
+  description: |
+    Public REST contract of the Pix platform. Conventions:
+    - All endpoints (except /auth/login) require `Authorization: Bearer <JWT>`.
+    - The **debited account is always derived from the JWT** (`accountId` claim); it is never accepted in any request body.
+    - Money in request/response bodies is a decimal string in BRL (e.g. "125.50"); stored internally as integer cents.
+    - `POST /payments/pix` is asynchronous: `202 Accepted` means "accepted for processing", not settled.
+    - Errors follow RFC 7807 (application/problem+json).
+
+servers:
+  - url: http://localhost:8084/v1
+    description: payment-service (local)
+  - url: http://localhost:8082/v1
+    description: account-service (local)
+  - url: http://localhost:8081/v1
+    description: auth-service (local)
+
+tags:
+  - name: auth
+  - name: payments
+  - name: accounts
+  - name: pix-keys
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Authenticate and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: alice }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  tokenType: { type: string, example: Bearer }
+                  expiresIn: { type: integer, example: 900 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payments/pix:
+    post:
+      tags: [payments]
+      summary: Send a Pix (asynchronous)
+      description: |
+        Validates limits and fraud, atomically debits the payer (double-entry against the
+        clearing account) and enqueues settlement with BACEN SPI. Returns immediately with
+        `202 Accepted`; final state arrives via SSE notification or status polling.
+
+        **Idempotency:** the `Idempotency-Key` header is REQUIRED. Retrying with the same
+        key and the same body replays the original response (same transactionId). The same
+        key with a different body returns `409 Conflict`. Keys are scoped to the
+        authenticated account and expire after 24h.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pixKey, amount]
+              properties:
+                pixKey:
+                  type: string
+                  description: Destination Pix key (CPF, e-mail, phone or random key — EVP)
+                  example: bob@otherbank.com
+                amount:
+                  type: string
+                  pattern: '^\d+\.\d{2}$'
+                  example: "125.50"
+                description:
+                  type: string
+                  maxLength: 140
+      responses:
+        '202':
+          description: Accepted for processing
+          headers:
+            Location:
+              schema: { type: string }
+              description: URL to poll for status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Idempotency-Key reused with a different payload, or request in progress
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: Business rejection (LIMIT_EXCEEDED, INSUFFICIENT_FUNDS, FRAUD_DENIED, KEY_NOT_FOUND)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Ledger unavailable — retry with the SAME Idempotency-Key
+          headers:
+            Retry-After: { schema: { type: integer, example: 5 } }
+
+  /payments/{transactionId}:
+    get:
+      tags: [payments]
+      summary: Query payment status
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /accounts/me/balance:
+    get:
+      tags: [accounts]
+      summary: Current balance (cache-backed, <300ms p99)
+      responses:
+        '200':
+          description: Balance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { type: string }
+                  balance: { type: string, example: "874.50" }
+                  currency: { type: string, example: BRL }
+                  asOf: { type: string, format: date-time }
+
+  /accounts/me/statement:
+    get:
+      tags: [accounts]
+      summary: Paginated statement (newest first)
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Opaque cursor from previous page (base64 LastEvaluatedKey)
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        '200':
+          description: One page of ledger entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/StatementEntry' }
+                  nextCursor:
+                    type: string
+                    nullable: true
+
+  /pix-keys:
+    post:
+      tags: [pix-keys]
+      summary: Register a Pix key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyType, keyValue]
+              properties:
+                keyType: { type: string, enum: [CPF, EMAIL, PHONE, EVP] }
+                keyValue: { type: string, description: "Ignored for EVP (server-generated UUID)" }
+      responses:
+        '201':
+          description: Key registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PixKey' }
+        '409':
+          description: Key already registered (globally unique)
+    get:
+      tags: [pix-keys]
+      summary: List my Pix keys
+      responses:
+        '200':
+          description: Keys of the authenticated account
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PixKey' }
+
+  /pix-keys/{keyValue}:
+    delete:
+      tags: [pix-keys]
+      summary: Delete a Pix key (must belong to the authenticated account)
+      parameters:
+        - name: keyValue
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Deleted }
+        '403': { description: Key belongs to another account }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+      description: Client-generated UUID, one per business operation; reuse it on retries.
+  schemas:
+    PaymentAccepted:
+      type: object
+      properties:
+        transactionId: { type: string, example: tx-9f1c }
+        endToEndId: { type: string, example: E12345678202607021234abcdef01234 }
+        status: { type: string, example: PROCESSING }
+    Payment:
+      type: object
+      properties:
+        transactionId: { type: string }
+        endToEndId: { type: string }
+        status:
+          type: string
+          enum: [PROCESSING, SETTLED, FAILED, REVERSED, REJECTED]
+          description: External view of the internal state machine
+        amount: { type: string }
+        pixKey: { type: string }
+        createdAt: { type: string, format: date-time }
+        settledAt: { type: string, format: date-time, nullable: true }
+        failureReason: { type: string, nullable: true }
+    StatementEntry:
+      type: object
+      properties:
+        entryId: { type: string }
+        txId: { type: string }
+        direction: { type: string, enum: [DEBIT, CREDIT] }
+        amount: { type: string, example: "-125.50" }
+        description: { type: string }
+        timestamp: { type: string, format: date-time }
+    PixKey:
+      type: object
+      properties:
+        keyType: { type: string }
+        keyValue: { type: string }
+        createdAt: { type: string, format: date-time }
+    Problem:
+      type: object
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code: { type: string, example: LIMIT_EXCEEDED }
+        correlationId: { type: string }
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Unauthorized:
+      description: Missing/invalid JWT
+    NotFound:
+      description: Resource not found
+
+security:
+  - bearerAuth: []

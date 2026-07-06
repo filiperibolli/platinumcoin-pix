@@ -1,0 +1,38 @@
+# Maven / Java build output
+target/
+*.class
+*.jar
+*.war
+*.ear
+dependency-reduced-pom.xml
+.mvn/wrapper/maven-wrapper.jar
+
+# Logs
+*.log
+logs/
+
+# IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment / secrets (never commit real credentials)
+.env
+.env.local
+*.pem
+*.key
+
+# LocalStack / docker runtime volumes
+infra/.localstack/
+volume/
