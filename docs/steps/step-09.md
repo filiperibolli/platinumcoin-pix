@@ -1,34 +1,36 @@
-# Step 09 — Shared JWT validation; protect all endpoints
+# Step 09 — account-service: accounts repository + GET account
+
+> **Sprint 2 — Accounts & Pix Keys** · **Flow:** register / resolve a Pix key · **Infra que sobe:** account-service (in compose) · **Diagram:** ARCHITECTURE §6.2
 
 ## Objective
-A `JwtAuthFilter` in common-lib validates `Authorization: Bearer` on every request (except login/actuator/SSE handshake nuances), rejects invalid/expired tokens with 401, and exposes an `AuthenticatedUser(userId, accountId)` principal to controllers.
+`account-service` (port 8082) reads `pix_accounts` from DynamoDB: `GET /v1/accounts/me` returns the authenticated user's account (id, status, daily limit); an internal `GET /internal/accounts/{accountId}` serves other services.
 
 ## Why / what you'll learn
-Centralizing token validation in the shared lib means one implementation, one test suite, zero drift between services — and it materializes the security invariant: controllers receive `AuthenticatedUser` and literally cannot read a source account from the payload (the DTO has no such field). You'll also learn the filter-chain order dance: correlation-id filter → auth filter → MVC.
+The first service that talks to DynamoDB via the AWS SDK. You'll practice the **hexagonal-lite** split: an `AccountRepository` port in `domain/`, a `DynamoAccountRepository` in `infra/` (the only place AWS SDK types appear), a controller in `api/`. `GET /accounts/me` derives the account from the JWT `accountId` claim (never a path/body param) — the same principle that protects the send flow later. The internal endpoint is how service-to-service reads work without sharing tables (ADR-0006).
 
 ## Prerequisites
-Steps 03, 08.
+Steps 05, 08.
 
 ## Tasks
-1. `JwtAuthFilter` in common-lib: parse+verify HS256 with `JWT_SECRET`; on success set SecurityContext / request attribute `AuthenticatedUser`; on failure 401 problem+json (code `INVALID_TOKEN` / `TOKEN_EXPIRED`).
-2. Auto-configured allowlist: `/actuator/**`, `/v1/auth/login`, mock-bacen admin endpoints (property-driven per service).
-3. `@CurrentUser` argument-resolver so controllers write `@CurrentUser AuthenticatedUser user`.
-4. Apply to account/payment/ledger/notification services (fraud & internal endpoints get service-to-service treatment in later steps; document the simplification: internal calls trusted inside the compose network).
+1. Scaffold `services/account-service` (skeleton + Dockerfile + compose entry, per the step-03 pattern; port 8082).
+2. Domain: `Account(accountId, userId, status, dailyLimitCents, createdAt)` record; `AccountRepository` port.
+3. `DynamoAccountRepository`: get by account id via GSI1; `GetItem` by user for `/me`.
+4. `GET /v1/accounts/me` (from JWT) and `GET /internal/accounts/{accountId}`; unknown ⇒ 404 `ACCOUNT_NOT_FOUND` (problem+json).
 
 ## Tests (TDD)
-- `JwtAuthFilterTest` — valid token ⇒ principal populated; expired ⇒ 401 TOKEN_EXPIRED; garbage/absent ⇒ 401; allowlisted path passes untouched.
-- One MockMvc test in account-service proving a protected endpoint 401s without a token and sees `accountId` with one.
+- `AccountRepositoryIT` (extends `LocalStackTestBase`) — seeded alice/bob readable; unknown id ⇒ empty.
+- `AccountControllerIT` (MockMvc) — `/me` returns the token's account; other token ⇒ its own account; no token ⇒ 401.
 
 ## Verify locally
 ```bash
-curl -si localhost:8082/v1/pix-keys | head -1                       # 401
-curl -si localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | head -1   # not 401
+curl -s localhost:8082/v1/accounts/me -H "Authorization: Bearer $TOKEN" | jq
+curl -s localhost:8082/internal/accounts/acc-001 | jq
 ```
 
 ## Definition of Done
-- [ ] Every user-facing endpoint requires a valid JWT
-- [ ] Controllers obtain identity only via `AuthenticatedUser`
-- [ ] Expired vs malformed tokens are distinguishable by error code
+- [ ] `/me` derives the account from the JWT, never from input
+- [ ] Domain code imports no AWS SDK types (adapter-isolated)
+- [ ] Model matches docs/data-model.md
 
 ## CHANGELOG entry
-`### Added` → `Shared JWT validation filter and AuthenticatedUser principal protecting all user-facing services (step 09)`
+`### Added` → `account-service with accounts repository, GET /accounts/me and internal account lookup (step 09)`

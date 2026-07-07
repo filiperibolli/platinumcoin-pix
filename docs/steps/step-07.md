@@ -1,34 +1,36 @@
-# Step 07 — Dockerize services; full-stack compose
+# Step 07 — LocalStack init: pix_accounts + pix_keys tables + seed
+
+> **Sprint 2 — Accounts & Pix Keys** · **Flow:** register / resolve a Pix key · **Infra que sobe:** DynamoDB tables `pix_accounts`, `pix_keys` · **Diagram:** ARCHITECTURE §6.2
 
 ## Objective
-Every service has a Dockerfile; `infra/docker-compose.yml` runs the entire platform (infra + 8 services) with health-gated startup ordering and memory caps. One command boots the world.
+Idempotent init scripts that LocalStack runs on readiness, creating `pix_accounts` and `pix_keys` (with their GSIs) per `docs/data-model.md`, plus demo seed data (users alice/bob, their accounts and daily limits).
 
 ## Why / what you'll learn
-Multi-stage Docker builds (JRE-only runtime image) and compose dependency management: services `depends_on` LocalStack **with `condition: service_healthy`**, so no service races the init scripts. Memory discipline: `JAVA_TOOL_OPTIONS=-Xmx512m` per JVM keeps 8 services + infra ≈ 6–8GB — the practical craft of running a "distributed system" on one 32GB PC.
+The "infrastructure as init script" pattern for local AWS: LocalStack executes `/etc/localstack/init/ready.d/*.sh` once ready. You'll model the two account-domain tables exactly from their **access patterns** (get accounts of a user, get account by id, resolve key→account, list keys of an account) — the DynamoDB way (keys are the answer to the queries, not a normalized schema). Only the tables this flow needs are created; ledger/transactions/etc. come up in their own sprints.
 
 ## Prerequisites
-Steps 02, 05.
+Step 06.
 
 ## Tasks
-1. Shared `infra/Dockerfile.service` (multi-stage: copy prebuilt jar onto `eclipse-temurin:21-jre-alpine`; `ARG SERVICE`), or one Dockerfile per module — pick one and document it.
-2. Extend compose: the 8 services with `build`, port mappings per runbook, env per docs/local-dev.md §3, `depends_on` localstack+redis healthy, healthcheck `wget -qO- localhost:PORT/actuator/health`, `mem_limit: 640m`.
-3. Makefile (or `scripts/`): `make build up down logs reset` wrappers.
-4. Update README run instructions if anything differs.
+1. `01-dynamodb-accounts.sh` — create `pix_accounts` (PK `USER#<userId>`, SK `ACCOUNT#<accountId>`, GSI1 `ACCOUNT#<accountId>`) and `pix_keys` (PK `KEY#<value>`, SK `META`, GSI1 `ACCOUNT#<accountId>`), on-demand billing. Idempotent (`describe-table || create-table`).
+2. `04-seed-accounts.sh` — alice (acc-001) and bob (acc-002) accounts with `dailyLimitCents=500000`, `status=ACTIVE`; no Pix keys yet (registered via API in step 10).
+3. Mirror the exact `create-table` commands in `docs/local-dev.md`.
 
 ## Tests (TDD)
-Runbook-verified (compose is the E2E playground; automated tests remain on Testcontainers).
+Verified by the harness in step 08 (`LocalStackTestBase` runs these same scripts) and the runbook below.
 
 ## Verify locally
 ```bash
-mvn -q clean package -DskipTests && docker compose -f infra/docker-compose.yml up -d --build
-for p in 8081 8082 8083 8084 8085 8086 8087 9090; do echo -n "$p: "; curl -s localhost:$p/actuator/health | jq -r .status; done
-docker stats --no-stream | sort -k4 -h | tail   # sanity: memory within caps
+docker compose -f infra/docker-compose.yml up -d
+aws --endpoint-url=http://localhost:4566 dynamodb list-tables | jq   # pix_accounts, pix_keys
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_accounts \
+  --key '{"pk":{"S":"USER#u-alice"},"sk":{"S":"ACCOUNT#acc-001"}}' | jq
 ```
 
 ## Definition of Done
-- [ ] `up -d --build` from clean state → all 9+ containers healthy
-- [ ] No service starts before LocalStack init completed
-- [ ] Total stack RAM ≈ ≤8GB
+- [ ] Both tables + GSIs created exactly per docs/data-model.md; scripts idempotent
+- [ ] Seed accounts present with daily limits
+- [ ] `down -v && up` reseeds a clean world
 
 ## CHANGELOG entry
-`### Added` → `Dockerfiles and full-stack docker-compose with health-gated ordering and memory caps (step 07)`
+`### Added` → `LocalStack init: pix_accounts and pix_keys tables (GSIs) + seed accounts (step 07)`

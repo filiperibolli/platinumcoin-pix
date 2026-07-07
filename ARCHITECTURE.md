@@ -1,8 +1,18 @@
 # ARCHITECTURE — PIX Payment Platform
 
-This document is the system design for PlatinumCoin's Pix platform. It extracts the requirements from the design brief, states scale assumptions, presents the container-level architecture, service decomposition, data model, API design, the main flows as sequence diagrams, cross-cutting concerns, and trade-offs. The brief poses **seven key design questions**; they are answered inline and indexed in [§10](#10-index-answers-to-the-7-questions).
+This document is the system design for PlatinumCoin's Pix platform. **Part I** presents the complete
+target design (requirements, containers, service decomposition, data model, API). **Part II (§6)** is
+the *implementation journey*: the same system delivered as **vertical slices — one flow per sprint** —
+each drawn as a sequence diagram and annotated with the infrastructure it brings up. The brief poses
+**seven key design questions**; they are answered inline and indexed in [§10](#10-index-answers-to-the-7-questions).
+
+> **How to read this doc.** If you want the finished picture, read Part I. If you want to *build* it
+> (or understand why it is built in this order), read Part II — it maps 1:1 to `PLAN.md`'s sprints and
+> is deliberately incremental: nothing appears before the thing it depends on.
 
 ---
+
+# Part I — The complete design
 
 ## 1. Requirements
 
@@ -48,8 +58,8 @@ Pix is operated by BACEN through the **SPI** (Sistema de Pagamentos Instantâneo
 
 - 5M tx/day ÷ 86,400s ≈ **58 TPS average**; peaks 8–10× → **500+ TPS**.
 - Each send produces ~2 ledger entries + 1 transaction item + 1 outbox item ≈ **4 writes/tx** → ~230 WPS average, ~2,000 WPS peak. Well within DynamoDB on-demand capacity; a single partition handles ~1,000 WPS, and our partition key (`accountId`) spreads load across millions of partitions. Hot-partition risk is concentrated on the internal **clearing account** — mitigated in §6.3.
-- Reads are balance-dominated (every app open). Assuming 10 reads per transaction → ~580 RPS avg, ~5,000 RPS peak → **cache required** to meet 300ms p99 cheaply (Redis, §7.3).
-- 5M tx/day × ~2KB (tx + entries) ≈ 10GB/day ≈ 3.6TB/yr hot data → 5-year online requirement pushes old statement pages to **S3 cold archive** (§7.6).
+- Reads are balance-dominated (every app open). Assuming 10 reads per transaction → ~580 RPS avg, ~5,000 RPS peak → **cache required** to meet 300ms p99 cheaply (Redis, §6.9).
+- 5M tx/day × ~2KB (tx + entries) ≈ 10GB/day ≈ 3.6TB/yr hot data → 5-year online requirement pushes old statement pages to **S3 cold archive** (§6.10).
 - All of this scales down to one PC: LocalStack + 8 JVM services + Redis fits comfortably in 32GB (each service capped at 512MB heap).
 
 ---
@@ -110,6 +120,9 @@ graph TB
 
 **Note on Redis:** LocalStack does not emulate ElastiCache, so Redis runs as its own container in docker-compose. In production this maps 1:1 to ElastiCache for Redis.
 
+> This is the **end state**. §6 shows how the platform arrives here one flow at a time — the same
+> boxes light up gradually, sprint by sprint.
+
 ---
 
 ## 3. Service decomposition & responsibilities
@@ -136,7 +149,7 @@ graph TB
 | `accounts` | `USER#<userId>` / `ACCOUNT#<accountId>` | Account metadata, daily limit config | GSI1: `accountId` lookup |
 | `pix_keys` | `KEY#<keyValue>` / `META` | Global key uniqueness via conditional `PutItem` | GSI1: `ACCOUNT#<accountId>` → list keys |
 | `ledger` | `ACCOUNT#<accountId>` / `BALANCE` and `ENTRY#<ts>#<txId>` | Balance item + immutable double-entry postings | GSI1: `TX#<txId>` → both legs of a posting |
-| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan) |
+| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan); GSI3 (sparse): unpublished outbox |
 | `idempotency` | `IDEM#<accountId>#<key>` / `META` | Request hash + stored response, TTL 24h | — |
 
 **Transaction state machine:**
@@ -178,111 +191,335 @@ RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
 
 ---
 
-## 6. Main flows
+# Part II — The implementation journey (flow by flow)
 
-### 6.1 Send Pix — happy path (Questions 1, 2, 4)
+## 6. Incremental delivery — sprints & flows
+
+The platform is built as **vertical slices**: each sprint ships one complete, testable, documented
+**flow** and brings up **only the infrastructure that flow needs**. This section draws each flow and
+states, per flow, which infra comes up. It maps 1:1 to `PLAN.md`.
+
+### 6.0 Why vertical (not big-bang), and the order
+
+A horizontal plan ("scaffold all 8 services → stand up all infra → add each layer everywhere") keeps
+the system un-runnable until very late and couples every change to every service. A **vertical** plan
+keeps a runnable, demoable artifact at the end of *every* sprint, and makes the dependency order
+explicit: you cannot move money before the **ledger** exists, and asynchronous **external** settlement
+(with its SNS/SQS/BACEN machinery) is strictly harder than a **synchronous internal** transfer — so
+internal Pix comes first and earns the walking skeleton that external Pix later thickens.
+
+**Sprint dependency graph** (an edge = "needs the capability of"):
+
+```mermaid
+graph LR
+    S1[S1 Identity] --> S2[S2 Accounts and Keys]
+    S2 --> S3[S3 Ledger]
+    S3 --> S4[S4 Send internal]
+    S4 --> S5[S5 Fraud]
+    S5 --> S6[S6 Send external + settlement]
+    S6 --> S7[S7 Resilience and reconciliation]
+    S7 --> S8[S8 Receive + notify]
+    S3 --> S9[S9 Balance and statement cache]
+    S6 --> S10[S10 Audit]
+    S8 --> S11[S11 Observability]
+    S9 --> S11
+    S10 --> S11
+    S11 --> S12[S12 Hardening / E2E / load]
+    S12 --> S13[S13 DX tooling]
+    S3 -.-> S14[S14 Relational counterpart]
+    S12 -.-> S14
+```
+
+**Cumulative infrastructure** — what is running by the end of each sprint (each row *adds* to the
+previous):
+
+```mermaid
+graph TB
+    subgraph s1["After S1 — Identity"]
+        a1[auth-service only · no AWS · seeded users]
+    end
+    subgraph s2["After S2 — Accounts & Keys"]
+        a2[+ LocalStack DynamoDB accounts/keys · account-service · Testcontainers]
+    end
+    subgraph s3["After S3 — Ledger"]
+        a3[+ DynamoDB pix_ledger · ledger-service]
+    end
+    subgraph s4["After S4 — Send internal"]
+        a4[+ DynamoDB transactions/idempotency · payment-service]
+    end
+    subgraph s5["After S5 — Fraud"]
+        a5[+ Redis · fraud-service]
+    end
+    subgraph s6["After S6 — Send external"]
+        a6[+ SNS pix-events · SQS settlement-queue+DLQ · mock-bacen-spi · settlement-service]
+    end
+    subgraph s8["After S8 — Receive & notify"]
+        a8[+ notification-queue · inbound-pix-queue · notification-service · SSE]
+    end
+    subgraph s10["After S10 — Audit"]
+        a10[+ audit-queue · S3 buckets]
+    end
+    subgraph s11["After S11 — Observability"]
+        a11[+ Prometheus · Grafana]
+    end
+    s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> s8 --> s10 --> s11
+```
+
+Sprints 7, 9, 12, 13 add behavior/tests/tooling but no new infra container.
+
+---
+
+### 6.1 Flow — Identity (login → JWT)   · Sprint 1 · infra: none (AWS-free)
+
+The simplest capability, and the one nothing depends on: authenticate a seeded user and mint a JWT.
+Signing is **HS256** with a shared secret locally (RS256 + JWKS in prod, ADR-0007). The token carries
+`sub` (userId), `accountId`, `jti`, `iat`, `exp` (15 min). The **validation filter lives in common-lib**,
+so every later service enforces auth by depending on the library — zero per-service boilerplate.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant AUTH as auth-service
+    App->>AUTH: POST /v1/auth/login {username, password}
+    AUTH->>AUTH: verify against seeded users
+    AUTH-->>App: 200 {accessToken (JWT HS256), expiresIn: 900}
+    Note over App,AUTH: later calls carry Authorization: Bearer <JWT>;<br/>common-lib JwtAuthFilter validates on every protected route
+```
+
+**Why first / what it earns:** a stable auth edge means every subsequent flow can be exercised
+end-to-end (you always have a token). No AWS is needed — users are seeded in config and tests run on
+MockMvc, so Sprint 1 has the fastest possible feedback loop.
+
+---
+
+### 6.2 Flow — Accounts & Pix keys (register / resolve a key)   · Sprint 2 · infra: **LocalStack DynamoDB** + Testcontainers
+
+The first flow that touches AWS. LocalStack comes up with **DynamoDB only** (`pix_accounts`, `pix_keys`),
+and the Testcontainers harness lands in common-lib so integration tests never depend on the compose stack.
+**Global key uniqueness** is the critical invariant, enforced by a **conditional `PutItem`**
+(`attribute_not_exists(pk)`) — the DynamoDB equivalent of a `UNIQUE` constraint, with no read-then-write
+race. Internal key resolution (the hot lookup in every send) is served here; delegation to BACEN's DICT
+for *external* keys arrives in Sprint 6, when mock-bacen exists.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant ACC as account-service
+    participant DDB as DynamoDB
+    App->>ACC: POST /v1/pix-keys {keyType, keyValue}  (JWT)
+    ACC->>DDB: PutItem KEY#<value> · ConditionExpression attribute_not_exists(pk)
+    alt key free
+        DDB-->>ACC: OK
+        ACC-->>App: 201 {keyType, keyValue}
+    else already taken (another account)
+        DDB--xACC: ConditionalCheckFailed
+        ACC-->>App: 409 Conflict
+    end
+    Note over ACC,DDB: resolution (hot path of send): GetItem KEY#<value> → accountId
+```
+
+---
+
+### 6.3 Flow — Ledger posting (never debit without credit)   · Sprint 3 · infra: DynamoDB `pix_ledger`
+
+**The heart of the system** and the direct answer to *Question 2*. A posting is **one**
+`TransactWriteItems` — DynamoDB transactions are ACID across up to 100 items, so either all four writes
+commit or none do. No intermediate state can exist where a debit lands without its credit.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller as ledger caller
+    participant LED as ledger-service
+    participant DDB as DynamoDB
+    Caller->>LED: POST /internal/ledger/postings {txId, debit, credit, amount}
+    LED->>DDB: TransactWriteItems (all-or-nothing)
+    Note right of DDB: 1) debit BALANCE  cond balanceCents >= amount<br/>2) credit BALANCE cond exists<br/>3) put DEBIT entry  cond attribute_not_exists (txId)<br/>4) put CREDIT entry cond attribute_not_exists (txId)
+    alt all conditions hold
+        DDB-->>LED: committed
+        LED-->>Caller: 200 posting result
+    else insufficient funds / replayed txId / conflict
+        DDB--xLED: TransactionCanceled(reasons)
+        LED-->>Caller: 422 INSUFFICIENT_FUNDS · or idempotent replay · or 503 (retry conflict)
+    end
+```
+
+- **Internal transfer (PlatinumCoin → PlatinumCoin):** debit payer / credit payee directly. One atomic transaction, done — this is exactly what Sprint 4 uses.
+- **External transfer (Sprint 6):** you cannot span a distributed transaction across two banks, so the credit leg goes to an **internal SPI clearing account** (`debit payer / credit ACCOUNT#SPI_CLEARING`). On SPI confirmation the money has left the bank (a `CLEARING_RELEASE` entry); on definitive failure a **compensating posting** (`debit clearing / credit payer`) returns it. At every instant `Σ balances` is invariant: **money moves, it is never created or destroyed.**
+
+Guards enforced *inside* the transaction (never as a prior read):
+- `balance >= :amount` on the debtor → **no negative balance**, checked atomically with the debit.
+- `attribute_not_exists` on the entry keyed by `txId` → **the same transaction can never post twice**.
+- `version` attribute (optimistic locking) on balances; DynamoDB serializes conflicting items via `TransactionConflict`, retried with jitter.
+
+Property-style concurrency tests (Sprint 3, step 15 — hand-written) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
+
+**Clearing-account hot partition (forward reference to Sprint 14).** All external sends credit
+`ACCOUNT#SPI_CLEARING` → at 500 TPS that single item nears DynamoDB's ~1,000 WPS per-partition ceiling.
+Mitigation: **write sharding** — N clearing sub-accounts (`SPI_CLEARING#00..#15`) picked by hash of
+`txId`; the logical balance is the sum. Implemented and **proven under the Black Friday k6 profile in
+step 52** (before/after in `docs/sharding-findings.md`); the shard used at debit time is stored on the
+transaction item so a reversal always compensates the same shard. **Design note for the incremental
+build:** because the ledger posting is keyed by explicit `debitAccount`/`creditAccount` from Sprint 3,
+introducing shards later changes only *which* clearing id the caller passes — the posting contract,
+invariants and Sprint 4 code are untouched. That isolation is deliberate.
+
+---
+
+### 6.4 Flow — Send Pix, internal & synchronous   · Sprint 4 · infra: DynamoDB `pix_transactions` + `pix_idempotency`
+
+The first flow that **moves a user's money end-to-end**, and it does so **synchronously**: an internal
+Pix (alice → bob's internal key) needs no settlement, no queue, no BACEN. This is the walking skeleton
+that Sprint 6 later thickens into the asynchronous external path. It exercises idempotency, daily limits
+and the atomic ledger debit from Sprint 3.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant App
     participant PAY as payment-service
-    participant FRD as fraud-service
     participant ACC as account-service
     participant LED as ledger-service
     participant DDB as DynamoDB
-    participant SNS as SNS/SQS
-    participant SET as settlement-service
-    participant SPI as mock-bacen-spi
-    participant NOT as notification-service
-
     App->>PAY: POST /v1/payments/pix (JWT, Idempotency-Key)
-    PAY->>PAY: validate JWT → debtor account from token
-    PAY->>DDB: conditional Put idempotency record
-    PAY->>PAY: daily limit check
-    PAY->>FRD: POST /score (timeout 200ms)
-    FRD-->>PAY: APPROVE (score)
-    PAY->>ACC: resolve pixKey → creditor (internal or external)
-    ACC-->>PAY: creditor info
-    PAY->>LED: POST /postings (debit debtor, credit clearing, txId)
-    LED->>DDB: TransactWriteItems: debit(cond balance≥amt) + credit + entries
-    DDB-->>LED: OK (atomic)
-    PAY->>DDB: TransactWriteItems: tx=DEBITED + outbox(PixDebited)
-    PAY-->>App: 202 Accepted {transactionId, status: PROCESSING}
-    Note over App,PAY: p99 < 2s — user is NOT waiting for BACEN
-    PAY->>DDB: poll outbox (sparse GSI, ~1s)
-    PAY->>SNS: publish PixDebited → fan-out, mark published
-    SNS->>SET: settlement-queue
-    SET->>SPI: POST /spi/settlements (endToEndId) — up to 10s
-    SPI-->>SET: SETTLED
-    SET->>DDB: tx status = SETTLED + outbox(PixSettled)
-    SNS->>NOT: notification-queue (PixSettled)
-    NOT-->>App: SSE push "Pix confirmed"
+    PAY->>PAY: debtor account = JWT accountId claim (never from body)
+    PAY->>DDB: conditional Put idempotency (claim IN_PROGRESS)
+    PAY->>PAY: daily limit check (decision object: ALLOW/DENY/REQUIRE_STEP_UP)
+    PAY->>ACC: resolve pixKey → creditor (internal)
+    ACC-->>PAY: creditor accountId
+    PAY->>LED: POST /postings (debit payer, credit payee, txId)
+    LED->>DDB: TransactWriteItems (atomic debit+credit+entries)
+    DDB-->>LED: OK
+    PAY->>DDB: tx = DEBITED (internal → treated as settled) + complete idempotency
+    PAY-->>App: 202 Accepted {transactionId, status}
+    App->>PAY: GET /v1/payments/{id} → status
 ```
 
-**Question 1 in words:** the app authenticates (auth-service), calls payment-service, which enforces idempotency and limits, scores fraud within budget, resolves the key, commands an **atomic** debit in the ledger (debtor → internal clearing account), persists the transaction state + outbox event in one DynamoDB transaction, and answers `202` in well under 2s. The outbox publisher polls unpublished events and publishes to SNS; settlement-service picks it up from SQS and talks to BACEN (up to 10s); on confirmation it finalizes status and events flow to the notification-service, which pushes to the app.
+**Question 6 in action:** the required `Idempotency-Key` is claimed with a conditional put (lock+memo in
+one write); a retry with the same key+body replays the stored `202` (same `transactionId`); a different
+body under the same key → `409`. Even an internal retry cannot double-debit, because the ledger posting
+is itself idempotent by `txId` (Sprint 3).
 
-**Question 4 (10s SPI latency — does the user wait?):** No. The synchronous part ends at `202 Accepted` with status `PROCESSING`. The 10s window is absorbed by the SQS-buffered settlement flow. The app shows "processing" and receives the final state via SSE push (or polling `GET /v1/payments/{id}`). If BACEN times out, retries/reconciliation resolve the transaction within 5 minutes and the user is notified of success or automatic reversal — the user's synchronous experience never depends on SPI latency.
+**Question 1 (source account):** the debited account is derived **exclusively** from the JWT `accountId`
+claim — the request body has no source-account field at all (the safest way to enforce "never from the
+payload" is to make it inexpressible; ADR-0007).
 
-### 6.2 Never debit without credit (Question 2)
+---
 
-The ledger is **double-entry**: every posting writes a debit entry and a credit entry, and updates two balance items, inside **one** `TransactWriteItems` (DynamoDB transactions are ACID across up to 100 items). Either all four writes commit or none do.
+### 6.5 Flow — Fraud scoring in the path   · Sprint 5 · infra: Redis
 
-- **Internal transfer (PlatinumCoin → PlatinumCoin):** debit payer / credit payee directly. One atomic transaction, done.
-- **External transfer:** you cannot span a distributed transaction across PlatinumCoin and another bank. So the credit leg goes to an **internal SPI clearing account**: `debit payer / credit ACCOUNT#SPI_CLEARING` atomically. The clearing account represents money in flight to BACEN. On SPI confirmation, the money has left the bank (clearing balance is drawn down against the real BACEN position — modeled here as a `CLEARING_RELEASE` entry). On definitive SPI failure, a **compensating posting** (`debit clearing / credit payer`) — also atomic — returns the money. At every instant, the sum of all balances is invariant: **money moves, it is never created or destroyed**.
-
-Guards enforced by conditional expressions inside the transaction:
-- `balance >= :amount` on the debtor balance item → **no negative balance**, checked atomically with the debit (no read-then-write race).
-- `attribute_not_exists` on the entry item keyed by `txId` → **the same transaction can never post twice** (internal idempotency).
-- A `version` attribute (optimistic locking) on balance items detects concurrent writers; DynamoDB transactions already serialize conflicting items via `TransactionConflict`, which we retry with jitter.
-
-Property-style concurrency tests (step 14) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
-
-### 6.3 Clearing-account hot partition
-
-All external sends credit `ACCOUNT#SPI_CLEARING` → at 500 TPS that single item takes 500 writes/s, near DynamoDB's ~1,000 WPS per-partition ceiling. Mitigation: **write sharding** — N clearing sub-accounts (`SPI_CLEARING#00..#15`) picked by hash of `txId`; the logical clearing balance is the sum. Implemented and **proven under the Black Friday k6 profile in step 46** (before/after metrics recorded in `docs/sharding-findings.md`); the shard used at debit time is stored on the transaction item so settlement reversal always compensates the same shard.
-
-### 6.4 Send with SPI latency / timeout + retries + DLQ
+Fraud scoring is inserted **between limit-check and ledger debit** with a **hard 200ms client timeout**
+(fraud-service targets p99 < 150ms). Redis comes up here to hold velocity counters. Answers *Question 5*.
 
 ```mermaid
 sequenceDiagram
     autonumber
+    participant PAY as payment-service
+    participant FRD as fraud-service
+    participant REDIS as Redis
+    PAY->>FRD: POST /internal/fraud/score (deadline 200ms)
+    FRD->>REDIS: read velocity counters (amount/count windows)
+    FRD-->>PAY: {decision: APPROVE | REVIEW | DENY, score, reasons}
+    alt DENY
+        PAY-->>PAY: 422 FRAUD_DENIED (release limit reservation)
+    else REVIEW / APPROVE
+        PAY-->>PAY: proceed (REVIEW flagged for analyst)
+    else timeout or error  (FAIL-OPEN, ADR-0005)
+        PAY-->>PAY: proceed · fraudSkipped=true · emit FraudCheckSkipped
+    end
+```
+
+**The trade-off (ADR-0005):** fail-**open** means a fraud-service outage lets unscored payments through
+(bounded by daily limits + async re-scoring); fail-**closed** would let any fraud-service blip reject
+100% of legitimate payments. For a core money-movement product, availability wins *at this layer*; the
+documented production evolution is a hybrid (fail-closed above a value threshold).
+
+---
+
+### 6.6 Flow — Send Pix, external & asynchronous   · Sprint 6 · infra: **SNS + SQS(+DLQ) + mock-bacen-spi**
+
+Now the walking skeleton grows its asynchronous half. External sends credit the **clearing account**
+(§6.3), persist `tx=DEBITED` **together with an outbox event in one `TransactWriteItems`**, and answer
+`202` in well under 2s — the user never waits on BACEN. A polling publisher drains the outbox to SNS; the
+settlement-service consumes from SQS and talks to the SPI (up to 10s). This is where the messaging infra
+first comes up. Answers *Questions 1 & 4*.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant PAY as payment-service
+    participant DDB as DynamoDB
+    participant SNS as SNS/SQS
     participant SET as settlement-service
     participant SPI as mock-bacen-spi
-    participant Q as SQS settlement-queue
-    participant DLQ as settlement-DLQ
+    App->>PAY: POST /v1/payments/pix (external key)
+    PAY->>LED: debit payer / credit SPI_CLEARING (atomic)
+    PAY->>DDB: TransactWriteItems: tx=DEBITED + outbox(PixDebited)
+    PAY-->>App: 202 Accepted {status: PROCESSING}
+    Note over App,PAY: p99 < 2s — user is NOT waiting for BACEN
+    PAY->>DDB: poll sparse GSI3 (unpublished outbox, ~1s tick)
+    PAY->>SNS: publish PixDebited → fan-out, then REMOVE gsi3pk (mark published)
+    SNS->>SET: settlement-queue
+    SET->>SPI: POST /spi/settlements (endToEndId) — up to 10s
+    SPI-->>SET: SETTLED
+    SET->>DDB: tx = SETTLED (guarded) + outbox(PixSettled)
+```
 
+**Question 4 (10s SPI latency — does the user wait?):** No. The synchronous part ends at `202` with
+status `PROCESSING`; the 10s window is absorbed by the SQS-buffered settlement flow. The app shows
+"processing" and gets the final state via SSE (Sprint 8) or polling `GET /v1/payments/{id}`.
+
+**Why outbox + polling (ADR-0004):** writing the DB and publishing to SNS are two systems → the
+dual-write problem. The outbox item lives in the **same table/partition** as the transaction, so both
+commit in one transaction; the publisher publishes-then-marks on a **sparse GSI** (at-least-once), and
+consumers dedupe by `eventId`. DynamoDB Streams would be lower-latency but the most complex consumer in
+the project, buying nothing against a 10s SPI SLA — documented as the production evolution.
+
+---
+
+### 6.7 Flow — Resilience: retries, DLQ & reconciliation (< 5 min)   · Sprint 7 · infra: none new
+
+Settlement becomes failure-proof, and "eventual" becomes **eventually *bounded***.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Q as SQS settlement-queue
+    participant SET as settlement-service
+    participant SPI as mock-bacen-spi
+    participant DLQ as settlement-DLQ
     Q->>SET: PixDebited(txId, endToEndId)
     SET->>SPI: POST /spi/settlements — timeout 12s
     SPI--xSET: timeout / 5xx
     Note over SET: do NOT ack → message returns after visibility timeout
     Q->>SET: redelivery (attempt 2..5, backoff via visibility)
-    SET->>SPI: GET /spi/settlements/{endToEndId} (query-before-retry:<br/>a timeout ≠ failure — BACEN may have settled!)
+    SET->>SPI: GET /spi/settlements/{endToEndId}  (query-before-retry!)
     alt already settled at BACEN
         SET->>SET: mark SETTLED
-    else genuinely unknown → retry POST (idempotent by endToEndId)
-        SET->>SPI: POST again
+    else genuinely unknown
+        SET->>SPI: POST again (idempotent by endToEndId)
     end
     opt 5 attempts exhausted
-        Q->>DLQ: message moved by redrive policy
-        Note over DLQ: reconciliation job + silence alert own it now
+        Q->>DLQ: moved by redrive policy → alert
     end
 ```
 
-The subtle, important rule: **after a timeout you must query before retrying blind** — the request may have succeeded at BACEN. The `endToEndId` is the idempotency key on the SPI side, making the retry safe either way.
+The subtle rule: **after a timeout you must query before retrying blind** — a timeout is not a failure,
+BACEN may have settled. Separately, a scheduled **reconciliation job** (every 60s) scans `transactions`
+GSI2 for `status IN (DEBITED, SENT_TO_SPI)` older than 2 min → queries the SPI → finalizes (SETTLED) or
+**compensates** (`debit clearing / credit payer`, status `REVERSED`, notify user). Age > 5 min raises an
+SLO-breach alert. Compensation is a *new* posting, never an update/delete — the ledger stays append-only.
 
-### 6.5 Reconciliation of stuck transactions (< 5 min)
+---
 
-A scheduled job in settlement-service (every 60s) scans `transactions` GSI2 for `status IN (DEBITED, SENT_TO_SPI)` older than 2 minutes:
+### 6.8 Flow — Receive Pix + real-time notification   · Sprint 8 · infra: **notification-queue + inbound-pix-queue + SSE**
 
-1. Query mock-bacen `GET /spi/settlements/{endToEndId}`.
-2. `SETTLED` at BACEN → finalize locally (we missed the response).
-3. `FAILED` / not found → compensating ledger posting (credit payer back), status `REVERSED`, notify user.
-4. BACEN unreachable → leave for next cycle; if age > 5 min, raise a **reconciliation SLO breach alert**.
-
-This loop is what turns "eventual" into "eventually *bounded*": no transaction stays indefinite past 5 minutes (Question 4's failure half, and part of Question 7's availability story).
-
-### 6.6 Receive Pix + real-time notification
+Inbound Pix is idempotent by `endToEndId` (BACEN may redeliver); the clearing account is the debit leg,
+mirroring outbound. The notification-service holds one SSE connection per user and routes events to the
+affected user's emitter. Answers *Feature F2*.
 
 ```mermaid
 sequenceDiagram
@@ -293,7 +530,6 @@ sequenceDiagram
     participant LED as ledger-service
     participant NOT as notification-service
     participant App
-
     SPI->>SET: POST /v1/inbound/pix (endToEndId, pixKey, amount)
     SET->>SET: dedupe by endToEndId (conditional write)
     SET->>ACC: resolve pixKey → accountId
@@ -304,7 +540,73 @@ sequenceDiagram
     NOT-->>App: SSE push "You received R$ X"
 ```
 
-Inbound is idempotent by `endToEndId` (BACEN may redeliver). The clearing account is the debit leg — double-entry symmetry with outbound.
+---
+
+### 6.9 Flow — Balance & statement with cache   · Sprint 9 · infra: none new (Redis cache-aside)
+
+Balance reads are the highest-volume operation and must be < 300ms p99. **Cache-aside** on Redis:
+read → hit? return : read ledger `BALANCE` → populate (TTL 5s) → return. Every posting **invalidates**
+the affected keys (best-effort, post-commit); the short TTL is the backstop. **Correctness rule:** the
+cache serves *display* reads only — any money-moving decision (`balance >= amount`) happens inside the
+DynamoDB conditional write, so the cache can never cause an overdraft.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant PAY as payment-service
+    participant REDIS as Redis
+    participant LED as ledger-service
+    App->>PAY: GET /v1/accounts/me/balance
+    PAY->>REDIS: GET balance:<accountId>
+    alt hit
+        REDIS-->>PAY: cached balance (≤5s old)
+    else miss
+        PAY->>LED: GET balance (ConsistentRead)
+        LED-->>PAY: balance
+        PAY->>REDIS: SET balance:<accountId> TTL 5s
+    end
+    PAY-->>App: 200 {balance}
+    Note over LED,REDIS: on every posting → DEL balance:<affected accounts>
+```
+
+Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts#txId`,
+`ScanIndexForward=false`); the API cursor is the base64 of `LastEvaluatedKey`.
+
+---
+
+### 6.10 Flow — Immutable audit trail   · Sprint 10 · infra: **audit-queue + S3**
+
+An `audit-queue` subscribed to *all* events feeds an `AuditWriter` that appends JSON lines to S3,
+partitioned `yyyy/MM/dd/HH/<service>-<uuid>.jsonl`. A `StatementArchiver` copies ledger entries older
+than the hot window to a cold-archive bucket. Immutability posture: **versioning + Object Lock
+(compliance mode) + 5-year retention** (LocalStack accepts the config; the guarantee is real in AWS).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SNS as SNS pix-events
+    participant Q as audit-queue
+    participant SET as settlement-service (AuditWriter)
+    participant S3 as S3 audit-log
+    SNS->>Q: every event (fan-out, no filter)
+    Q->>SET: batch (100 events or 30s)
+    SET->>S3: append JSONL yyyy/MM/dd/HH/<service>-<uuid>.jsonl
+    Note over SET,S3: bucket: versioning + Object Lock (compliance) + retention 5y
+```
+
+---
+
+### 6.11 Flow — Observability   · Sprint 11 · infra: **Prometheus + Grafana**
+
+Three layers — **logs** (what happened to *this* request, via `correlationId`), **metrics** (how the
+*system* behaves, Micrometer → Prometheus), **dashboards** (who needs to see it, Grafana as code). Two
+dashboards ship: **Technical** (p50/p99 vs SLO lines, throughput, errors, queue/DLQ depth, cache hit,
+JVM) and **Business funnel** (payments per stage RECEIVED→…→SETTLED with REJECTED/REVERSED branches,
+conversion %, fraud mix, reconciliation actions, R$ settled). **Silence alerts** detect the *absence* of
+expected events (how async systems fail): e.g. "debits flowing but no settlement in 120s". A
+`scripts/trace.sh <correlationId>` reconstructs one transaction's full path across all services from the
+structured logs — proving the logging contract from CLAUDE.md. Details in §7.7.
 
 ---
 
@@ -314,7 +616,7 @@ Inbound is idempotent by `endToEndId` (BACEN may redeliver). The clearing accoun
 Covered in §5. Three layers: API (`Idempotency-Key` + stored response), ledger (conditional entry by `txId`), SPI (`endToEndId`).
 
 ### 7.2 Consistency
-- **Within the ledger:** strong — `TransactWriteItems` + condition expressions (§6.2).
+- **Within the ledger:** strong — `TransactWriteItems` + condition expressions (§6.3).
 - **Across services:** eventual, made *reliable* by the transactional outbox (ADR-0004): state change and event are committed atomically in DynamoDB; a polling publisher (publish-then-mark on a sparse GSI) delivers at-least-once to SNS; consumers dedupe by event id. No dual-write window where the DB commits but the event is lost.
 - **Balance cache:** cache-aside with invalidation on every posting + short TTL (5s) as a backstop; the ledger is always the source of truth, and any money-moving decision reads the ledger, never the cache.
 
@@ -380,7 +682,7 @@ What we give up, and how we compensate:
 - 100-item transaction cap, no multi-region strong consistency → fine for this write set; documented as a constraint.
 - Constraints live in application-issued condition expressions, not schema → concentrated in **one service (ledger-service)** and defended by invariant tests.
 
-**When to choose which:** relational when the domain needs flexible multi-row transactions, rich queries, and a team fluent in operating HA Postgres at your scale; DynamoDB when access patterns are known and key-shaped, availability/elasticity targets are extreme, and you can encode invariants as conditional writes. This project intentionally exercises the second path. (Full analysis: ADR-0001.)
+**When to choose which:** relational when the domain needs flexible multi-row transactions, rich queries, and a team fluent in operating HA Postgres at your scale; DynamoDB when access patterns are known and key-shaped, availability/elasticity targets are extreme, and you can encode invariants as conditional writes. This project intentionally exercises the second path — and, since Sprint 14, **also builds the first**: `labs/ledger-pg` (ADR-0009) implements the same ledger port on PostgreSQL with both locking strategies, runs the same invariant suite, and records `EXPLAIN`/benchmark findings, so the rule of thumb is backed by first-hand numbers. (Full analysis: ADR-0001.)
 
 For the **transaction history** (statement): the ledger entries themselves, keyed `ACCOUNT#id / ENTRY#timestamp#txId`, give natural reverse-chronological pagination — same table, no extra store; cold pages archive to S3.
 
@@ -396,6 +698,7 @@ For the **transaction history** (statement): the ledger entries themselves, keye
 | Fraud sync + fail-open | Fail-closed; fully async fraud | Fail-closed couples availability to fraud-service; fully async can't block a payment at all. Sync-with-budget + fail-open balances both (ADR-0005) |
 | SNS+SQS | Kafka | Fits the LocalStack constraint; fan-out + DLQ + per-queue scaling with zero broker ops; Kafka would win for replay/stream processing at larger scope |
 | Microservices | Modular monolith | A monolith would be *simpler* and is a legitimate 3-month-deadline answer; chosen decomposition demonstrates the target-state design and independent failure domains (ADR-0006) |
+| Vertical (flow-per-sprint) delivery | Horizontal (layer-by-layer) | Keeps a runnable, demoable artifact at the end of every sprint; makes the dependency order explicit; infra rises only when a flow needs it (§6.0) |
 | SSE notifications | WebSocket | One-way push only; SSE is simpler, auto-reconnecting, plain HTTP |
 | Redis cache-aside | DAX; no cache | DAX not in LocalStack; no-cache makes 300ms p99 costlier at read volume |
 
@@ -405,10 +708,10 @@ For the **transaction history** (statement): the ledger entries themselves, keye
 
 | # | Question | Where |
 |---|---|---|
-| 1 | Components + send flow end-to-end | §2, §3, §6.1 |
-| 2 | Never debit without credit — consistency mechanism | §6.2 (+ docs/data-model.md) |
+| 1 | Components + send flow end-to-end | §2, §3, §6.4, §6.6 |
+| 2 | Never debit without credit — consistency mechanism | §6.3 (+ docs/data-model.md) |
 | 3 | Database for ledger & history | §8, ADR-0001 |
-| 4 | 10s SPI latency — does the user wait? | §6.1, §6.4, §6.5 |
-| 5 | Fraud layer under 200ms | §7.5, ADR-0005 |
-| 6 | REST endpoints + idempotency | §5, docs/api/openapi.yaml, ADR-0002 |
+| 4 | 10s SPI latency — does the user wait? | §6.6, §6.7 |
+| 5 | Fraud layer under 200ms | §6.5, §7.5, ADR-0005 |
+| 6 | REST endpoints + idempotency | §5, §6.4, docs/api/openapi.yaml, ADR-0002 |
 | 7 | 99.99% availability; ledger down 30s | §7.4 |

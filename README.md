@@ -78,6 +78,31 @@ graph TB
     NOT -->|SSE/WebSocket| APP
 ```
 
+## Roadmap — 14 sprints (vertical, flow by flow)
+
+This project is built as **vertical slices, not horizontal layers**: each sprint ships **one complete,
+testable, documented flow** and brings up **only the infrastructure that flow needs** — no big-bang.
+Ordering is dependency-correct (ledger before the first money-moving Pix; internal synchronous Pix
+before external asynchronous settlement). Full breakdown in [`PLAN.md`](PLAN.md); each flow is drawn as
+a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
+
+| Sprint | Flow delivered | Infra que sobe (novo) |
+|---|---|---|
+| **S1** | Identity — login → JWT | none (AWS-free; seeded users) |
+| **S2** | Accounts & Pix keys — register / resolve a key | LocalStack **DynamoDB** + Testcontainers |
+| **S3** | Ledger — atomic double-entry, balance, invariants | DynamoDB `pix_ledger` |
+| **S4** | Send Pix **internal** (synchronous, moves real money) | DynamoDB `pix_transactions` + `pix_idempotency` |
+| **S5** | Fraud scoring in the path (≤200ms, fail-open) | **Redis** |
+| **S6** | Send Pix **external** (async settlement via SPI) | **SNS + SQS(+DLQ)** + mock-bacen-spi |
+| **S7** | Resilience — retries, DLQ, reconciliation (<5min) | none new (schedulers) |
+| **S8** | Receive Pix + real-time SSE notification | notification/inbound queues, SSE |
+| **S9** | Balance & statement with cache (<300ms p99) | none new (Redis cache-aside) |
+| **S10** | Immutable audit trail + cold archive | audit-queue, **S3** |
+| **S11** | Observability (technical + business funnel) | **Prometheus + Grafana** |
+| **S12** | Hardening, E2E journey & k6 load tests | k6 |
+| **S13** | DX tooling — Postman collection + HTML API explorer | none |
+| **S14** | Relational counterpart lab + sharding + cold export (Block Q) | PostgreSQL (Testcontainers, lab) |
+
 ## Stack
 
 | Layer | Choice |
@@ -105,7 +130,7 @@ graph TB
 - **Load testing against the stated SLOs**: three k6 profiles (low, standard ~58 TPS, Black Friday 500+ TPS) asserting the p99 targets.
 - **API DX**: a unified Postman collection and a self-contained HTML API explorer with pre-filled valid requests.
 - **The relational counterpart, measured**: a `labs/ledger-pg` module implements the same ledger port on PostgreSQL with **both** locking strategies (pessimistic `SELECT FOR UPDATE` and optimistic versioning), passes the same invariant storm suite, and documents `EXPLAIN` plans, index write-cost and a contention benchmark vs. the DynamoDB path (ADR-0009, Block Q).
-- **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 47).
+- **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 53).
 - **Messaging portability**: an explicit [SNS/SQS ↔ Kafka appendix](docs/messaging-kafka-appendix.md) mapping every concept used here to its Kafka equivalent.
 
 ## Repository layout
@@ -124,13 +149,13 @@ graph TB
 │   ├── messaging-kafka-appendix.md ← SNS/SQS ↔ Kafka concept mapping
 │   ├── local-dev.md           ← local environment runbook
 │   └── steps/                 ← one fine-grained implementation step per file
-├── services/                  ← (created in step 01) Maven modules, one per service
-├── labs/ledger-pg/            ← (step 44) non-deployable lab: relational ledger counterpart
-├── infra/                     ← (created in step 04) docker-compose, LocalStack init
-│   └── observability/         ← (step 38) Prometheus config + Grafana provisioning/dashboards
-├── load/k6/                   ← (step 41) k6 load-test scripts: low, standard, black-friday
-├── tools/postman/             ← (step 42) unified Postman collection + environment
-├── tools/api-explorer/        ← (step 43) single-file HTML API explorer with valid sample calls
+├── services/                  ← (common-lib in step 01; each service added in its sprint) Maven modules
+├── labs/ledger-pg/            ← (steps 50-51) non-deployable lab: relational ledger counterpart
+├── infra/                     ← (created in step 06) docker-compose, LocalStack init
+│   └── observability/         ← (step 44) Prometheus config + Grafana provisioning/dashboards
+├── load/k6/                   ← (step 47) k6 load-test scripts: low, standard, black-friday
+├── tools/postman/             ← (step 48) unified Postman collection + environment
+├── tools/api-explorer/        ← (step 49) single-file HTML API explorer with valid sample calls
 └── pom.xml                    ← (created in step 01) parent POM
 ```
 

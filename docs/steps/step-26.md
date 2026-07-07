@@ -1,38 +1,34 @@
-# Step 26 — mock-bacen-spi: settlement API + chaos knobs
+# Step 26 — LocalStack init: SNS pix-events + settlement-queue (+DLQ)
+
+> **Sprint 6 — Send Pix (external)** · **Flow:** external Pix → SETTLED · **Infra que sobe:** SNS `pix-events`, SQS `settlement-queue` + DLQ · **Diagram:** ARCHITECTURE §6.6
 
 ## Objective
-mock-bacen gains the SPI surface: `POST /spi/settlements` (idempotent by endToEndId; waits `BACEN_LATENCY_MS`; fails/hangs per configured rates), `GET /spi/settlements/{endToEndId}` (status lookup), `POST /admin/config` (runtime latency/failureRate/timeoutRate), in-memory settlement store.
+Enable **SNS + SQS** on LocalStack and create the SNS topic `pix-events`, the `settlement-queue` with its `settlement-queue-dlq` (redrive policy, maxReceiveCount 5), and the SNS→SQS subscription with a filter policy on `eventType`.
 
 ## Why / what you'll learn
-Building a good **test double of an external dependency** is a core engineering skill: it must honor the contract's semantics (idempotency by endToEndId — re-POST of a settled id returns the same result, *exactly what real SPI does and what step 28's query-before-retry relies on*), and expose chaos knobs so failure paths are testable on demand instead of by luck. The `GET` endpoint exists because reconciliation needs it — you're designing the dependency's API from your consumer's needs.
+The messaging backbone comes up **only now**, for the first asynchronous flow — everything before this was synchronous. You'll learn SNS fan-out + SQS per-consumer queues (ADR-0004), **DLQ via redrive policy** (native to SQS — you get it for free, unlike Kafka; see the Kafka appendix), and **subscription filter policies** so a queue only receives the event types it cares about. `SERVICES` in the compose LocalStack config grows to `dynamodb,sns,sqs`.
 
 ## Prerequisites
-Step 02 (skeleton); step 12 added DICT here.
+Step 17 (transactions table), Step 06 (LocalStack).
 
 ## Tasks
-1. `SettlementStore` (concurrent map endToEndId → record{status SETTLED|FAILED, settledAt}).
-2. POST: known id ⇒ return stored outcome (idempotent); else roll dice: timeoutRate ⇒ sleep > caller timeout; failureRate ⇒ 500; else sleep latency ⇒ store SETTLED ⇒ 200.
-3. GET by endToEndId ⇒ 200 record | 404.
-4. `/admin/config` GET/POST (allowlisted, no JWT); config is live (no restart).
-5. Inbound-Pix generator arrives in step 32 — leave a TODO marker.
+1. Flip compose LocalStack `SERVICES=dynamodb,sns,sqs`.
+2. `06-messaging-core.sh` — create SNS topic `pix-events`; create `settlement-queue` + `settlement-queue-dlq` with redrive (maxReceiveCount 5); subscribe the queue to the topic with filter policy `eventType IN [PixDebited]` (extended in later sprints).
+3. Mirror in `docs/local-dev.md`; document the queue/DLQ naming convention.
 
 ## Tests (TDD)
-- Idempotency: two POSTs same id ⇒ one settlement, same response.
-- Chaos: failureRate=1 ⇒ 500 but **no stored settlement**; timeoutRate=1 ⇒ request hangs past client deadline (test with short-timeout client).
-- Config hot-swap reflected immediately.
+Verified by the publisher/consumer ITs (steps 29, 31) and the runbook below.
 
 ## Verify locally
 ```bash
-curl -s -X POST localhost:9090/spi/settlements -H 'Content-Type: application/json' \
- -d '{"endToEndId":"E-test-1","amountCents":100,"creditorKey":"x@otherbank.com"}' | jq   # after latency: SETTLED
-curl -s localhost:9090/spi/settlements/E-test-1 | jq
-curl -s -X POST localhost:9090/admin/config -H 'Content-Type: application/json' -d '{"latencyMs":8000}' | jq
+aws --endpoint-url=http://localhost:4566 sns list-topics | jq
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq   # settlement-queue + dlq
 ```
 
 ## Definition of Done
-- [ ] SPI contract idempotent by endToEndId, query-able by id
-- [ ] Latency/failure/timeout injectable at runtime
-- [ ] Latency configurable across the full 0–10s SLA range
+- [ ] SNS topic + settlement-queue(+DLQ, redrive) + filtered subscription created; scripts idempotent
+- [ ] LocalStack now exposes dynamodb, sns, sqs
+- [ ] Naming convention documented
 
 ## CHANGELOG entry
-`### Added` → `mock-bacen-spi settlement API: idempotent by endToEndId with runtime latency/failure/timeout injection (step 26)`
+`### Added` → `LocalStack init: SNS pix-events + settlement-queue with DLQ/redrive and filtered subscription (step 26)`

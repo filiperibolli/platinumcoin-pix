@@ -1,36 +1,38 @@
-# Step 32 — Receive Pix: inbound flow
+# Step 32 — Retries with query-before-retry, backoff, DLQ redrive
+
+> **Sprint 7 — Resilience & reconciliation** · **Flow:** failure → bounded resolution · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.7
 
 ## Objective
-mock-bacen gains `POST /simulate/inbound-pix` (generates an inbound payment and delivers it to settlement-service's `POST /v1/inbound/pix` webhook, retrying like BACEN would). settlement-service dedupes by endToEndId (conditional write), resolves the key, posts **debit SPI_CLEARING / credit user**, records an INBOUND transaction with `PixReceived` outbox event, acks 200.
+Settlement becomes failure-proof: on SPI timeout/5xx the message is **not** deleted (visibility timeout drives redelivery/backoff, max 5 receives then DLQ by redrive policy); before any retry the consumer **queries `GET /spi/settlements/{endToEndId}` first** — a timeout may have settled. DLQ depth is exposed as a metric.
 
 ## Why / what you'll learn
-Being on the *receiving* end of at-least-once delivery: the sender (BACEN) retries until acked, so your webhook must be idempotent **before side effects** — the conditional-put dedup you've used three times now, applied at a system boundary. Also the inbound mirror of double-entry (clearing is the debit leg — the same account that absorbs outbound, so its balance nets in-flight both ways), and a webhook-vs-queue design note: real SPI pushes; we accept the push then do our own work transactionally.
+The subtle, important rule of settling against a slow external system: **after a timeout you must query before retrying blind** — the request may have succeeded at BACEN, and a blind retry without the query would be wrong if `endToEndId` weren't the idempotency key (it is, which makes the retry safe either way). You'll learn SQS at-least-once mechanics (don't-ack → visibility-timeout redelivery = backoff), redrive to DLQ after `maxReceiveCount`, and that a DLQ message is not a lost message — it's a *flagged* one the reconciliation loop and alerts own.
 
 ## Prerequisites
-Steps 12, 14, 21/22 machinery, 26.
+Step 31.
 
 ## Tasks
-1. mock-bacen: `/simulate/inbound-pix {pixKey, amount, payerName}` mints endToEndId, POSTs to settlement webhook with small retry loop until 200 (configurable duplicate-send for testing dedup).
-2. settlement-service webhook: dedup claim `INBOUND#<endToEndId>` (conditional put) — duplicate ⇒ 200 immediately (idempotent ack); resolve key via account-service — unknown key ⇒ 404 to BACEN (mock logs it; real world: rejection message);
-3. Ledger posting (txId = `in-<endToEndId>`), INBOUND tx item status RECEIVED_SETTLED + `PixReceived` outbox in one transaction (payment-service internal API or direct tx-table API owned by payment-service — keep ownership: call payment-service `POST /internal/payments/inbound`).
-4. Ack 200 only after everything committed.
+1. On SPI timeout/5xx: do not delete the message; let visibility timeout redeliver (tune per-attempt backoff via visibility extension).
+2. **Query-before-retry**: on redelivery, `GET /spi/settlements/{endToEndId}` — SETTLED there ⇒ finalize; else re-`POST` (idempotent by e2e).
+3. Redrive to `settlement-queue-dlq` after 5 receives (policy from step 26).
+4. `settlement.dlq.depth` gauge; structured WARN logs on each retry.
 
 ## Tests (TDD)
-- Happy: bob's balance +X, INBOUND tx exists, PixReceived in outbox, exactly once even when mock sends the webhook 3× (dedup assert).
-- Unknown key ⇒ 404, zero writes.
-- Crash-before-ack simulation ⇒ redelivery completes exactly-once effect.
+- `SettlementRetryIT` — failureRate=1 for N attempts then 0: message retries with backoff and eventually settles; a timeout-that-actually-settled is caught by query-before-retry (no double settle).
+- DLQ test — permanent failure ⇒ message lands in the DLQ after 5 receives; depth gauge reflects it.
 
 ## Verify locally
 ```bash
-curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
- -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}' | jq
-curl -s localhost:8085/internal/ledger/accounts/acc-002/balance | jq   # +300.00
+curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
+# send an external pix, watch retries then DLQ:
+aws --endpoint-url=http://localhost:4566 sqs get-queue-attributes --attribute-names ApproximateNumberOfMessages \
+  --queue-url $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue-dlq --query QueueUrl --output text) | jq
 ```
 
 ## Definition of Done
-- [ ] Inbound idempotent by endToEndId under duplicate delivery
-- [ ] Double-entry symmetry: clearing debited, user credited atomically
-- [ ] Ack-after-commit; unknown keys rejected cleanly
+- [ ] Timeouts/5xx retry via visibility backoff; query-before-retry prevents double settlement
+- [ ] After 5 receives the message redrives to the DLQ; depth exposed as a metric
+- [ ] Retries logged at WARN with correlationId
 
 ## CHANGELOG entry
-`### Added` → `Inbound Pix: BACEN-simulated webhook with endToEndId dedup and atomic credit posting (step 32)`
+`### Added` → `Settlement retries with query-before-retry, visibility backoff and DLQ redrive; DLQ depth metric (step 32)`

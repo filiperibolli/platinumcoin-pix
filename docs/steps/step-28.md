@@ -1,37 +1,37 @@
-# Step 28 — Retries, query-before-retry, DLQ
+# Step 28 — Transactional outbox: tx + outbox item in one TransactWriteItems
+
+> **Sprint 6 — Send Pix (external)** · **Flow:** external Pix → SETTLED · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.6
 
 ## Objective
-Settlement becomes failure-proof: on SPI timeout/5xx the message is **not** deleted (visibility timeout drives redelivery/backoff, max 5 receives then DLQ by redrive policy); before any retry the consumer **queries `GET /spi/settlements/{endToEndId}` first** — a timeout may have settled. DLQ depth is exposed as a metric.
+The DEBITED transition and the `PixDebited` outbox item are written in **one `TransactWriteItems`** on `pix_transactions` (tx META update + OUTBOX put on the sparse GSI3). The same mechanism serves later transitions (SETTLED/REVERSED/FraudCheckSkipped). Nothing publishes yet — that's step 29.
 
 ## Why / what you'll learn
-The most valuable subtlety of the whole project: **a timeout is not a failure — it's the absence of an answer.** Blind retry after timeout risks double-settling (mitigated by SPI idempotency) but worse, blind *failure-marking* risks reversing a payment that actually completed — money conjured for the user. Query-before-retry resolves the ambiguity. Also: backoff via `ChangeMessageVisibility` (per-receive exponential), why DLQ is a *feature* (bounded blast radius + human/automated triage) not an error bin, and `ApproximateReceiveCount` as the attempt counter you get for free.
+The **outbox pattern**, the *guarantee* half (ADR-0004): writing to the DB and publishing to SNS are two systems → the **dual-write problem** (crash between them loses the event → money stuck in clearing, or emits an event for a state that never committed). Because the outbox item lives in the **same table/partition** as the transaction (single-table design), both commit atomically in one transaction — no dual-write window. The outbox item carries `gsi3pk=OUTBOX#UNPUBLISHED` so it appears in the sparse publisher index; the event envelope (`eventId`, `eventType`, `payload`, `occurredAt`, `correlationId`) is broker-agnostic by design.
 
 ## Prerequisites
 Step 27.
 
 ## Tasks
-1. Consumer failure path: catch timeout/5xx ⇒ query SPI by endToEndId ⇒ SETTLED? finish normally : (FAILED at SPI? hand to step-29 reversal path — for now mark FAILED transition) : unknown ⇒ set visibility = min(2^receiveCount * 5s, 300s) and return without delete.
-2. Rely on redrive policy (maxReceiveCount 5 from step 05) for DLQ movement; log structured `settlement.retry` with attempt.
-3. Metric gauges: `sqs.settlement.dlq.depth` (poll ApproximateNumberOfMessages), `settlement.retries`.
-4. Runbook section in docs/local-dev.md already describes the drill — verify it matches reality; adjust docs if not.
+1. `OutboxEvent(eventId, eventType, payload, occurredAt, correlationId)` + envelope serialization in common-lib.
+2. Replace the plain status write with a `TransactWriteItems`: update tx `META` (status DEBITED, guarded `status = :expectedFrom`) + put `OUTBOX#<eventId>` with `gsi3pk=OUTBOX#UNPUBLISHED`, `gsi3sk=occurredAt`.
+3. Emit `PixDebited` for external sends; also wire `FraudCheckSkipped` (from step 25's seam) as an outbox event.
+4. Keep internal sends' terminal transition writing an outbox event too (for audit/notify later).
 
 ## Tests (TDD)
-- Timeout then settled-at-SPI (stub: first call hangs, GET says SETTLED) ⇒ tx SETTLED, exactly one settlement at SPI.
-- Persistent 500s ⇒ after 5 receives message in DLQ, tx still SENT_TO_SPI (reconciliation's job), dlq gauge = 1.
-- Backoff: visibility grows per attempt (assert ChangeMessageVisibility calls).
+- `OutboxWriteIT` — a send produces the tx in DEBITED **and** exactly one unpublished outbox item, atomically (force a failure → neither is written).
+- Guarded transition test — an unexpected `expectedFrom` is rejected (no regress).
 
 ## Verify locally
 ```bash
-curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
-# send external pix; after ~5 backoffs:
-awsl sqs get-queue-attributes --queue-url $(awsl sqs get-queue-url --queue-name settlement-queue-dlq --output text --query QueueUrl) --attribute-names ApproximateNumberOfMessages | jq
-curl -s -X POST localhost:9090/admin/config -d '{"failureRate":0.0}' -H 'Content-Type: application/json'
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+  --index-name GSI3 --key-condition-expression 'gsi3pk = :p' \
+  --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Items | length'
 ```
 
 ## Definition of Done
-- [ ] Query-before-retry implemented and tested for the timeout-but-settled case
-- [ ] Exponential visibility backoff; DLQ after 5 attempts; depth metric live
-- [ ] No path can double-settle or falsely fail a settled payment
+- [ ] Status transition + outbox event committed in one TransactWriteItems (atomic)
+- [ ] Outbox item carries the sparse-index key and a broker-agnostic envelope
+- [ ] Transitions are guarded (no out-of-order regress)
 
 ## CHANGELOG entry
-`### Added` → `Settlement retries with query-before-retry, exponential visibility backoff and DLQ with depth metric (step 28)`
+`### Added` → `Transactional outbox: status transition + event written atomically in one TransactWriteItems (step 28)`

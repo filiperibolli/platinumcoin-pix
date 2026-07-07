@@ -1,22 +1,25 @@
 # Step 13 — ledger-service: data model + balance read
 
+> **Sprint 3 — Ledger** · **Flow:** atomic double-entry posting · **Infra que sobe:** ledger-service (in compose) · **Diagram:** ARCHITECTURE §6.3
+
 ## Objective
-ledger-service reads the `pix_ledger` table: `GET /internal/ledger/accounts/{id}/balance` returns the BALANCE item; domain model for balances and entries in place per docs/data-model.md.
+`ledger-service` (port 8085) reads `pix_ledger`: `GET /internal/ledger/accounts/{id}/balance` returns the `BALANCE` item; domain model for balances and entries in place per `docs/data-model.md`.
 
 ## Why / what you'll learn
-The single-table shape of the ledger: one partition per account holding a mutable BALANCE item and immutable ENTRY items, sorted by timestamped sort keys. Reading before writing lets you validate the model against the seed data before the hard part (step 14). Also: why amounts are `long` cents everywhere (floating point cannot represent 0.1 — never floats for money) and why the BALANCE item carries a `version` counter.
+Read before you write: validating the model against the seed data de-risks the hard part (step 14). Two learning notes belong in the code: **why amounts are `long` cents everywhere** (floating point cannot represent 0.1 — never floats for money) and **why the BALANCE item carries a `version`** (optimistic-lock counter for concurrent writers). Also: DynamoDB reads default to *eventually consistent*; the ledger must read its own writes, so balance reads set `ConsistentRead=true`.
 
 ## Prerequisites
-Steps 05, 06, 09.
+Steps 05, 08, 12.
 
 ## Tasks
-1. Domain: `Balance(accountId, balanceCents, version)`, `LedgerEntry(txId, direction, amountCents, counterpart, timestamp, type)` as records; `LedgerRepository` port.
-2. `DynamoLedgerRepository.getBalance` — `GetItem (pk=ACCOUNT#id, sk=BALANCE)`, **`ConsistentRead=true`** (learning note in code: DynamoDB reads default to eventually consistent; the ledger reads its own writes).
-3. Internal balance endpoint; 404 LEDGER_ACCOUNT_NOT_FOUND for unknown accounts.
+1. Scaffold `services/ledger-service` (skeleton + Dockerfile + compose, port 8085).
+2. Domain: `Balance(accountId, balanceCents, version)`, `LedgerEntry(txId, direction, amountCents, counterpart, timestamp, type)` as records; `LedgerRepository` port.
+3. `DynamoLedgerRepository.getBalance` — `GetItem (pk=ACCOUNT#id, sk=BALANCE)`, **`ConsistentRead=true`** (learning note in code).
+4. `GET /internal/ledger/accounts/{id}/balance`; unknown ⇒ 404 `LEDGER_ACCOUNT_NOT_FOUND`.
 
 ## Tests (TDD)
-- `DynamoLedgerRepositoryIT` — seed balances readable (alice=1_000_000 cents); unknown ⇒ empty; consistent-read flag set (assert via request interceptor or wrapper).
-- Money-mapping test: cents→decimal-string formatting at the edge (`1000000` → `"10000.00"`).
+- `DynamoLedgerRepositoryIT` — seed balances readable (alice=1_000_000 cents); unknown ⇒ empty; consistent-read flag asserted.
+- Money-mapping test: cents→decimal-string at the edge (`1000000` → `"10000.00"`).
 
 ## Verify locally
 ```bash

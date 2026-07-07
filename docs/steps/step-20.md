@@ -1,39 +1,38 @@
-# Step 20 — Send orchestration: resolve key + ledger debit
+# Step 20 — Daily limit enforcement (rolling window, MFA seam)
+
+> **Sprint 4 — Send Pix (internal)** · **Flow:** internal Pix moves real money · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.4
 
 ## Objective
-The send flow gains its money-moving core: resolve the Pix key (step 12 API), then command the ledger posting **debit payer / credit SPI_CLEARING** (external) or **credit payee directly** (internal), and persist status `DEBITED`. Failures map cleanly: KEY_NOT_FOUND 422, INSUFFICIENT_FUNDS 422 (+limit release), ledger down ⇒ 503 + Retry-After.
+Before any money moves, payment-service checks the account's rolling daily usage against `dailyLimitCents` (from account-service). Above limit ⇒ `422 LIMIT_EXCEEDED`. The check returns a **decision object** with an explicit `REQUIRE_STEP_UP` branch — today mapped to deny — the documented MFA seam (ADR-0007).
 
 ## Why / what you'll learn
-Orchestration (payment-service explicitly drives the saga) vs choreography — and the **ordering discipline**: cheap/reversible checks first (idempotency, limits), the irreversible act (ledger debit) last before persist+respond. The clearing account materializes "money in flight" so external transfers keep double-entry integrity (ARCHITECTURE §6.2). And the availability posture from question 7: ledger call gets timeout 1s + circuit breaker; when open ⇒ fail fast 503, nothing debited, idempotency record voided so the client's retry re-executes.
+Where MFA *would* plug in, made explicit without building it. The limit check returns `ALLOW / DENY / REQUIRE_STEP_UP` rather than a boolean, so adding a step-up challenge later changes **one branch, not the flow** — a small design move that pays off when requirements grow. You'll also decide how to compute "rolling day": sum today's outbound amounts (query the account's transactions by day) vs a maintained counter — and why the check must run **server-side before any debit** (never trust the client).
 
 ## Prerequisites
-Steps 12, 14, 19.
+Step 19.
 
 ## Tasks
-1. `LedgerClient` (RestClient, connect 200ms/read 1s, Resilience4j circuit breaker) for `POST /internal/ledger/postings`.
-2. `SendPixOrchestrator`: resolve key → choose credit account (`accountId` | `SPI_CLEARING`) → post (txId as posting id) → tx status RECEIVED→DEBITED (guarded update) with `creditorInternal` flag.
-3. Failure mapping incl. limit release on INSUFFICIENT_FUNDS/KEY_NOT_FOUND; idempotency record: complete with the error for deterministic replays of business rejections; **void (delete) on 503** so retry re-executes.
-4. Internal transfers: mark SETTLED immediately? **No** — keep uniform DEBITED; step 27 settles internals instantly via the same pipeline (uniformity over shortcut; note the trade-off).
+1. Read `dailyLimitCents` via `GET /internal/accounts/{id}` (account-service).
+2. Compute today's outbound total for the account; `LimitDecision(ALLOW|DENY|REQUIRE_STEP_UP)`; `amount + usedToday > limit` ⇒ DENY (and `REQUIRE_STEP_UP` currently also ⇒ deny path).
+3. DENY ⇒ `422 LIMIT_EXCEEDED` (problem+json); log at WARN.
+4. Reserve/consume semantics documented so a later rejection (fraud/insufficient funds) can release the reservation.
 
 ## Tests (TDD)
-- `SendPixOrchestratorIT` (LocalStack) — external: payer −X, clearing +X, status DEBITED; internal: payee +X; insufficient funds: 422, no entries, limit released; unknown key: 422 before any ledger call (verify no posting).
-- Circuit-breaker test: ledger endpoint down ⇒ 503 + Retry-After, no idempotency memo, subsequent retry succeeds when ledger returns.
+- `DailyLimitIT` — under limit ⇒ proceeds; crossing the limit ⇒ 422 LIMIT_EXCEEDED, no transaction advanced; `REQUIRE_STEP_UP` branch unit-tested to currently deny.
+- Rolling-window test — yesterday's spend doesn't count against today.
 
 ## Verify locally
 ```bash
-curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" \
- -H 'Content-Type: application/json' -d '{"pixKey":"zed@otherbank.com","amount":"50.00"}' | jq
-curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance | jq   # grew by 50.00
-docker compose -f infra/docker-compose.yml stop ledger-service
-curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" \
- -H 'Content-Type: application/json' -d '{"pixKey":"bob@platinum.com","amount":"1.00"}' | head -3   # 503 Retry-After
-docker compose -f infra/docker-compose.yml start ledger-service
+# with a low seeded limit, send until rejected:
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"9000.00"}' | head -1   # 422 after limit
 ```
 
 ## Definition of Done
-- [ ] Atomic debit to clearing/internal payee; status DEBITED
-- [ ] All rejection paths leave zero money moved and released limits
-- [ ] Ledger outage ⇒ fast 503, safe retry with same key
+- [ ] Above-limit ⇒ 422 LIMIT_EXCEEDED before any money moves
+- [ ] Decision object carries the REQUIRE_STEP_UP (MFA) seam
+- [ ] Rolling window correct; reservation releasable
 
 ## CHANGELOG entry
-`### Added` → `Send orchestration: key resolution + atomic debit to clearing/internal payee with guarded DEBITED transition and 503 fail-fast (step 20)`
+`### Added` → `Daily limit enforcement (rolling window) with a decision-object MFA seam mapping REQUIRE_STEP_UP to deny (step 20)`

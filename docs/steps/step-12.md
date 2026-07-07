@@ -1,34 +1,34 @@
-# Step 12 — Key resolution (internal DICT) + external delegation
+# Step 12 — LocalStack init: pix_ledger table + seed postings
+
+> **Sprint 3 — Ledger** · **Flow:** atomic double-entry posting · **Infra que sobe:** DynamoDB table `pix_ledger` · **Diagram:** ARCHITECTURE §6.3
 
 ## Objective
-`GET /internal/pix-keys/resolve?key=...` on account-service: resolves internal keys from `pix_keys`; unknown keys are looked up in mock-bacen (`GET /spi/dict/{key}`), which answers for a configurable set of "external bank" keys. Result: `{internal: bool, accountId?|externalBank?, keyType}` or KEY_NOT_FOUND.
+Extend the init scripts to create `pix_ledger` (PK `ACCOUNT#<accountId>`, SK `BALANCE` or `ENTRY#<ts>#<txId>`, GSI1 `TX#<txId>`) per `docs/data-model.md`, seed the demo balances (R$ 10,000.00 for alice/bob funded from `ACCOUNT#SEED`) and the system accounts `SPI_CLEARING` and `SEED`.
 
 ## Why / what you'll learn
-In real Pix, key→bank resolution is BACEN's **DICT** directory. We split the role: our table answers for our customers; the mock answers for the rest of the world. This step also introduces the **typed RestClient adapter with timeouts** pattern (connect 200ms / read 500ms here) — every cross-service call in this project gets explicit timeouts, because unbounded waits are how latency budgets die.
+The single-table shape of the ledger: **one partition per account** holding a mutable `BALANCE` item and immutable `ENTRY` items sorted by timestamped sort keys. Timestamp-prefixed sort keys give chronological ordering for free (used by the statement). You'll also encode the **system accounts** here: `SPI_CLEARING` (money in flight, exempt from the non-negative rule) and `SEED` (the funding source), so the money supply is explicit and the conservation invariant (Σ balances constant) is checkable from step 15 on.
 
 ## Prerequisites
-Step 11; mock-bacen skeleton exists (step 02) — add its DICT stub here.
+Step 07 (init framework), Step 08 (harness runs the scripts).
 
 ## Tasks
-1. mock-bacen-spi: `GET /spi/dict/{key}` returning a canned external account for keys matching `*@otherbank.com` / configured list; 404 otherwise.
-2. account-service `KeyResolutionService`: local table first; miss → mock-bacen client (timeouts, KEY_NOT_FOUND on 404, DICT_UNAVAILABLE on error).
-3. Internal endpoint + response DTO shared in common-lib (payment-service consumes it in step 20).
+1. `02-dynamodb-ledger.sh` — create `pix_ledger` with GSI1 `TX#<txId>`; on-demand; idempotent.
+2. `05-seed-ledger.sh` — `BALANCE` items: alice=1_000_000, bob=1_000_000 (cents), `SPI_CLEARING`=0, `SEED`=large negative offset (so total nets to the funded amount); `version=0`; seed `ENTRY` items recording the initial funding.
+3. Mirror commands in `docs/local-dev.md`; document the system-account convention in `docs/data-model.md` if any wording needs it.
 
 ## Tests (TDD)
-- `KeyResolutionServiceTest` — internal hit short-circuits (no external call, verify with mock); miss delegates; 404 ⇒ KEY_NOT_FOUND; timeout ⇒ DICT_UNAVAILABLE.
-- `DictStubTest` (mock-bacen) — pattern-matched keys resolve; others 404.
+Verified in step 13 (`getBalance` reads the seed) and step 15 (conservation invariant uses these seeds). Runbook check below.
 
 ## Verify locally
 ```bash
-curl -s 'localhost:8082/internal/pix-keys/resolve?key=bob@platinum.com' | jq    # internal:true, accountId acc-002
-curl -s 'localhost:8082/internal/pix-keys/resolve?key=zed@otherbank.com' | jq   # internal:false, externalBank
-curl -si 'localhost:8082/internal/pix-keys/resolve?key=nobody@nowhere' | head -1 # 404
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+  --key '{"pk":{"S":"ACCOUNT#acc-001"},"sk":{"S":"BALANCE"}}' | jq   # balanceCents 1000000, version 0
 ```
 
 ## Definition of Done
-- [ ] Internal and external keys resolve; unknown ⇒ 404 KEY_NOT_FOUND
-- [ ] All external calls bounded by explicit timeouts
-- [ ] Resolution result DTO stable for payment-service
+- [ ] `pix_ledger` + GSI1 created exactly per docs/data-model.md; script idempotent
+- [ ] Seed balances + system accounts present; money supply explicit
+- [ ] `down -v && up` reseeds deterministically
 
 ## CHANGELOG entry
-`### Added` → `Pix key resolution: internal directory with delegation to mock-bacen DICT for external keys (step 12)`
+`### Added` → `LocalStack init: pix_ledger table (GSI1) + seed balances and system accounts SPI_CLEARING/SEED (step 12)`

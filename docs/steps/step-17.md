@@ -1,36 +1,35 @@
-# Step 17 — payment-service: POST /payments/pix walking skeleton
+# Step 17 — LocalStack init: pix_transactions + pix_idempotency tables
+
+> **Sprint 4 — Send Pix (internal)** · **Flow:** internal Pix moves real money · **Infra que sobe:** DynamoDB `pix_transactions` (+GSIs), `pix_idempotency` · **Diagram:** ARCHITECTURE §6.4
 
 ## Objective
-`POST /v1/payments/pix` exists end-to-end in the thinnest useful form: JWT-authenticated, validates body per OpenAPI, generates `txId` + Pix-standard `endToEndId`, persists the transaction as `RECEIVED` in `pix_transactions`, returns **202 + Location**. No ledger, fraud, limits yet.
+Create `pix_transactions` (PK `TX#<txId>`, SK `META` or `OUTBOX#<eventId>`, GSI1 `E2E#<endToEndId>`, GSI2 `STATUS#<status>`+`updatedAt`, sparse GSI3 unpublished-outbox) and `pix_idempotency` (PK `IDEM#<accountId>#<key>`, TTL `expiresAt`) per `docs/data-model.md`.
 
 ## Why / what you'll learn
-Walking-skeleton strategy for the most complex flow: nail the contract (DTOs, status codes, headers, error shapes) and the persistence spine first, then thicken the middle in steps 18–22 — each subsequent step changes one concern against a stable interface. Also: the anatomy of an `endToEndId` (`E` + ISPB + timestamp + random, the id BACEN uses to identify this payment forever) and why we mint it at accept-time.
+All three GSIs on `pix_transactions` are created **now**, even though only some are used this sprint: GSI1 (E2E lookup) and GSI2 (reconciliation scan) and GSI3 (outbox publisher) matter for the external/async flow (Sprint 6–7). Creating the full key schema up front is deliberate — DynamoDB GSIs are defined at table creation and the single-table design keeps outbox items in the same table so one `TransactWriteItems` later covers tx+event. You'll also set up TTL on `pix_idempotency` (DynamoDB auto-deletes expired items) — the replay window is 24h.
 
 ## Prerequisites
-Steps 06, 09; table exists (step 05).
+Step 08 (harness), Step 12 (init framework in place).
 
 ## Tasks
-1. DTOs mirroring OpenAPI exactly — **note the absence of any source-account field** (CLAUDE.md rule 1); amount as validated decimal string → cents.
-2. `TransactionRepository` + item shape per data-model §4 (status RECEIVED, gsi1/gsi2 keys populated).
-3. Controller: validate → build tx (debtor = `user.accountId()` from JWT) → save → `202 {transactionId, endToEndId, status:PROCESSING}` + `Location`.
-4. Status mapping doc note: internal RECEIVED..SENT_TO_SPI all present as external `PROCESSING`.
+1. `03-dynamodb-transactions.sh` — create `pix_transactions` with GSI1/GSI2 and the **sparse** GSI3 (`gsi3pk=OUTBOX#UNPUBLISHED`, `gsi3sk=occurredAt`); on-demand; idempotent.
+2. `03-dynamodb-idempotency.sh` — create `pix_idempotency` with TTL on `expiresAt`.
+3. No seed rows (transactions are created by the flow); mirror commands in `docs/local-dev.md`.
 
 ## Tests (TDD)
-- `SendPixControllerTest` — 202 shape + Location; 400 on bad amount format/negative/absent key; 401 without token; debtor always == token accountId (attempt to inject `"sourceAccount"` in body is simply ignored — assert it).
-- `TransactionRepositoryIT` — persisted item matches data-model (keys, GSIs attributes).
+Verified by the payment-service ITs (steps 18–21) and the runbook check below.
 
 ## Verify locally
 ```bash
-curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
- -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
- -d '{"pixKey":"bob@platinum.com","amount":"10.00"}' | head -5    # 202 + Location
-aws --endpoint-url=http://localhost:4566 dynamodb scan --table-name pix_transactions --max-items 2 | jq
+aws --endpoint-url=http://localhost:4566 dynamodb describe-table --table-name pix_transactions \
+  | jq '.Table.GlobalSecondaryIndexes[].IndexName'   # GSI1, GSI2, GSI3
+aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-name pix_idempotency | jq
 ```
 
 ## Definition of Done
-- [ ] Contract-faithful 202 path with persisted RECEIVED transaction
-- [ ] endToEndId minted in Pix format; GSI keys populated
-- [ ] Source account structurally impossible to supply via payload
+- [ ] `pix_transactions` with GSI1/GSI2/sparse-GSI3 and `pix_idempotency` with TTL created per docs/data-model.md
+- [ ] Scripts idempotent; `down -v && up` recreates them
+- [ ] Commands mirrored in the runbook
 
 ## CHANGELOG entry
-`### Added` → `POST /v1/payments/pix walking skeleton: validation, txId/endToEndId minting, RECEIVED persistence, 202 (step 17)`
+`### Added` → `LocalStack init: pix_transactions (GSI1/GSI2/sparse GSI3) and pix_idempotency (TTL) tables (step 17)`

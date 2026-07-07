@@ -1,34 +1,37 @@
-# Step 10 — account-service: accounts repository + reads
+# Step 10 — Pix key registration with global uniqueness + list/delete
+
+> **Sprint 2 — Accounts & Pix Keys** · **Flow:** register / resolve a Pix key · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.2
 
 ## Objective
-account-service reads `pix_accounts` from DynamoDB: `GET /v1/accounts/me` returns the authenticated user's account (id, status, daily limit); an internal `GET /internal/accounts/{accountId}` serves other services.
+`POST /v1/pix-keys` (CPF/EMAIL/PHONE/EVP), `GET /v1/pix-keys`, `DELETE /v1/pix-keys/{keyValue}` on account-service, with **global uniqueness enforced by a conditional `PutItem`**.
 
 ## Why / what you'll learn
-First real DynamoDB code: SDK v2 client configured for LocalStack (endpoint override + dummy creds via properties), the **repository/adapter pattern** keeping SDK types out of the domain, and key-based access (`GetItem` on GSI1 by accountId vs `Query` by user pk). Also the convention split between public (`/v1`, JWT) and internal (`/internal`, network-trusted) endpoints.
+The **conditional-put-as-UNIQUE-constraint** idiom — the DynamoDB pattern that reappears throughout this project (idempotency, ledger entries, event dedup). `PutItem` with `ConditionExpression: attribute_not_exists(pk)`: two users racing to register the same e-mail → exactly one wins, the other gets `ConditionalCheckFailedException` → `409`. No read-then-write race is possible, because the check and the write are one atomic operation. EVP keys are server-generated UUIDs. Delete is ownership-guarded (only the owning account).
 
 ## Prerequisites
-Steps 06, 09.
+Step 09.
 
 ## Tasks
-1. `DynamoDbConfig` in common-lib (endpoint/region/creds from properties — same code path for LocalStack and AWS).
-2. `AccountRepository` (port) + `DynamoAccountRepository` (adapter): `findByAccountId` (GSI1), `findByUserId` (Query pk).
-3. `GET /v1/accounts/me` using `@CurrentUser.accountId`; 404 problem+json if missing.
-4. `GET /internal/accounts/{accountId}` (allowlisted from JWT) returning limits — payment-service consumes it in step 19.
+1. `PixKey(keyType, keyValue, accountId, userId, createdAt)` record; `PixKeyRepository` port.
+2. `POST /v1/pix-keys`: validate per type; EVP ⇒ generate UUID; conditional `PutItem` on `KEY#<value>`; `ConditionalCheckFailed` ⇒ 409 `KEY_ALREADY_EXISTS`; success ⇒ 201.
+3. `GET /v1/pix-keys`: query GSI1 `ACCOUNT#<accountId>` (from JWT).
+4. `DELETE /v1/pix-keys/{keyValue}`: load, check ownership (403 if other account), delete; 404 if absent; 204 on success.
 
 ## Tests (TDD)
-- `DynamoAccountRepositoryIT` (LocalStackTestBase) — seed items readable; GSI1 lookup by accountId works; unknown id ⇒ empty.
-- `AccountControllerTest` — /me returns the token's account; never accepts an accountId parameter.
+- `PixKeyIT` — register EMAIL; duplicate (same value, other account) ⇒ 409, item unchanged; list returns only the caller's keys; delete another account's key ⇒ 403; delete own ⇒ 204.
+- EVP generation test — server generates a UUID, ignores client `keyValue`.
 
 ## Verify locally
 ```bash
-curl -s localhost:8082/v1/accounts/me -H "Authorization: Bearer $TOKEN" | jq
-# {"accountId":"acc-001","status":"ACTIVE","dailyLimit":"5000.00"}
+curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' | jq
+curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
 ```
 
 ## Definition of Done
-- [ ] Reads hit LocalStack DynamoDB through the adapter; domain layer SDK-free
-- [ ] `/me` derives identity exclusively from JWT
-- [ ] IT suite green without compose running
+- [ ] Global uniqueness enforced by conditional write (no read-then-check)
+- [ ] List scoped to the caller; delete ownership-guarded
+- [ ] Matches OpenAPI `/pix-keys*`
 
 ## CHANGELOG entry
-`### Added` → `account-service account reads from DynamoDB (public /me + internal lookup) (step 10)`
+`### Added` → `Pix key register/list/delete with global uniqueness via conditional PutItem (step 10)`

@@ -1,35 +1,34 @@
-# Step 08 — auth-service: login + JWT issuance
+# Step 08 — Testcontainers integration-test harness (LocalStack) in common-lib
+
+> **Sprint 2 — Accounts & Pix Keys** · **Flow:** register / resolve a Pix key · **Infra que sobe:** none (test-only, disposable) · **Diagram:** ARCHITECTURE §6.2
 
 ## Objective
-`POST /v1/auth/login` authenticates seeded demo users (alice, bob) and returns an HS256 JWT with claims `sub`, `accountId`, `jti`, `iat`, `exp` (15 min).
+A reusable test foundation in `common-lib` (test-jar): `LocalStackTestBase` that spins a disposable LocalStack container, runs the **same init scripts from step 07**, and injects endpoints/credentials into Spring properties — so integration tests never depend on the compose stack being up.
 
 ## Why / what you'll learn
-Stateless auth for microservices: the token *carries* identity, so downstream services validate a signature instead of calling a session store — the property that lets every service scale horizontally. HS256-with-shared-secret is the honest local choice; the ADR-0007 note explains the production upgrade (RS256 + JWKS: services hold only the public key). The `accountId` claim is the linchpin of the platform's #1 security rule: **the debited account comes from the token**.
+The separation that keeps tests hermetic: **compose = manual/E2E playground; Testcontainers = automated tests**. Reusing the *same* init scripts in tests means the schema you test against is the schema you run — no drift between a hand-maintained test fixture and the real init. You'll learn `@DynamicPropertySource` to point the AWS SDK at the container, and how to make the base class fast (container reuse across a module's ITs).
 
 ## Prerequisites
-Steps 03, 07 (compose to test in-stack; unit tests need neither).
+Steps 06, 07.
 
 ## Tasks
-1. Dependency `jjwt` (api/impl/jackson). `JWT_SECRET` from env (compose provides a dev value; fail fast if absent).
-2. Seeded users in-memory (`alice/alice → acc-001`, `bob/bob → acc-002`) behind a `UserRepository` port — swappable later, and honest about being demo-only.
-3. `AuthController.login`: verify BCrypt hash → build token → `{accessToken, tokenType, expiresIn}` per OpenAPI; wrong creds → 401 problem+json (generic message — never reveal which field failed).
-4. Never log passwords or tokens (add a logging test asserting this).
+1. `common-lib` test-jar: `LocalStackTestBase` using the Testcontainers LocalStack module (DynamoDB service), running `infra/localstack/init/*.sh` on start.
+2. `@DynamicPropertySource` injecting `AWS_ENDPOINT_URL`, region, dummy creds.
+3. Publish the test-jar so services can extend the base in their own `*IT` classes.
+4. A smoke `LocalStackHarnessIT` proving a table from the init scripts is queryable.
 
 ## Tests (TDD)
-- `TokenServiceTest` — token parses with the secret; claims correct; expiry ≈ now+15min; tampered signature rejected.
-- `AuthControllerTest` (MockMvc) — 200 + token shape; 401 on bad password; 400 on malformed body.
+- `LocalStackHarnessIT` — container starts, init scripts ran, `pix_accounts` exists and the seed item is readable.
 
 ## Verify locally
 ```bash
-docker compose -f infra/docker-compose.yml up -d auth-service
-TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
-echo $TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq   # claims: sub, accountId=acc-001, exp
+mvn -q -pl services/common-lib verify   # spins a disposable LocalStack, no compose needed
 ```
 
 ## Definition of Done
-- [ ] Valid login → JWT with `accountId`; invalid → 401 generic
-- [ ] Secret comes from env only; startup fails without it
-- [ ] No credential material in logs
+- [ ] `LocalStackTestBase` reusable by any module; runs the real init scripts
+- [ ] ITs pass with the compose stack DOWN (Testcontainers-managed)
+- [ ] Endpoints injected via `@DynamicPropertySource`
 
 ## CHANGELOG entry
-`### Added` → `auth-service issuing HS256 JWTs (sub, accountId, 15-min expiry) for seeded demo users (step 08)`
+`### Added` → `Testcontainers LocalStack harness in common-lib running the real init scripts (step 08)`

@@ -30,4 +30,4 @@ Use **DynamoDB** with `TransactWriteItems` + condition expressions, deliberately
 ## When to choose which (the honest rule of thumb)
 - **Relational**: flexible multi-row transactions, rich ad-hoc queries, moderate scale, team fluent in operating HA Postgres.
 - **DynamoDB**: known key-shaped access patterns, extreme availability/elasticity targets, invariants expressible as conditional writes.
-This project intentionally exercises the second path — and, since v1.1, **also builds the first**: `labs/ledger-pg` (ADR-0009, steps 44–45) implements the same ledger port on PostgreSQL with both locking strategies, runs the same invariant suite, and records `EXPLAIN`/benchmark findings, so this rule of thumb is backed by first-hand numbers rather than citation.
+This project intentionally exercises the second path — and, since Sprint 14, **also builds the first**: `labs/ledger-pg` (ADR-0009, steps 50–51) implements the same ledger port on PostgreSQL with both locking strategies, runs the same invariant suite, and records `EXPLAIN`/benchmark findings, so this rule of thumb is backed by first-hand numbers rather than citation.

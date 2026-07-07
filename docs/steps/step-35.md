@@ -1,38 +1,37 @@
-# Step 35 — Redis balance cache (cache-aside)
+# Step 35 — Reconciliation resolution + <5-min SLO alert
+
+> **Sprint 7 — Resilience & reconciliation** · **Flow:** failure → bounded resolution · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.7
 
 ## Objective
-`GET /v1/accounts/me/balance` on payment-service serves from Redis (`balance:<accountId>`, TTL 5s), falls back to ledger-service on miss, and **invalidates on every posting** (ledger-service publishes/deletes affected keys post-commit). p99 < 300ms holds with big margin; correctness rule (cache never feeds money decisions) enforced by construction.
+`ReconciliationResolver` completes the loop: for each stuck tx, query SPI by `endToEndId` — SETTLED there ⇒ finalize locally; FAILED/not-found (and older than a safety window) ⇒ reverse via the step-33 path; SPI unreachable ⇒ leave for next cycle. Alert when `reconciliation.oldest.seconds > 300` (the SLO). DLQ messages become redundant-but-harmless (the resolver is idempotent).
 
 ## Why / what you'll learn
-Cache-aside end to end, including the part everyone gets wrong — **invalidation**: delete-after-commit (never before; never *update* the cache from the writer — deletion + lazy reload avoids stale-write races), short TTL as the backstop for missed deletes, and the failure posture: Redis down ⇒ log + serve from ledger (cache is an optimization, not a dependency). Bonus property from ADR-0008 verified by test: ledger briefly down ⇒ balance still served (≤5s stale) — reads survive.
+This loop is what turns "eventual" into "eventually **bounded**": no transaction stays indefinite past 5 minutes. It's not optional plumbing — it's part of the consistency design, the mechanism that forces convergence between the two momentary sources of truth (us vs BACEN). Because the resolver is **idempotent** (guarded transitions + posting idempotency), it can safely race with a late SQS redelivery or a DLQ redrive — whoever gets there first wins, the other is a no-op. Answers the failure half of design Question 4.
 
 ## Prerequisites
-Steps 13, 20 (+29 for reversal invalidation).
+Steps 33, 34.
 
 ## Tasks
-1. `BalanceCache` (Spring Data Redis / Lettuce): get/set(TTL 5s)/evict; metrics `cache.balance.{hit,miss}`.
-2. Public balance endpoint per OpenAPI on payment-service (proxying ledger internal API on miss; `asOf` from source).
-3. ledger-service: post-commit hook evicting both accounts' keys on every posting (incl. reversal, inbound, clearing release) — best effort, log on failure.
-4. Resilience: Redis exceptions ⇒ bypass cache path entirely.
+1. `ReconciliationResolver.resolve(tx)`: `GET /spi/settlements/{endToEndId}` → SETTLED ⇒ step-33 finalize; FAILED/not-found & older than safety window ⇒ step-33 reverse; UNKNOWN/unreachable ⇒ leave.
+2. Idempotent by construction (guarded transitions); safe against concurrent DLQ/redelivery.
+3. `AlertRule`: `reconciliation.oldest.seconds > 300` ⇒ FIRING (SLO breach), with a runbook link; RESOLVED on catch-up.
+4. Metric `reconciliation.resolved{action}` (settled|reversed) for the funnel (step 44).
 
 ## Tests (TDD)
-- Miss→populate→hit (assert one ledger call across two reads); posting ⇒ next read fresh (evicted).
-- TTL backstop: block eviction (test hook) ⇒ stale ≤5s then fresh.
-- Redis container stopped ⇒ endpoint still correct via ledger; metrics show bypass.
-- Ledger stopped + warm cache ⇒ balance still answers (stale-tolerant read), documented behavior.
+- `ReconciliationIT` — a tx stuck because the settle response was lost ⇒ resolver finalizes SETTLED; a genuinely failed one ⇒ reversed; both within the window; re-running resolve ⇒ no-op.
+- SLO alert test — age > 300s fires, catch-up resolves.
+- Idempotency-vs-redelivery — resolver + a late queue delivery ⇒ single outcome.
 
 ## Verify locally
 ```bash
-curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq
-docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001   # populated, TTL:
-docker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001
-# send a pix, re-check: key gone/refreshed with new value
+# BACEN down then restored; watch reconciliation resolve/reverse within 5 min and the alert clear:
+docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'reconciliation.resolved|"ALERT"'
 ```
 
 ## Definition of Done
-- [ ] Hit-path ~1ms; invalidation on all posting types; TTL backstop verified
-- [ ] Redis outage degrades latency only; ledger outage degrades freshness only
-- [ ] Cache provably never consulted for debit decisions (code path review + comment)
+- [ ] Stuck tx resolved (finalize or reverse) within the 5-min SLO
+- [ ] Resolver idempotent; races with DLQ/redelivery are harmless
+- [ ] `reconciliation.oldest.seconds > 300` alert fires and resolves
 
 ## CHANGELOG entry
-`### Added` → `Redis cache-aside for balance with post-commit invalidation, 5s TTL backstop and graceful degradation (step 35)`
+`### Added` → `Reconciliation resolver (query SPI → finalize/reverse), idempotent, with the <5-min SLO alert (step 35)`
