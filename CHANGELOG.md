@@ -21,6 +21,9 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   from ADR-0004 and the README.
 - CLAUDE.md workflow additions: hand-written zones (✍️ steps 15, 19, 51) and
   mandatory per-step AI metrics line in CHANGELOG entries.
+- `docs/brief.md`: the exercise brief and the **seven design questions stated verbatim**
+  — previously the docs referenced "the brief" ~10 times without it existing in-repo,
+  so the answers could not be judged against the questions.
 
 ### Changed
 - **Delivery approach reframed from horizontal to vertical (flow-per-sprint).** The
@@ -72,6 +75,22 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   bodies on 401/404/409/503, the `counterpart` field step 41 maps into
   `StatementEntry`, and a bounded strictly-positive `amount` pattern (`"0.00"` and
   overflow-sized values were previously accepted by the contract).
+- ARCHITECTURE.md audit (syntax + completeness):
+  - Broken intro anchor to §10 (the em dash slugs to a double hyphen on GitHub); raw
+    `<placeholders>` inside 4 Mermaid diagrams (`<JWT>`, `KEY#<value>`,
+    `balance:<accountId>`, `<service>-<uuid>`) that GitHub's HTML sanitizer strips
+    from the rendered diagram — escaped as `&lt;…&gt;`; Part I/II demoted from H1 to
+    H2 (single-H1 outline).
+  - Part II now actually maps 1:1 to PLAN: added §6.12 (quality gate), §6.13 (DX
+    tooling) and §6.14 (Block Q, with the cold-export sequence diagram); §6.11 gained
+    its observability diagram; the cumulative-infra diagram and the "no new infra"
+    note now account for Sprint 14 (export queue + bucket, lab-only Postgres).
+  - Container diagram matched to the flows it summarizes: added the SET→DDB edge (the
+    ADR-0006 documented exception), NOT→DDB (event dedup), the statement-export
+    queue, the exports bucket and a C4 level-1 context diagram; §4 gained the missing
+    `processed_events` row and the limit/export item types; §5 gained the step-53
+    export endpoints; §6.4/§7.3/§7.6 aligned with the limit-reservation and
+    webhook-token changes from this pass; data-model gained the export request item.
 - Factual/wording corrections from the consistency pass: GSIs *can* be added after
   table creation — it's LSIs that can't (step 17, scripts also renumbered to avoid a
   double `03-`); the ledger balance `version` is a change counter, not optimistic

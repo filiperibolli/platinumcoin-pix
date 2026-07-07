@@ -12,6 +12,7 @@ A Pix instant-payment platform (PlatinumCoin) built as domain microservices in *
 
 ```
 ARCHITECTURE.md        system design + answers to the 7 key design questions — read before designing anything
+docs/brief.md          the exercise brief + the 7 design questions, verbatim
 docs/adr/              decision records — do not contradict them; propose a new ADR to change one
 docs/data-model.md     DynamoDB tables, keys, GSIs, ledger invariants — the schema source of truth
 docs/messaging-kafka-appendix.md  SNS/SQS ↔ Kafka concept mapping (broker portability)

@@ -3,8 +3,9 @@
 This document is the system design for PlatinumCoin's Pix platform. **Part I** presents the complete
 target design (requirements, containers, service decomposition, data model, API). **Part II (§6)** is
 the *implementation journey*: the same system delivered as **vertical slices — one flow per sprint** —
-each drawn as a sequence diagram and annotated with the infrastructure it brings up. The brief poses
-**seven key design questions**; they are answered inline and indexed in [§10](#10-index-answers-to-the-7-questions).
+every runtime flow drawn as a sequence diagram and annotated with the infrastructure it brings up. The
+brief ([docs/brief.md](docs/brief.md), verbatim) poses **seven key design questions**; they are answered
+inline and indexed in [§10](#10-index--answers-to-the-7-questions).
 
 > **How to read this doc.** If you want the finished picture, read Part I. If you want to *build* it
 > (or understand why it is built in this order), read Part II — it maps 1:1 to `PLAN.md`'s sprints and
@@ -12,9 +13,11 @@ each drawn as a sequence diagram and annotated with the infrastructure it brings
 
 ---
 
-# Part I — The complete design
+## Part I — The complete design
 
 ## 1. Requirements
+
+> The exercise brief this design answers is reproduced verbatim in [docs/brief.md](docs/brief.md).
 
 ### 1.1 Functional (from the brief)
 
@@ -64,7 +67,24 @@ Pix is operated by BACEN through the **SPI** (Sistema de Pagamentos Instantâneo
 
 ---
 
-## 2. Container diagram (C4 level 2)
+## 2. Context & containers (C4 levels 1–2)
+
+**Level 1 — system context.** Before the boxes inside: who talks to the platform, and what the
+platform talks to. Everything beyond the SPI is out of our hands — other banks are reachable *only*
+through BACEN's rail, which is why the clearing account (§6.3) exists.
+
+```mermaid
+graph LR
+    USER["Account holder<br/>mobile app / curl"]
+    PLAT["PlatinumCoin Pix Platform<br/>(this system)"]
+    BACEN1["BACEN SPI<br/>instant-payment rail<br/>(mocked locally)"]
+    OTHER["Other banks<br/>reachable only through the SPI"]
+    USER -->|send Pix · balance · statement ·<br/>keys · real-time notifications| PLAT
+    PLAT <-->|settle outbound ≤10s ·<br/>inbound Pix · DICT lookup| BACEN1
+    BACEN1 <--> OTHER
+```
+
+**Level 2 — containers.**
 
 ```mermaid
 graph TB
@@ -88,7 +108,8 @@ graph TB
         SQ1[[SQS settlement-queue + DLQ]]
         SQ2[[SQS notification-queue + DLQ]]
         SQ3[[SQS audit-queue + DLQ]]
-        S3[(S3 audit-log bucket<br/>statement-archive bucket)]
+        SQ4[[SQS statement-export-queue + DLQ]]
+        S3[(S3 audit-log bucket<br/>statement-archive bucket<br/>statement-exports bucket)]
     end
 
     REDIS[(Redis :6379<br/>balance cache<br/>— stands in for ElastiCache)]
@@ -112,12 +133,17 @@ graph TB
     SNS --> SQ1
     SNS --> SQ2
     SNS --> SQ3
+    SNS --> SQ4
     SQ1 --> SET
     SQ2 --> NOT
     SQ3 --> SET
+    SQ4 -->|export worker, step 53| PAY
+    SET -->|guarded status transitions + outbox<br/>ADR-0006 documented exception| DDB
+    NOT -->|event dedup| DDB
     SET <--> BACEN
     SET --> LED
     SET --> S3
+    PAY --> S3
 ```
 
 **Note on Redis:** LocalStack does not emulate ElastiCache, so Redis runs as its own container in docker-compose. In production this maps 1:1 to ElastiCache for Redis.
@@ -151,8 +177,9 @@ graph TB
 | `accounts` | `USER#<userId>` / `ACCOUNT#<accountId>` | Account metadata, daily limit config | GSI1: `accountId` lookup |
 | `pix_keys` | `KEY#<keyValue>` / `META` | Global key uniqueness via conditional `PutItem` | GSI1: `ACCOUNT#<accountId>` → list keys |
 | `ledger` | `ACCOUNT#<accountId>` / `BALANCE` and `ENTRY#<ts>#<txId>` | Balance item + immutable double-entry postings | GSI1: `TX#<txId>` → both legs of a posting |
-| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan); GSI3 (sparse): unpublished outbox |
+| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both); also hosts the daily-limit usage counters (`LIMIT#<accountId>` / `DAY#<date>`) and export requests (`EXPORT#<exportId>`, step 53) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan); GSI3 (sparse): unpublished outbox |
 | `idempotency` | `IDEM#<accountId>#<key>` / `META` | Request hash + stored response, TTL 24h | — |
+| `processed_events` | `CONSUMER#<name>#EVT#<eventId>` / `META` | Consumer-side event dedup — what turns at-least-once delivery into effectively-once; TTL 7d | — |
 
 **Transaction state machine:**
 
@@ -164,6 +191,10 @@ RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
                                 ├ REJECTED (insufficient funds)
                                 └ (internal send) → SETTLED directly — no SPI leg
 ```
+
+The machine above covers **outbound** sends. Inbound transactions (§6.8) have a deliberately short
+lifecycle of their own: the deduped credit posting lands them directly in `RECEIVED_SETTLED` — there is
+nothing to orchestrate on our side of an already-settled inbound payment.
 
 ---
 
@@ -180,6 +211,8 @@ RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
 | `GET /v1/accounts/me/statement?cursor=&limit=` | Paginated statement | Cursor = DynamoDB `LastEvaluatedKey` (opaque, base64) |
 | `POST /v1/pix-keys` / `GET /v1/pix-keys` / `DELETE /v1/pix-keys/{keyValue}` | Key management | Uniqueness enforced by conditional write |
 | `GET /v1/notifications/stream` | SSE stream | notification-service |
+| `POST /v1/accounts/me/statement/exports` | Async cold-statement export | `202` + `statusUrl`; `Idempotency-Key` required (S14 — added to the OpenAPI contract-first in step 53) |
+| `GET /v1/statement-exports/{exportId}` | Export status / download | `PENDING → READY` with a presigned `downloadUrl` (S14, §6.14) |
 
 **Idempotency mechanism (Question 6):**
 
@@ -194,7 +227,7 @@ RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
 
 ---
 
-# Part II — The implementation journey (flow by flow)
+## Part II — The implementation journey (flow by flow)
 
 ## 6. Incremental delivery — sprints & flows
 
@@ -265,10 +298,15 @@ graph TB
     subgraph s11["After S11 — Observability"]
         a11[+ Prometheus · Grafana]
     end
-    s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> s8 --> s10 --> s11
+    subgraph s14["After S14 — Block Q"]
+        a14["+ statement-export-queue · S3 statement-exports bucket · PostgreSQL lab (Testcontainers-only, never in compose)"]
+    end
+    s1 --> s2 --> s3 --> s4 --> s5 --> s6 --> s8 --> s10 --> s11 --> s14
 ```
 
-Sprints 7, 9, 12, 13 add behavior/tests/tooling but no new infra container.
+Sprints 7, 9, 12 and 13 add behavior/tests/tooling but no new infra container. Sprint 14 adds the
+export queue + bucket (step 53) and a **lab-only** PostgreSQL via Testcontainers (ADR-0009 — never
+part of the compose stack).
 
 ---
 
@@ -287,7 +325,7 @@ sequenceDiagram
     App->>AUTH: POST /v1/auth/login {username, password}
     AUTH->>AUTH: verify against seeded users
     AUTH-->>App: 200 {accessToken (JWT HS256), expiresIn: 900}
-    Note over App,AUTH: later calls carry Authorization: Bearer <JWT>;<br/>common-lib JwtAuthFilter validates on every protected route
+    Note over App,AUTH: later calls carry Authorization: Bearer &lt;JWT&gt;;<br/>common-lib JwtAuthFilter validates on every protected route
 ```
 
 **Why first / what it earns:** a stable auth edge means every subsequent flow can be exercised
@@ -312,7 +350,7 @@ sequenceDiagram
     participant ACC as account-service
     participant DDB as DynamoDB
     App->>ACC: POST /v1/pix-keys {keyType, keyValue}  (JWT)
-    ACC->>DDB: PutItem KEY#<value> · ConditionExpression attribute_not_exists(pk)
+    ACC->>DDB: PutItem KEY#&lt;value&gt; · ConditionExpression attribute_not_exists(pk)
     alt key free
         DDB-->>ACC: OK
         ACC-->>App: 201 {keyType, keyValue}
@@ -320,7 +358,7 @@ sequenceDiagram
         DDB--xACC: ConditionalCheckFailed
         ACC-->>App: 409 Conflict
     end
-    Note over ACC,DDB: resolution (hot path of send): GetItem KEY#<value> → accountId
+    Note over ACC,DDB: resolution (hot path of send): GetItem KEY#&lt;value&gt; → accountId
 ```
 
 ---
@@ -390,7 +428,7 @@ sequenceDiagram
     App->>PAY: POST /v1/payments/pix (JWT, Idempotency-Key)
     PAY->>PAY: debtor account = JWT accountId claim (never from body)
     PAY->>DDB: conditional Put idempotency (claim IN_PROGRESS)
-    PAY->>PAY: daily limit check (decision object: ALLOW/DENY/REQUIRE_STEP_UP)
+    PAY->>DDB: reserve daily-limit counter (conditional ADD → ALLOW/DENY/REQUIRE_STEP_UP)
     PAY->>ACC: resolve pixKey → creditor (internal)
     ACC-->>PAY: creditor accountId
     PAY->>LED: POST /postings (debit payer, credit payee, txId)
@@ -568,16 +606,16 @@ sequenceDiagram
     participant REDIS as Redis
     participant LED as ledger-service
     App->>PAY: GET /v1/accounts/me/balance
-    PAY->>REDIS: GET balance:<accountId>
+    PAY->>REDIS: GET balance:&lt;accountId&gt;
     alt hit
         REDIS-->>PAY: cached balance (≤5s old)
     else miss
         PAY->>LED: GET balance (ConsistentRead)
         LED-->>PAY: balance
-        PAY->>REDIS: SET balance:<accountId> TTL 5s
+        PAY->>REDIS: SET balance:&lt;accountId&gt; TTL 5s
     end
     PAY-->>App: 200 {balance}
-    Note over LED,REDIS: on every posting → DEL balance:<affected accounts>
+    Note over LED,REDIS: on every posting → DEL balance:&lt;affected accounts&gt;
 ```
 
 Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts#txId`,
@@ -601,7 +639,7 @@ sequenceDiagram
     participant S3 as S3 audit-log
     SNS->>Q: every event (fan-out, no filter)
     Q->>SET: batch (100 events or 30s)
-    SET->>S3: append JSONL yyyy/MM/dd/HH/<service>-<uuid>.jsonl
+    SET->>S3: append JSONL yyyy/MM/dd/HH/&lt;service&gt;-&lt;uuid&gt;.jsonl
     Note over SET,S3: bucket: versioning + Object Lock (compliance) + retention 5y
 ```
 
@@ -618,6 +656,72 @@ expected events (how async systems fail): e.g. "debits flowing but no settlement
 `scripts/trace.sh <correlationId>` reconstructs one transaction's full path across all services from the
 structured logs — proving the logging contract from CLAUDE.md. Details in §7.7.
 
+```mermaid
+graph LR
+    SVCS["every service<br/>/actuator/prometheus<br/>+ structured JSON logs"]
+    PROM["Prometheus :9091"]
+    GRAF["Grafana :3000<br/>Technical + Business-Funnel<br/>dashboards, provisioned as code"]
+    TRACE["scripts/trace.sh &lt;correlationId&gt;<br/>full request path from logs"]
+    ALERT["AlertEvaluator, settlement-service<br/>silence rules · DLQ depth ·<br/>reconciliation age · outbox lag"]
+    PROM -->|scrapes| SVCS
+    GRAF -->|queries| PROM
+    TRACE -->|greps by correlationId| SVCS
+    ALERT -->|watches funnel + watchdog metrics| SVCS
+```
+
+---
+
+### 6.12 Quality gate — hardening, E2E journey & load   · Sprint 12 · infra: k6 (tooling, no runtime container)
+
+Not a new flow — an **adversarial pass over all existing ones**, which is why it has no sequence
+diagram: illegal status-transition sweep, a scripted error-contract audit (every non-2xx is
+problem+json with `code` + `correlationId`), the security checklist from the threat model, then one
+automated **E2E journey** (send → settle → receive → notify → statement) including a BACEN failure
+drill (DLQ fills, reconciliation resolves < 5 min, alerts fire and clear) and a final
+**conservation-of-money assertion** across all accounts. Three k6 profiles (low / standard ~58 TPS /
+Black Friday 500+ TPS) turn the SLOs into pass-fail thresholds. Steps 45–47.
+
+### 6.13 DX tooling — Postman collection & API explorer   · Sprint 13 · infra: none
+
+The portfolio front door: a unified Postman collection (auth as a pre-request script, auto-UUID
+idempotency keys, happy + error examples per request) and a **single-file HTML API explorer** — open
+from disk, no build, every endpoint pre-filled with valid seed data and a guided full-journey section.
+Steps 48–49.
+
+### 6.14 Flow — Block Q: relational counterpart, sharding & cold export   · Sprint 14 · infra: **statement-export-queue + statement-exports bucket + PostgreSQL (lab)**
+
+Three interview-grade extensions. (1) **`labs/ledger-pg`** (ADR-0009): the same ledger port on
+PostgreSQL with pessimistic (`SELECT FOR UPDATE`, ordered locks) and optimistic (version column)
+strategies, passing the step-15 invariant storm — ADR-0001's rule of thumb upgraded to a measured
+claim. (2) **Clearing-account write sharding** proven under the Black Friday profile — the design and
+the reversal-shard-pinning rule live in §6.3. (3) **Cold statement export**, the one extension that is
+a user-facing flow, drawn below: the standard fintech pattern for slow reads — an async request
+resource with a lifecycle (`PENDING → READY | FAILED`) instead of a blocking query. The worker lives in
+payment-service, which owns the export resource and its API.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App
+    participant PAY as payment-service
+    participant Q as statement-export-queue
+    participant S3 as S3 archive / exports
+    App->>PAY: POST /v1/accounts/me/statement/exports (Idempotency-Key, month range)
+    PAY-->>App: 202 {exportId, status: PENDING, statusUrl}
+    Note over PAY,Q: export request item + outbox event →<br/>SNS → filtered subscription → queue
+    Q->>PAY: export requested (worker · dedupe by eventId)
+    PAY->>S3: read archive account=&lt;id&gt;/yyyy-MM.jsonl for the range
+    PAY->>S3: write exports/&lt;accountId&gt;/&lt;exportId&gt;.csv · presign (1h)
+    PAY->>PAY: guarded PENDING → READY
+    App->>PAY: GET /v1/statement-exports/{exportId}
+    PAY-->>App: 200 {status: READY, downloadUrl, expiresAt}
+```
+
+`202` + polling mirrors the send flow's async contract (§5): same idempotency discipline (key + range
+replays the same `exportId`), same guarded transitions (redelivery cannot double-produce artifacts),
+same DLQ + alerting. Ranges inside the hot window are steered to the hot statement API
+(`422 USE_HOT_STATEMENT`) instead of silently duplicating it. Step 53.
+
 ---
 
 ## 7. Cross-cutting concerns
@@ -631,7 +735,7 @@ Covered in §5. Three layers: API (`Idempotency-Key` + stored response), ledger 
 - **Balance cache:** cache-aside with invalidation on every posting + short TTL (5s) as a backstop; the ledger is always the source of truth, and any money-moving decision reads the ledger, never the cache.
 
 ### 7.3 Performance
-- Send path budget (p99 < 2s): JWT validation ~1ms, idempotency put ~10ms, limit check ~10ms, fraud ≤200ms, key resolution ~20ms, ledger transaction ~30ms, tx+outbox write ~20ms → ~300ms typical, huge margin.
+- Send path budget (p99 < 2s): JWT validation ~1ms, idempotency put ~10ms, limit reservation (conditional `ADD`) ~10ms, fraud ≤200ms, key resolution ~20ms, ledger transaction ~30ms, tx+outbox write ~20ms → ~300ms typical, huge margin.
 - Balance < 300ms p99: Redis hit ~1ms; miss → DynamoDB `GetItem` ~10ms + populate.
 - 500 TPS peak: stateless services scale horizontally (in prod, auto-scaling; locally, `docker compose up --scale`); DynamoDB on-demand absorbs bursts; SQS buffers the slow SPI so peaks never back-pressure the user-facing path.
 
@@ -658,7 +762,8 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 
 ### 7.6 Security & audit
 - JWT on every request; **debited account only from token claims** — payload never names the source account (also enforced by API shape: the field does not exist).
-- Daily limits checked server-side before any money moves; above-limit ⇒ `422` (MFA seam documented, ADR-0007).
+- Daily limits reserved server-side before any money moves; above-limit ⇒ `422` (MFA seam documented, ADR-0007).
+- Any endpoint that can move money is never anonymous: the inbound settlement webhook is authenticated with a shared token locally (`SPI_WEBHOOK_TOKEN`; mTLS + BACEN message signing in production — §6.8, threat model boundary B4).
 - Immutable audit: every state transition emits an audit event → `audit-queue` → settlement-service writes JSON lines to S3, bucket documented with **Object Lock (compliance mode) + versioning** for the 5-year BACEN retention (LocalStack accepts the configuration; the guarantee is real in AWS). Statement pages older than the online window are archived to S3 too.
 - TLS 1.2+ everywhere in production (LB termination + in-mesh); local compose runs plaintext and says so.
 
@@ -715,6 +820,9 @@ For the **transaction history** (statement): the ledger entries themselves, keye
 ---
 
 ## 10. Index — answers to the 7 questions
+
+The questions are stated **verbatim** in [docs/brief.md](docs/brief.md); this table paraphrases and
+points to the answers.
 
 | # | Question | Where |
 |---|---|---|
