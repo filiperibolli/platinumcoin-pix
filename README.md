@@ -74,6 +74,8 @@ graph TB
     SET <--> BACEN
     BACEN -->|inbound Pix| SET
     PAY --> REDIS
+    FRAUD --> REDIS
+    LED --> REDIS
     SET --> S3
     NOT -->|SSE/WebSocket| APP
 ```
@@ -95,7 +97,7 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 | **S5** | Fraud scoring in the path (≤200ms, fail-open) | **Redis** |
 | **S6** | Send Pix **external** (async settlement via SPI) | **SNS + SQS(+DLQ)** + mock-bacen-spi |
 | **S7** | Resilience — retries, DLQ, reconciliation (<5min) | none new (schedulers) |
-| **S8** | Receive Pix + real-time SSE notification | notification/inbound queues, SSE |
+| **S8** | Receive Pix + real-time SSE notification | notification-queue, SSE |
 | **S9** | Balance & statement with cache (<300ms p99) | none new (Redis cache-aside) |
 | **S10** | Immutable audit trail + cold archive | audit-queue, **S3** |
 | **S11** | Observability (technical + business funnel) | **Prometheus + Grafana** |
@@ -147,6 +149,7 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 │   ├── api/openapi.yaml       ← REST contract
 │   ├── data-model.md          ← DynamoDB tables, keys, GSIs, ledger invariants
 │   ├── messaging-kafka-appendix.md ← SNS/SQS ↔ Kafka concept mapping
+│   ├── observability.md       ← metric catalog + alert rules (created in step 44)
 │   ├── local-dev.md           ← local environment runbook
 │   └── steps/                 ← one fine-grained implementation step per file
 ├── services/                  ← (common-lib in step 01; each service added in its sprint) Maven modules

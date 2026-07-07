@@ -13,13 +13,13 @@ Step 14.
 
 ## Tasks
 1. `getEntries(accountId, cursor, limit)` on `LedgerRepository`: query with `begins_with(sk,"ENTRY#")`, `ScanIndexForward=false`, `Limit`.
-2. Encode/decode the cursor: base64 of `LastEvaluatedKey`; validate on decode (reject tampered cursors).
+2. Encode/decode the cursor: base64 of `LastEvaluatedKey`; validate on decode — the decoded key's `pk` **must equal the requested account** (the cursor embeds the partition key, so a forged cursor must never page another account's entries) and malformed cursors ⇒ 400.
 3. `GET /internal/ledger/accounts/{id}/entries` → `{entries:[...], nextCursor|null}`.
 4. Clamp `limit` (default 20, max 100).
 
 ## Tests (TDD)
 - `StatementQueryIT` — post N entries; page through with `limit=5`; assert newest-first order, stable pagination, `nextCursor` null on last page, no overlap/gap.
-- Tampered cursor ⇒ 400.
+- Tampered or foreign-account cursor ⇒ 400 (never another account's page).
 
 ## Verify locally
 ```bash
@@ -28,7 +28,7 @@ curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=5" | jq
 
 ## Definition of Done
 - [ ] Entries returned newest-first with opaque cursor pagination
-- [ ] Cursor is base64 `LastEvaluatedKey`; tampered cursor rejected
+- [ ] Cursor is base64 `LastEvaluatedKey`; tampered or cross-account cursor rejected
 - [ ] `limit` clamped
 
 ## CHANGELOG entry

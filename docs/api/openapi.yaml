@@ -9,6 +9,9 @@ info:
     - Money in request/response bodies is a decimal string in BRL (e.g. "125.50"); stored internally as integer cents.
     - `POST /payments/pix` is asynchronous: `202 Accepted` means "accepted for processing", not settled.
     - Errors follow RFC 7807 (application/problem+json).
+    - There is no API gateway in the local build: each path group is served by its own service
+      (per-path `servers` overrides below) — auth :8081, pix-keys :8082, payments/accounts :8084,
+      notifications :8087. The default server is payment-service.
 
 servers:
   - url: http://localhost:8084/v1
@@ -23,9 +26,13 @@ tags:
   - name: payments
   - name: accounts
   - name: pix-keys
+  - name: notifications
 
 paths:
   /auth/login:
+    servers:
+      - url: http://localhost:8081/v1
+        description: auth-service (local)
     post:
       tags: [auth]
       summary: Authenticate and receive a JWT
@@ -82,7 +89,11 @@ paths:
                   example: bob@otherbank.com
                 amount:
                   type: string
-                  pattern: '^\d+\.\d{2}$'
+                  pattern: '^\d{1,9}\.\d{2}$'
+                  description: >-
+                    Decimal string in BRL, strictly positive — "0.00" is rejected with 400
+                    (server-side check; the pattern alone cannot express it). At most 9 integer
+                    digits, comfortably inside 64-bit integer cents.
                   example: "125.50"
                 description:
                   type: string
@@ -113,6 +124,9 @@ paths:
           description: Ledger unavailable — retry with the SAME Idempotency-Key
           headers:
             Retry-After: { schema: { type: integer, example: 5 } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /payments/{transactionId}:
     get:
@@ -175,7 +189,34 @@ paths:
                     type: string
                     nullable: true
 
+  /notifications/stream:
+    servers:
+      - url: http://localhost:8087/v1
+        description: notification-service (local)
+    get:
+      tags: [notifications]
+      summary: Real-time notification stream (SSE)
+      description: >-
+        Long-lived Server-Sent Events stream for the authenticated user. Pushes
+        PixSettled/PixReversed to the sender and PixReceived to the receiver, using the
+        same external status vocabulary as `GET /payments/{transactionId}`. Heartbeat
+        comments keep the connection alive; clients should auto-reconnect (native
+        EventSource behavior). A missed push never affects correctness — state remains
+        queryable via the status endpoint.
+      responses:
+        '200':
+          description: Open event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames; each `data:` line is a JSON notification payload
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /pix-keys:
+    servers:
+      - url: http://localhost:8082/v1
+        description: account-service (local)
     post:
       tags: [pix-keys]
       summary: Register a Pix key
@@ -197,6 +238,9 @@ paths:
               schema: { $ref: '#/components/schemas/PixKey' }
         '409':
           description: Key already registered (globally unique)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
     get:
       tags: [pix-keys]
       summary: List my Pix keys
@@ -210,6 +254,9 @@ paths:
                 items: { $ref: '#/components/schemas/PixKey' }
 
   /pix-keys/{keyValue}:
+    servers:
+      - url: http://localhost:8082/v1
+        description: account-service (local)
     delete:
       tags: [pix-keys]
       summary: Delete a Pix key (must belong to the authenticated account)
@@ -220,7 +267,14 @@ paths:
           schema: { type: string }
       responses:
         '204': { description: Deleted }
-        '403': { description: Key belongs to another account }
+        '403':
+          description: >-
+            Key belongs to another account. Deliberately 403 (not 404): Pix keys are
+            globally resolvable identifiers, so their existence is not secret — unlike
+            payments, where a foreign transactionId returns 404 to avoid leaking existence.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '404': { $ref: '#/components/responses/NotFound' }
 
 components:
@@ -264,6 +318,10 @@ components:
         txId: { type: string }
         direction: { type: string, enum: [DEBIT, CREDIT] }
         amount: { type: string, example: "-125.50" }
+        counterpart:
+          type: string
+          description: Masked counterpart display (never an internal account id)
+          example: "bob@oth***nk.com"
         description: { type: string }
         timestamp: { type: string, format: date-time }
     PixKey:
@@ -289,8 +347,14 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
     Unauthorized:
       description: Missing/invalid JWT
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
     NotFound:
       description: Resource not found
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
 
 security:
   - bearerAuth: []

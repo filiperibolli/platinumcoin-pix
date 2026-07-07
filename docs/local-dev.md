@@ -55,6 +55,7 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `BACEN_LATENCY_MS` | `2000` | Simulated SPI latency (0–10000) |
 | `BACEN_FAILURE_RATE` | `0.0` | Fraction of SPI calls that 500 |
 | `BACEN_TIMEOUT_RATE` | `0.0` | Fraction of SPI calls that hang |
+| `SPI_WEBHOOK_TOKEN` | dev-only value in compose | Authenticates mock-bacen's inbound webhook calls to settlement-service |
 | `FRAUD_TIMEOUT_MS` | `200` | Fraud budget in payment-service |
 
 ## 4. Bring it up
@@ -80,9 +81,9 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **DynamoDB tables** — accounts/keys (`pix_accounts`, `pix_keys`; step 07), ledger (`pix_ledger`, GSI1; step 12), transactions (`pix_transactions` with GSI1/GSI2 and the sparse GSI3 outbox index) + idempotency (`pix_idempotency`, TTL; step 17), and consumer dedup (`pix_processed_events`, TTL; step 29).
 
-**Messaging** — SNS topic `pix-events` + `settlement-queue`(+DLQ) with a filtered subscription (step 26); `notification-queue`(+DLQ, filtered) and `inbound-pix-queue`(+DLQ) (step 36); `audit-queue`(+DLQ, unfiltered — all events) (step 42). Filter policies route by `eventType`.
+**Messaging** — SNS topic `pix-events` + `settlement-queue`(+DLQ) with a filtered subscription (step 26); `notification-queue`(+DLQ, filtered) (step 36); `audit-queue`(+DLQ, unfiltered — all events) (step 42); `statement-export-queue`(+DLQ) (step 53). Filter policies route by `eventType`.
 
-**S3** — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive` (step 42).
+**S3** — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive` (step 42); `pix-statement-exports` (step 53).
 
 **Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED`, plus system account `SPI_CLEARING` (step 12). Pix keys are registered via the API, not seeded.
 

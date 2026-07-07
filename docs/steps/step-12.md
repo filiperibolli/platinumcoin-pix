@@ -13,7 +13,7 @@ Step 07 (init framework), Step 08 (harness runs the scripts).
 
 ## Tasks
 1. `02-dynamodb-ledger.sh` — create `pix_ledger` with GSI1 `TX#<txId>`; on-demand; idempotent.
-2. `05-seed-ledger.sh` — `BALANCE` items: alice=1_000_000, bob=1_000_000 (cents), `SPI_CLEARING`=0, `SEED`=large negative offset (so total nets to the funded amount); `version=0`; seed `ENTRY` items recording the initial funding.
+2. `05-seed-ledger.sh` — `BALANCE` items: alice=1_000_000, bob=1_000_000 (cents), `SPI_CLEARING`=0, `SEED`=-2_000_000 (the double-entry counterpart of the seeded balances, so Σ over all accounts nets to **zero** — the conservation invariant's baseline); `version=0`; seed `ENTRY` items recording the initial funding.
 3. Mirror commands in `docs/local-dev.md`; document the system-account convention in `docs/data-model.md` if any wording needs it.
 
 ## Tests (TDD)
