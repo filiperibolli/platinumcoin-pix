@@ -182,6 +182,24 @@ Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark
 - **Release** (fraud-deny, insufficient funds, reversal): `ADD usedCents -:amount` — a rejection returns exactly what it reserved.
 - Window: **calendar day** (America/Sao_Paulo), matching how Pix limits are communicated to users; TTL (~48h) cleans past days.
 
+**Statement-export request item (same table, step 53):** the async cold-export resource. GSI1's key attributes are plain strings, so export items reuse it with an `ACCOUNT#` value — the single-table idiom of one index serving multiple item types.
+
+```json
+{
+  "pk": "EXPORT#exp-4c2a",
+  "sk": "META",
+  "gsi1pk": "ACCOUNT#acc-001",
+  "exportId": "exp-4c2a",
+  "accountId": "acc-001",
+  "status": "PENDING",
+  "fromMonth": "2025-01", "toMonth": "2025-03",
+  "downloadKey": null,
+  "requestedAt": "2026-07-07T12:00:00Z"
+}
+```
+
+Lifecycle `PENDING → READY | FAILED` via guarded transitions (a redelivered queue message cannot double-produce artifacts); see step 53.
+
 Status transitions are guarded updates (`ConditionExpression: #status = :expectedFrom`) so out-of-order consumers cannot regress a `SETTLED` transaction back to `SENT_TO_SPI`.
 
 > **Learning note — GSI on status:** `STATUS#<status>` as a GSI partition key concentrates all same-status items in few partitions; fine at this scale for a scan every 60s, but at very large scale you'd shard it (`STATUS#DEBITED#<0-15>`). Documented as the scale-out path; N=1 locally.
