@@ -18,16 +18,16 @@ docs/messaging-kafka-appendix.md  SNS/SQS ↔ Kafka concept mapping (broker port
 docs/api/openapi.yaml  REST contract — the API source of truth; code conforms to it, not vice versa
 docs/local-dev.md      runbook: ports, env vars, manual test commands
 docs/steps/step-XX.md  the spec of each implementation step
-PLAN.md                roadmap index with status checkboxes
+PLAN.md                roadmap: 14 sprints (one flow each), status checkboxes — vertical, not big-bang
 CHANGELOG.md           Keep a Changelog; one entry per completed step
-services/<name>/       one Maven module per service (created in step 01)
+services/<name>/       one Maven module per service (added incrementally per sprint, common-lib first in step 01)
 services/common-lib/   shared: error model, JWT validation, logging, event envelope — keep it THIN
-labs/ledger-pg/        non-deployable relational ledger lab (ADR-0009, steps 44-45) — never wired to the platform
+labs/ledger-pg/        non-deployable relational ledger lab (ADR-0009, steps 50-51) — never wired to the platform
 infra/                 docker-compose.yml, localstack init scripts, seed data
-infra/observability/   Prometheus config, Grafana provisioning + dashboards (step 38)
-load/k6/               k6 load-test scripts: low / standard / black-friday (step 41)
-tools/postman/         unified Postman collection + environment (step 42)
-tools/api-explorer/    single-file HTML API explorer with valid sample requests (step 43)
+infra/observability/   Prometheus config, Grafana provisioning + dashboards (step 44)
+load/k6/               k6 load-test scripts: low / standard / black-friday (step 47)
+tools/postman/         unified Postman collection + environment (step 48)
+tools/api-explorer/    single-file HTML API explorer with valid sample requests (step 49)
 ```
 
 ## Conventions
@@ -48,12 +48,12 @@ tools/api-explorer/    single-file HTML API explorer with valid sample requests 
 5. Verify with the step's "How to verify locally" commands. All tests green (`mvn verify` for touched modules).
 6. Check the **Definition of Done** items one by one.
 7. Update `CHANGELOG.md` with the entry given in the step; check the box in `PLAN.md`.
-8. Commit with **Conventional Commits** (`feat(ledger): atomic double-entry posting (step 13)`), one step = one commit (or a small clean series).
+8. Commit with **Conventional Commits** (`feat(ledger): atomic double-entry posting (step 14)`), one step = one commit (or a small clean series).
 9. **STOP.** Never start the next step in the same run without explicit instruction from the human.
 
 ## Hand-written zones (✍️ in PLAN.md)
 
-Some deliverables are marked **✍️ hand-written zone**: the human writes them personally, without AI code/text generation and without autocomplete on the first pass; Claude's role there is limited to reviewing the finished work and pointing out defects. Current zones: the step-15 invariant suite, the step-18 test set, and the step-45 findings doc + psql session. Purpose: these artifacts double as deliberate practice of language mechanics under realistic conditions. Do not generate code for a hand-written deliverable even if asked casually — instead remind the human it is a marked zone.
+Some deliverables are marked **✍️ hand-written zone**: the human writes them personally, without AI code/text generation and without autocomplete on the first pass; Claude's role there is limited to reviewing the finished work and pointing out defects. Current zones: the step-15 invariant suite, the step-19 test set, and the step-51 findings doc + psql session. Purpose: these artifacts double as deliberate practice of language mechanics under realistic conditions. Do not generate code for a hand-written deliverable even if asked casually — instead remind the human it is a marked zone.
 
 ## Per-step AI metrics (mandatory)
 

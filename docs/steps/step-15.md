@@ -1,5 +1,7 @@
 # Step 15 — Ledger invariant test suite (concurrency storm)  ✍️ hand-written zone
 
+> **Sprint 3 — Ledger** · **Flow:** atomic double-entry posting · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.3
+
 > **Hand-written zone:** this entire suite is written by the human, by hand, without AI code generation and without IDE autocomplete on the first pass (AI may review the finished suite). Rationale: these tests double as deliberate practice of JUnit 5, `ExecutorService`/`CountDownLatch` and collections mechanics — the exact fluency a live pairing session demands. See CLAUDE.md → "Hand-written zones".
 
 ## Objective
@@ -13,7 +15,7 @@ Step 14.
 
 ## Tasks
 1. `LedgerInvariantsIT` with a fresh funded account per test (isolated partitions).
-2. **Storm test**: balance 1000_00; 50 parallel postings of 100_00 → exactly 10 succeed, 40 fail INSUFFICIENT_FUNDS, final balance 0, entries = 10 debit+10 credit.
+2. **Storm test**: balance 1000_00; 50 parallel postings of 100_00 → exactly 10 succeed, 40 fail INSUFFICIENT_FUNDS, final balance 0, entries = 10 debit + 10 credit.
 3. **Conservation test**: random transfer storm among 5 accounts + clearing; Σ balanceCents before == after; Σ all entry amounts == 0.
 4. **Replay-under-concurrency**: same txId posted from 10 threads → one set of entries.
 5. Wire the suite into `mvn verify` for ledger-service (not skippable).

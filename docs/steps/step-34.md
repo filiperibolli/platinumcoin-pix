@@ -1,34 +1,34 @@
-# Step 34 — Real-time notification wiring end-to-end
+# Step 34 — Stuck-transaction scanner (GSI2, 60s schedule)
+
+> **Sprint 7 — Resilience & reconciliation** · **Flow:** failure → bounded resolution · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.7
 
 ## Objective
-Every user-visible outcome pushes in real time: sender gets `PixSettled`/`PixReversed`/`PixRejected`; receiver gets `PixReceived`. Payload = external status vocabulary + amount + counterpart display + timestamp. Full journey verified: send → settle → both parties notified, all within seconds.
+A scheduled job (60s) in settlement-service queries `pix_transactions` GSI2 (`STATUS#DEBITED` and `STATUS#SENT_TO_SPI`, `updatedAt < now-2min`) and emits each stuck tx onto an internal reconciliation path (in-process queue / direct call to the step-35 resolver). Age exposed as metric `reconciliation.oldest.seconds`.
 
 ## Why / what you'll learn
-Integration hardening of an event pipeline: auditing which transitions emit what (a table: transition → event → audience), making payloads *client-ready* (mobile shouldn't need lookups to render a push), and verifying **ordering/UX edge cases** — e.g. a user who reconnects after missing pushes must reconcile via `GET /payments/{id}`/statement (SSE `Last-Event-ID` noted as the production refinement). This step is mostly tests and gap-closing — expect to find small holes from earlier steps; that's the point.
+The scanner half of reconciliation: how to **find** transactions that fell through the cracks (consumer crashed after debit, SPI response lost, DLQ'd message). GSI2 keyed `STATUS#<status>` + `updatedAt` makes "all DEBITED/SENT_TO_SPI older than 2 minutes" a cheap query. You'll learn why the age metric matters — it's the leading indicator of the <5-min SLO — and the scale-out note (at very large scale you'd shard the status GSI `STATUS#DEBITED#<0-15>`; N=1 locally).
 
 ## Prerequisites
-Steps 23, 29, 32, 33.
+Step 33 (resolution actions exist to call).
 
 ## Tasks
-1. Event/audience table in code + doc comment; fill gaps (e.g. ensure PixRejected emitted on fraud DENY / limit deny carries user-displayable reason).
-2. Enrich payloads at emission (counterpart name/key masked: `b***@platinum.com`) — masking helper in common-lib.
-3. notification-service routing covers sender & receiver audiences per event.
-4. E2E happy-path IT + manual runbook check.
+1. `@Scheduled(fixedDelay=60s)` scanner: query GSI2 for the two stuck statuses with `updatedAt < now-120s`.
+2. Hand each stuck tx to the resolver (step 35) — in-process for now.
+3. Expose `reconciliation.oldest.seconds` (max age among stuck tx).
+4. Bound the scan (paginate) so a backlog can't blow up a single tick.
 
 ## Tests (TDD)
-- E2E IT (compose-less, Testcontainers full wiring or component-stubbed): external send ⇒ sender receives PixSettled with masked payee; inbound ⇒ receiver PixReceived; failed settlement ⇒ sender PixReversed with reason.
-- Masking unit tests (email/phone/CPF forms).
+- `StuckScannerIT` — seed transactions with old `updatedAt` in DEBITED/SENT_TO_SPI ⇒ scanner picks exactly those; fresh ones ignored; `reconciliation.oldest.seconds` reflects the oldest.
 
 ## Verify locally
 ```bash
-# two terminals with alice's and bob's streams open; then send alice→bob and an inbound to bob
-# observe both pushes < ~3s after settlement, payloads render-ready
+docker compose -f infra/docker-compose.yml logs settlement-service | grep reconciliation.scan
 ```
 
 ## Definition of Done
-- [ ] Transition→event→audience table complete; no silent outcomes
-- [ ] Payloads masked and client-ready
-- [ ] Documented recovery path for missed pushes
+- [ ] Scanner finds DEBITED/SENT_TO_SPI older than 2 min via GSI2, every 60s
+- [ ] `reconciliation.oldest.seconds` gauge exposed
+- [ ] Scan paginated/bounded
 
 ## CHANGELOG entry
-`### Added` → `End-to-end real-time notifications for all payment outcomes with masked, client-ready payloads (step 34)`
+`### Added` → `Stuck-transaction scanner (GSI2 status+age, 60s) feeding reconciliation, with an oldest-age metric (step 34)`

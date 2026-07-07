@@ -1,32 +1,33 @@
-# Step 36 — Statement API with opaque cursor
+# Step 36 — LocalStack init: notification-queue + inbound-pix-queue
+
+> **Sprint 8 — Receive & notify** · **Flow:** inbound Pix → SSE push · **Infra que sobe:** SQS `notification-queue` + `inbound-pix-queue` (+DLQs) · **Diagram:** ARCHITECTURE §6.8
 
 ## Objective
-`GET /v1/accounts/me/statement?cursor&limit` on payment-service, proxying the ledger statement (step 16), decimal-string amounts, masked counterparts, contract-exact pagination.
+Create `notification-queue` + DLQ (subscribed to `pix-events` with a filter policy `eventType IN [PixSettled, PixReceived, PixReversed]`) and `inbound-pix-queue` + DLQ (for BACEN-originated inbound settlement work). Extend the SNS subscriptions accordingly.
 
 ## Why / what you'll learn
-The BFF-ish edge pattern: the public endpoint owns *presentation* (masking, formatting, external field names) while the ledger owns *truth* — so internal refactors never leak. Also cursor hygiene at the public boundary: the cursor is passed through opaque, never parsed by the client, and invalid cursors 400 without stack traces. Small step by design — a breather that also closes feature F3.
+Fan-out in action: the **same** SNS topic `pix-events` now feeds *another* consumer (notification-service) alongside settlement — each with its own physical queue and filter policy, the SNS+SQS analogue of Kafka consumer groups (see the Kafka appendix). You'll refine filter policies so notifications only wake on user-facing events, not internal ones. The `inbound-pix-queue` decouples BACEN's inbound webhook from the credit-posting work.
 
 ## Prerequisites
-Steps 16, 35 (masking helper from 34).
+Step 26 (messaging core).
 
 ## Tasks
-1. Endpoint per OpenAPI: JWT account → ledger internal entries call → map to `StatementEntry` (signed decimal string, masked counterpart, ISO timestamps).
-2. Limit clamp mirrors ledger's (1..100/20); pass-through cursor.
-3. Cache headers: `Cache-Control: private, max-age=5` (align with balance freshness).
+1. `08-messaging-notify.sh` — create `notification-queue`(+DLQ) subscribed to `pix-events` filtered to user-facing event types; create `inbound-pix-queue`(+DLQ).
+2. Update the existing `settlement-queue` filter policy if needed so events route correctly.
+3. Mirror in `docs/local-dev.md`.
 
 ## Tests (TDD)
-- Contract IT: shape matches OpenAPI; page walk (seeded entries) with cursors terminates; foreign account impossible (token-derived).
-- Mapping: DEBIT ⇒ "-125.50"; masking applied.
+Verified by the notification and inbound ITs (steps 37–39) and the runbook.
 
 ## Verify locally
 ```bash
-curl -s "localhost:8084/v1/accounts/me/statement?limit=5" -H "Authorization: Bearer $TOKEN" | jq
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq   # + notification-queue, inbound-pix-queue (+dlqs)
 ```
 
 ## Definition of Done
-- [ ] Public statement contract-exact with opaque pagination
-- [ ] Presentation concerns (mask/format) at the edge only
-- [ ] Entries reflect the full journey incl. reversals
+- [ ] notification-queue(+DLQ, filtered) and inbound-pix-queue(+DLQ) created; scripts idempotent
+- [ ] Filter policies route user-facing events to notification-queue only
+- [ ] Runbook updated
 
 ## CHANGELOG entry
-`### Added` → `Public paginated statement endpoint with masking and opaque cursors (step 36)`
+`### Added` → `LocalStack init: notification-queue (filtered) and inbound-pix-queue with DLQs (step 36)`

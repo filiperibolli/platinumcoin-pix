@@ -1,33 +1,36 @@
-# Step 39 — Hardening pass
+# Step 39 — Wire PixSettled/PixReceived/PixReversed to real-time pushes
+
+> **Sprint 8 — Receive & notify** · **Flow:** inbound Pix → SSE push · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.8
 
 ## Objective
-A deliberate quality gate before E2E: verify guarded transitions everywhere (attempt illegal jumps in tests), error-contract audit (every non-2xx is problem+json with code+correlationId — scripted check), API versioning review (all public routes /v1, additive-change policy doc), security checklist executed, dependency/CVE scan, and the TLS/prod-posture doc section.
+Every user-visible outcome pushes in real time: sender gets `PixSettled`/`PixReversed`; receiver gets `PixReceived`. Payload = external status vocabulary + amount + counterpart display + timestamp. Full journey verified: send → settle → both parties notified, all within seconds.
 
 ## Why / what you'll learn
-Hardening as a *checklist discipline*, not vibes. Highlights: adversarial tests (try to regress SETTLED→SENT_TO_SPI via the internal API — must 409; try payload source-account injection — must be ignored; oversized/garbage inputs); a tiny contract-conformance script (hit every error path, assert shape); OWASP dependency-check or `mvn versions` + review; and writing the "what changes in production" section (TLS 1.2+ everywhere, RS256+JWKS, IAM instead of dummy creds, sharded clearing account, Redis pub/sub for SSE fan-out) — the honest bridge between local build and real deployment, and one of the strongest portfolio artifacts of the project.
+Closing the F2 loop end to end and making the async UX honest: the user saw `202 PROCESSING`, and now the final state arrives as a push (with polling `GET /payments/{id}` as the fallback). You'll standardize the **notification payload** on the same external vocabulary the status endpoint uses (step 22) — clients parse one shape everywhere. This is also the first time the *whole* platform runs a real journey across all services by one `correlationId`, foreshadowing the observability audit (step 44).
 
 ## Prerequisites
-All previous steps.
+Steps 33 (PixSettled/PixReversed), 37 (PixReceived), 38 (SSE).
 
 ## Tasks
-1. Adversarial IT pack: illegal transitions, ownership bypass attempts, injection of ignored fields, malformed cursors/idempotency keys, oversized description.
-2. `scripts/contract-check.sh`: curl matrix of error paths asserting problem+json shape.
-3. `docs/production-posture.md`: local-vs-prod deltas (auth, TLS, sharding, fan-out, IAM, Object Lock) with ADR cross-refs.
-4. Fix everything found; zero known contract violations.
+1. Define the SSE payload DTO (`type`, external `status`, `amount`, `counterpart`, `timestamp`, `transactionId`).
+2. Ensure `PixSettled`/`PixReversed` route to the **sender**, `PixReceived` to the **receiver** (map event → affected account).
+3. Verify heartbeats + reconnect give an acceptable UX under a brief disconnect.
+4. Mask/format money at the edge (decimal string).
 
 ## Tests (TDD)
-- The adversarial pack IS the test deliverable; must run in `mvn verify` of the touched modules.
+- `RealtimeJourneyIT` — external send: sender's stream receives PixSettled with correct fields within seconds; forced failure ⇒ sender receives PixReversed; inbound ⇒ receiver receives PixReceived.
+- Payload contract test — matches the external status vocabulary.
 
 ## Verify locally
 ```bash
-bash scripts/contract-check.sh          # all green
-mvn -q verify                            # full suite green
+# terminal 1: alice streams; terminal 2: send external pix from alice → observe PixSettled on alice's stream
+curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Definition of Done
-- [ ] Illegal state transitions impossible via any exposed surface
-- [ ] 100% of error responses contract-conformant (scripted proof)
-- [ ] production-posture.md complete with ADR cross-references
+- [ ] Sender notified on settle/reverse; receiver notified on receive — within seconds
+- [ ] Payload uses the external status vocabulary, money formatted at the edge
+- [ ] Full send→settle→notify journey passes end to end
 
 ## CHANGELOG entry
-`### Added` → `Hardening: adversarial transition/ownership tests, contract-conformance script, production-posture doc (step 39)`
+`### Added` → `Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)`

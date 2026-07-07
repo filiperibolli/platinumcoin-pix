@@ -1,36 +1,34 @@
-# Step 42 — Unified Postman collection
+# Step 42 — LocalStack init: audit-queue + S3 buckets
+
+> **Sprint 10 — Audit** · **Flow:** immutable audit trail · **Infra que sobe:** SQS `audit-queue`, S3 buckets · **Diagram:** ARCHITECTURE §6.10
 
 ## Objective
-`tools/postman/pix-platform.postman_collection.json` + `local.postman_environment.json`: one collection covering **all** public APIs (auth, payments, accounts, pix-keys, notifications) and the useful internal/admin ones (mock-bacen chaos config, inbound-pix simulator, internal balance), organized by flow folders, with auth and idempotency automated and example responses for happy + error paths.
+Enable **S3** on LocalStack; create the `audit-queue` (+DLQ) subscribed to `pix-events` with **no filter** (all events), and the buckets `pix-audit-log` (versioning + Object Lock config documented) and `pix-statement-archive`.
 
 ## Why / what you'll learn
-Postman-as-documentation done properly: **pre-request scripts** (folder-level: auto-login when the token env var is empty/expired, fresh UUID `Idempotency-Key` per send), **test scripts** capturing chained state (`transactionId` from the 202 into the environment so "Get status" just works), environment variables for every port, and saved **examples** for each documented error (409 idempotency reuse, 422 LIMIT_EXCEEDED/INSUFFICIENT_FUNDS/FRAUD_DENIED, 503 ledger-down) so the collection teaches the API's failure modes, not just its happy path. Folders tell the story in runnable order: "1. Setup", "2. Send Pix journey", "3. Receive & notify", "4. Failure drills (chaos)".
+The audit queue subscribes to **every** event (no filter policy) — the audit trail must be complete, unlike the notification queue. S3 comes up only now, for the flow that needs object storage. You'll configure the immutability posture — **versioning + Object Lock (compliance mode) + 5-year retention** — which LocalStack accepts as configuration even though the hard guarantee is AWS-side; documenting the difference honestly is part of the exercise. `SERVICES` grows to `dynamodb,sns,sqs,s3`.
 
 ## Prerequisites
-Steps 23, 32 (endpoints exist); OpenAPI (docs/api/openapi.yaml) is the contract to mirror.
+Step 26 (messaging core), Step 06 (LocalStack).
 
 ## Tasks
-1. Environment: `baseAuth/baseAccount/basePayment/baseNotify/baseBacen`, `tokenAlice/tokenBob`, `lastTransactionId`, seeded creds.
-2. Collection folders per flow; every request named imperatively ("Send Pix — external key"); descriptions link the relevant docs/steps.
-3. Scripts: folder pre-request auto-auth (login if `tokenAlice` empty), per-send UUID idempotency header, tests asserting status code + capturing ids; a ready-made "replay same key" request pair demonstrating idempotency.
-4. Saved example responses for happy + each error path (copy real responses from the running stack).
-5. Chaos folder: BACEN latency/failure config, inbound-pix generator, DLQ drill sequence with comments.
-6. Export both files; README-in-folder (`tools/postman/README.md`) with import instructions; note the collection is also runnable headless: `npx newman run ...` (smoke wiring optional).
+1. Flip compose LocalStack `SERVICES=dynamodb,sns,sqs,s3`.
+2. `09-audit.sh` — `audit-queue`(+DLQ) subscribed to `pix-events` with no filter; buckets `pix-audit-log` (versioning on; Object Lock compliance + retention documented) and `pix-statement-archive`.
+3. Mirror in `docs/local-dev.md`; note LocalStack vs AWS immutability caveat.
 
 ## Tests (TDD)
-`newman` smoke run of the "Send Pix journey" folder against the running stack in `scripts/postman-smoke.sh` — keeps the collection honest as the API evolves.
+Verified by the audit writer IT (step 43) and the runbook.
 
 ## Verify locally
 ```bash
-# Import both JSONs in Postman → run folder "2. Send Pix journey" → all green, no manual token copying
-npx newman run tools/postman/pix-platform.postman_collection.json \
-  -e tools/postman/local.postman_environment.json --folder "2. Send Pix journey"
+aws --endpoint-url=http://localhost:4566 s3 ls | jq -R .   # pix-audit-log, pix-statement-archive
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq   # + audit-queue (+dlq)
 ```
 
 ## Definition of Done
-- [ ] Every public endpoint + chaos/admin utilities present, organized by runnable flows
-- [ ] Zero manual steps: auth, idempotency keys and id chaining fully scripted
-- [ ] Error examples saved for all documented failure codes; newman smoke green
+- [ ] audit-queue(+DLQ, unfiltered) + both buckets created; scripts idempotent
+- [ ] LocalStack now exposes dynamodb, sns, sqs, s3
+- [ ] Immutability config present; LocalStack-vs-AWS caveat documented
 
 ## CHANGELOG entry
-`### Added` → `Unified Postman collection + environment with auto-auth, idempotency scripting, chained flows and error examples (step 42)`
+`### Added` → `LocalStack init: audit-queue (all events) + S3 audit-log/statement-archive buckets with immutability config (step 42)`

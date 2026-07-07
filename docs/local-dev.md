@@ -37,8 +37,8 @@ alias awsl='aws --endpoint-url=http://localhost:4566'
 | settlement-service | 8086 |
 | notification-service | 8087 |
 | mock-bacen-spi | 9090 |
-| Prometheus (step 38) | 9091 (host) → 9090 (container) |
-| Grafana (step 38) | 3000 |
+| Prometheus (step 44) | 9091 (host) → 9090 (container) |
+| Grafana (step 44) | 3000 |
 
 ## 3. Environment variables (shared conventions)
 
@@ -76,11 +76,17 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 
 ### What the init scripts do (`infra/localstack/init/*.sh`)
 
-LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator is ready — this is the standard "infrastructure as init script" pattern for local AWS:
-1. `01-dynamodb.sh` — creates `pix_accounts`, `pix_keys`, `pix_ledger`, `pix_transactions` (with GSI1/GSI2 and the sparse GSI3 outbox index), `pix_idempotency`, `pix_processed_events` (+ GSIs, TTL).
-2. `02-messaging.sh` — SNS topic `pix-events`; SQS queues `settlement-queue`, `notification-queue`, `audit-queue`, `inbound-pix-queue` + their DLQs with redrive policies; SNS→SQS subscriptions with filter policies on `eventType`.
-3. `03-s3.sh` — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive`.
-4. `04-seed.sh` — demo users alice/bob with accounts, Pix keys and initial balance (R$ 10,000.00 each, funded from `ACCOUNT#SEED`).
+LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator is ready — this is the standard "infrastructure as init script" pattern for local AWS. The scripts are **added incrementally, one flow at a time** (vertical delivery — see `PLAN.md`): each sprint enables the LocalStack `SERVICES` and creates the resources its flow needs, so a partial checkout only stands up what the built flows use. Once the whole platform is built, the full set below runs on every `up`:
+
+**DynamoDB tables** — accounts/keys (`pix_accounts`, `pix_keys`; step 07), ledger (`pix_ledger`, GSI1; step 12), transactions (`pix_transactions` with GSI1/GSI2 and the sparse GSI3 outbox index) + idempotency (`pix_idempotency`, TTL; step 17), and consumer dedup (`pix_processed_events`, TTL; step 29).
+
+**Messaging** — SNS topic `pix-events` + `settlement-queue`(+DLQ) with a filtered subscription (step 26); `notification-queue`(+DLQ, filtered) and `inbound-pix-queue`(+DLQ) (step 36); `audit-queue`(+DLQ, unfiltered — all events) (step 42). Filter policies route by `eventType`.
+
+**S3** — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive` (step 42).
+
+**Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED`, plus system account `SPI_CLEARING` (step 12). Pix keys are registered via the API, not seeded.
+
+The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6) → `+s3` (Sprint 10).
 
 ## 5. Testing each flow by hand
 
@@ -175,14 +181,14 @@ awsl s3 cp s3://pix-audit-log/<key> - | jq
 # Grafana (admin/admin): technical dashboard + business funnel
 open http://localhost:3000
 
-# k6 load profiles (step 41) — k6 runs in Docker, no local install needed
+# k6 load profiles (step 47) — k6 runs in Docker, no local install needed
 docker run --rm -i --network=host grafana/k6 run - < load/k6/low.js
 docker run --rm -i --network=host grafana/k6 run - < load/k6/standard.js
 docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
 
-# Postman (step 42): import tools/postman/pix-platform.postman_collection.json + environment
+# Postman (step 48): import tools/postman/pix-platform.postman_collection.json + environment
 
-# API explorer (step 43): open in a browser, click any request
+# API explorer (step 49): open in a browser, click any request
 open tools/api-explorer/index.html
 ```
 

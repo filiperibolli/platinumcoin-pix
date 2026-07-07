@@ -1,37 +1,36 @@
-# Step 33 — notification-service: SSE streams
+# Step 33 — Finalization: clearing release on SETTLED; reversal on FAILED
+
+> **Sprint 7 — Resilience & reconciliation** · **Flow:** failure → bounded resolution · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.7
 
 ## Objective
-`GET /v1/notifications/stream` (JWT) holds an **SSE** connection per user; the service consumes `notification-queue` and routes events (`PixSettled`, `PixReceived`, `PixReversed`) to the connected emitter of the affected user. Heartbeats keep connections alive; disconnects clean up.
+Close the money loop on definitive outcomes: SPI **FAILED** ⇒ compensating ledger posting (debit `SPI_CLEARING` / credit payer, new `txId` suffix `-rev`), transition FAILED→REVERSED, release the daily-limit reservation, emit `PixReversed`; SPI **SETTLED** ⇒ a `CLEARING_RELEASE` entry (per ARCHITECTURE §6.3) and `PixSettled` (already flowing).
 
 ## Why / what you'll learn
-Long-lived connections are a different beast from request/response: registry of `userId → SseEmitter(s)`, heartbeat comments every 15s (proxies kill idle connections), `onCompletion/onTimeout` cleanup, and the **single-instance caveat** stated honestly: with N replicas a user may be connected to replica A while replica B consumes the event — production answer is a broadcast channel (Redis pub/sub) or sticky routing; locally one instance suffices and the limitation is documented where it bites. Also *why SSE over WebSocket* here: one-way push, auto-reconnect built into `EventSource`, plain HTTP.
+**Compensation, not deletion.** When an external send definitively fails, the money parked in clearing must return to the payer — via a *new* posting (`debit clearing / credit payer`), never by updating or deleting the original entries. The ledger stays append-only and auditable; the reversal is itself atomic and idempotent (its own `txId`). On success, the clearing balance is drawn down against the real BACEN position (`CLEARING_RELEASE`). This is where "money moves, never created or destroyed" is proven for the failure branch — and where the shard-pinning rule of step 52 matters: a reversal must hit the **same** clearing shard that was credited.
 
 ## Prerequisites
-Steps 09, 22.
+Steps 27 (clearing debit), 32 (failure detection).
 
 ## Tasks
-1. `EmitterRegistry` (concurrent multimap userId→emitters) + SSE endpoint (timeout 0, heartbeat scheduler).
-2. Queue consumer: dedup (ProcessedEventStore), map event→target userId (payload carries debtor/creditor account → resolve userId via account-service internal, cached), emit `event: <type>\ndata: <json>`; delete message after emit attempt (missed push is acceptable — state is queryable; comment this deliberate at-most-once *for pushes only*).
-3. Named SSE events + retry hint field.
-4. Redis pub/sub fan-out marked as a documented production TODO (not implemented).
+1. SPI FAILED (or DLQ-driven definitive fail): compensating posting `debit SPI_CLEARING / credit payer` with `txId = <orig>-rev`, `entryType=PIX_REVERSAL`; guarded transition →REVERSED; release limit; outbox `PixReversed`.
+2. SPI SETTLED: post `CLEARING_RELEASE` entry against `SPI_CLEARING`; `PixSettled` already emitted (step 31).
+3. Idempotent finalization: re-running for the same tx is a no-op (guarded transition + posting idempotency).
+4. Persist the clearing account/shard used at debit time on the tx so reversal targets it exactly (forward-compat with step 52).
 
 ## Tests (TDD)
-- IT: register test emitter, publish PixReceived to queue ⇒ SSE event arrives with payload; wrong-user event not delivered.
-- Cleanup: closed emitter removed from registry; heartbeat present on an idle stream (read raw).
-- Duplicate event ⇒ single push (dedup).
+- `ReversalIT` — force SPI FAILED ⇒ payer refunded (balances back to pre-send), status REVERSED, PixReversed emitted, conservation holds; re-run ⇒ no double refund.
+- `ClearingReleaseIT` — SETTLED ⇒ CLEARING_RELEASE entry present; clearing nets correctly.
 
 ## Verify locally
 ```bash
-curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB" &
-curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
- -d '{"pixKey":"bob@platinum.com","amount":"10.00","payerName":"Tester"}'
-# SSE terminal shows: event: PixReceived / data: {...}
+curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
+# send external pix; after retries/DLQ+finalization, payer is refunded and status REVERSED
 ```
 
 ## Definition of Done
-- [ ] Per-user SSE with heartbeats and cleanup
-- [ ] Push semantics (at-most-once) explicitly documented vs queryable state
-- [ ] Multi-instance limitation + production fan-out documented in code and ARCHITECTURE cross-ref
+- [ ] FAILED ⇒ compensating credit (append-only), REVERSED, limit released, PixReversed
+- [ ] SETTLED ⇒ CLEARING_RELEASE; conservation of money holds both ways
+- [ ] Finalization idempotent; reversal targets the exact clearing account used
 
 ## CHANGELOG entry
-`### Added` → `notification-service: per-user SSE streams fed by notification-queue with heartbeats (step 33)`
+`### Added` → `Settlement finalization: clearing release on SETTLED, compensating reversal (append-only) on FAILED with PixReversed (step 33)`

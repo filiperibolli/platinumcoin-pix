@@ -1,37 +1,38 @@
-# Step 25 — Fraud integration: 200ms budget, fail-open
+# Step 25 — payment-service integration: 200ms budget, fail-open
+
+> **Sprint 5 — Fraud** · **Flow:** fraud score in the path · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.5
 
 ## Objective
-payment-service calls fraud between limit-check and ledger debit with a **hard 200ms budget**: DENY ⇒ 422 FRAUD_DENIED (limit released); REVIEW ⇒ proceed flagged; timeout/error ⇒ **proceed with `fraudSkipped=true`** + `FraudCheckSkipped` outbox event (ADR-0005). Transition RECEIVED→FRAUD_CHECKED recorded.
+payment-service calls fraud **between limit-check and ledger debit** with a **hard 200ms budget**: DENY ⇒ 422 `FRAUD_DENIED` (release limit); REVIEW ⇒ proceed flagged; timeout/error ⇒ **proceed with `fraudSkipped=true`** + `FraudCheckSkipped` event marker (ADR-0005). Transition RECEIVED→FRAUD_CHECKED recorded.
 
 ## Why / what you'll learn
-Implementing a fail-open policy *correctly*: the timeout must be enforced client-side (connect 50ms/read 150ms), the skip must be **loud** (flag on the tx, event for async scoring, counter metric `fraud.skipped` for alerting) — fail-open without observability is just a silent hole. The trade-off text from ADR-0005 belongs in the code comment at the decision point; future readers must find the reasoning where the branch lives.
+The **fail-open** trade-off, implemented. A hard client-side timeout (connect 50ms / read 150ms = 200ms) protects the send SLO from a slow fraud-service. On timeout or error the payment **proceeds unscored, flagged** — because fail-*closed* would let any fraud-service blip reject 100% of legitimate payments to stop a fraction of a percent of fraud, and for a core money-movement product availability wins *at this layer* (risk bounded by daily limits + async re-scoring). This is the single most debated design call in the project; ADR-0005 holds the full argument and the documented production evolution (hybrid: fail-closed above a value threshold).
 
 ## Prerequisites
-Steps 21, 24.
+Steps 20, 24. (Note: the `FraudCheckSkipped` *event* is only published once the outbox exists in Sprint 6; here it is recorded as a flag/marker.)
 
 ## Tasks
-1. `FraudClient` with strict timeouts; no retries (a retry would blow the budget — comment this).
-2. Orchestrator: transition to FRAUD_CHECKED carrying decision/score/skipped; DENY path completes idempotency with the 422 (deterministic replay) and releases limit.
-3. `FraudCheckSkipped` event via outbox on skip; metric counters per decision.
-4. Config `FRAUD_TIMEOUT_MS` (default 200) — the budget is one env var, testable.
+1. `RestClient` call to fraud with connect/read timeouts summing to 200ms.
+2. DENY ⇒ 422 `FRAUD_DENIED` (+release limit reservation); REVIEW ⇒ proceed, persist `fraudDecision=REVIEW`; APPROVE ⇒ proceed.
+3. Timeout/5xx ⇒ proceed with `fraudSkipped=true`, `fraudDecision=SKIPPED`; log WARN; leave a `// outbox: FraudCheckSkipped` seam for step 28/29.
+4. Record transition RECEIVED→FRAUD_CHECKED on the transaction.
 
 ## Tests (TDD)
-- `FraudIntegrationIT` with a stubbed slow fraud endpoint (WireMock/MockWebServer): 300ms delay ⇒ payment proceeds, tx flagged, event emitted, elapsed ≈ ≤250ms (budget respected, not waiting the full 300).
-- DENY ⇒ 422, no ledger posting, limit released; REVIEW ⇒ DEBITED with flag.
-- fraud-service down (connection refused) ⇒ fail-open path, fast.
+- `FraudIntegrationIT` — APPROVE proceeds; DENY ⇒ 422 + no debit + limit released; induced timeout (stub slow fraud) ⇒ proceeds with `fraudSkipped=true`.
+- Budget test — the call never blocks the flow beyond 200ms.
 
 ## Verify locally
 ```bash
-docker compose -f infra/docker-compose.yml stop fraud-service
-time curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" \
- -H 'Content-Type: application/json' -d '{"pixKey":"bob@platinum.com","amount":"5.00"}' | jq .status   # 202, fast
-docker compose -f infra/docker-compose.yml start fraud-service
+# make fraud slow/unreachable and confirm the send still succeeds, flagged:
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"10.00"}' | head -1   # 202 even if fraud is down
 ```
 
 ## Definition of Done
-- [ ] Fraud adds ≤200ms worst case to the send path
-- [ ] Fail-open is flagged, evented and counted — never silent
-- [ ] DENY leaves zero side effects beyond the audit trail
+- [ ] DENY blocks (422, limit released); REVIEW proceeds flagged; APPROVE proceeds
+- [ ] Timeout/error ⇒ fail-open with fraudSkipped=true; send SLO protected by the 200ms budget
+- [ ] Transition RECEIVED→FRAUD_CHECKED recorded; matches ADR-0005
 
 ## CHANGELOG entry
-`### Added` → `Fraud check in send path with hard 200ms budget, fail-open flagging and FraudCheckSkipped events (step 25)`
+`### Added` → `Fraud integration with a 200ms budget and fail-open (fraudSkipped flag), RECEIVED→FRAUD_CHECKED transition (step 25)`

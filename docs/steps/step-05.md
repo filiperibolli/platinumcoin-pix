@@ -1,38 +1,36 @@
-# Step 05 — LocalStack init scripts: tables, messaging, buckets, seed
+# Step 05 — common-lib JWT validation filter + authenticated principal
+
+> **Sprint 1 — Foundation & Identity** · **Flow:** login → JWT · **Infra que sobe:** none · **Diagram:** ARCHITECTURE §6.1
 
 ## Objective
-Idempotent shell scripts in `infra/localstack/init/` that LocalStack runs on readiness, creating every DynamoDB table (with GSIs and TTL), the SNS topic, all SQS queues with DLQs and redrive policies, SNS→SQS subscriptions with filter policies, S3 buckets, and demo seed data.
+A `JwtAuthFilter` in common-lib validates `Authorization: Bearer` on every request (except `/auth/login`, `/actuator/**`, and the SSE handshake nuances), rejects invalid/expired tokens with `401`, and exposes an `AuthenticatedUser(userId, accountId)` principal to controllers.
 
 ## Why / what you'll learn
-This is **infrastructure-as-code in miniature**: the exact `aws dynamodb create-table` / `aws sqs create-queue` calls that Terraform/CDK would make, written explicitly so you internalize what each resource *is*. You'll wire the three messaging patterns of the whole project: **DLQ redrive** (`RedrivePolicy` with `maxReceiveCount=5`), **fan-out with filtering** (SNS subscription `FilterPolicy` on `eventType` so each queue receives only its events), and the **sparse GSI** (`gsi3` on `pix_transactions` — the outbox publisher's work queue, step 22).
+Validation lives in **common-lib** so every user-facing service enforces auth by depending on the library — one implementation, no drift. The filter turns the `accountId` claim into a first-class principal that controllers inject, which is what makes "debit account from the token" (Domain Safety Rule #1) both easy and the *only* path. You'll learn the servlet filter chain ordering (auth after correlation-id, before controllers) and how to fail closed on auth while the rest of the platform fails open where appropriate.
 
 ## Prerequisites
-Step 04. Schema reference: `docs/data-model.md`.
+Step 04.
 
 ## Tasks
-1. `01-dynamodb.sh`: create `pix_accounts` (+GSI1), `pix_keys` (+GSI1), `pix_ledger` (+GSI1), `pix_transactions` (+GSI1, GSI2, sparse GSI3), `pix_idempotency` (+TTL on `expiresAt`), `pix_processed_events` (+TTL). All `PAY_PER_REQUEST`. Guard each with existence check (idempotent re-run).
-2. `02-messaging.sh`: DLQs first, then queues `settlement-queue`, `notification-queue`, `audit-queue`, `inbound-pix-queue` with redrive (max 5); topic `pix-events`; subscriptions with filter policies (settlement←`PixDebited`; notification←`PixSettled,PixReceived,PixReversed`; audit←all via empty policy); `RawMessageDelivery=true`.
-3. `03-s3.sh`: buckets `pix-audit-log` (versioning enabled; object-lock flags documented in comments — real enforcement is AWS-side), `pix-statement-archive`.
-4. `04-seed.sh`: users alice/bob → accounts `acc-001`/`acc-002` (dailyLimit R$5.000,00), Pix keys `alice@platinum.com`/`bob@platinum.com`, ledger BALANCE items funded R$10.000,00 each from `ACCOUNT#SEED`, plus the `SPI_CLEARING` balance item at 0.
-5. `99-verify.sh`: list tables/queues/topics, echo a summary banner.
+1. `JwtAuthFilter` (after `CorrelationIdFilter`): parse+verify HS256 with `JWT_SECRET`; on success set an `AuthenticatedUser(userId, accountId)` into the security context / request; on missing/invalid/expired ⇒ `401` problem+json (`code: UNAUTHORIZED`).
+2. Path allow-list: `/auth/login`, `/actuator/**` (and a hook for the SSE stream, refined in step 38).
+3. `@AuthenticationPrincipal`-style accessor (`AuthenticatedUser current()`); helper to read `accountId` in controllers.
+4. Ship via auto-configuration; applied to auth-service now (protecting a dummy `/v1/auth/me` echo endpoint proves it) and inherited by every later service automatically.
 
 ## Tests (TDD)
-Script-level: `bash -n` in a lint task; behavior verified by runbook + reused inside Testcontainers in step 06 (same scripts mounted — one source of truth for infra).
+- `JwtAuthFilterTest` (MockMvc) — no header ⇒ 401; tampered signature ⇒ 401; expired ⇒ 401; valid ⇒ 200 and `AuthenticatedUser` carries the right `accountId`.
+- Allow-list test — `/auth/login` and `/actuator/health` reachable without a token.
 
 ## Verify locally
 ```bash
-docker compose -f infra/docker-compose.yml up -d
-docker compose -f infra/docker-compose.yml logs -f localstack | grep -m1 'init summary'
-awsl() { aws --endpoint-url=http://localhost:4566 "$@"; }
-awsl dynamodb list-tables
-awsl dynamodb get-item --table-name pix_ledger --key '{"pk":{"S":"ACCOUNT#acc-001"},"sk":{"S":"BALANCE"}}' | jq
-awsl sqs list-queues; awsl sns list-subscriptions
+curl -si localhost:8081/v1/auth/me | head -1                       # 401
+curl -s  localhost:8081/v1/auth/me -H "Authorization: Bearer $TOKEN" | jq   # {userId, accountId}
 ```
 
 ## Definition of Done
-- [ ] Fresh `up -d` yields all tables/queues/topic/buckets + seed balances
-- [ ] Re-running scripts is a no-op (idempotent)
-- [ ] `pix_transactions` has GSI1/GSI2/GSI3; DLQs have redrive maxReceiveCount=5; filter policies applied
+- [ ] Every protected route rejects missing/invalid/expired tokens with 401 problem+json
+- [ ] `AuthenticatedUser(userId, accountId)` available to controllers from the token
+- [ ] Filter ships via common-lib auto-config; allow-list correct
 
 ## CHANGELOG entry
-`### Added` → `LocalStack init scripts: all DynamoDB tables/GSIs, SNS+SQS(+DLQ) with filter policies, S3 buckets and demo seed (step 05)`
+`### Added` → `common-lib JWT validation filter and AuthenticatedUser principal, protecting service endpoints (step 05)`

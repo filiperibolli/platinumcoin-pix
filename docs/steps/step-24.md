@@ -1,36 +1,36 @@
-# Step 24 — fraud-service: rule-based scoring
+# Step 24 — fraud-service: rule-based POST /score (p99 < 150ms)
+
+> **Sprint 5 — Fraud** · **Flow:** fraud score in the path · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.5
 
 ## Objective
 `POST /internal/fraud/score` evaluating cheap synchronous rules — velocity (tx count + amount in sliding windows via Redis), unusually high amount vs account profile, new payee, odd hours — returning `{decision: APPROVE|REVIEW|DENY, score, reasons[]}` with **p99 < 150ms**.
 
 ## Why / what you'll learn
-Designing *for a latency budget*: every rule reads pre-computed/fast state (Redis INCR/EXPIRE sliding counters — a classic pattern worth knowing), no table scans, no external calls in-path. Heavier analysis belongs on the async event stream (step 25 emits what it needs). Also: making the decision explainable (`reasons[]`) — fraud ops teams live on that field.
+Real-time fraud scoring engineered to a **latency budget**: no heavy inference in-path — only pre-computed features read from fast stores (velocity counters in Redis, account age, payee novelty). The 150ms internal target leaves margin inside the 200ms budget the caller enforces (step 25). You'll learn sliding-window counters in Redis (`INCR` + `EXPIRE`, or sorted-sets) and why the *design* (features precomputed, model async) is what makes sub-200ms scoring possible; heavy/ML scoring runs asynchronously on the event stream and feeds block-lists this cheap check reads.
 
 ## Prerequisites
-Steps 06 (Redis harness), 09.
+Step 23.
 
 ## Tasks
-1. Rules engine: ordered `List<FraudRule>` each returning score contribution + reason; thresholds: score ≥ 80 DENY, ≥ 50 REVIEW, else APPROVE (config).
-2. Velocity counters: `INCR fraud:vel:<account>:<minuteBucket>` + EXPIRE; windows 1min/10min; amount-sum keys likewise.
-3. New-payee rule: SISMEMBER/SADD `fraud:payees:<account>` (seeded by past settled events later; local approximation fine — document it).
-4. Endpoint + timing filter recording histogram `fraud.score.latency`.
+1. `ScoreRequest(accountId, pixKey, amountCents, timestamp)` → `ScoreResult(decision, score, reasons)`.
+2. Rules: velocity (count & sum over 1m/1h windows in Redis), amount threshold vs account profile, new-payee novelty, odd-hours; combine into a score → decision bands.
+3. Update velocity counters on each scored request (`INCR`/`EXPIRE`).
+4. Micrometer timer on the endpoint; assert p99 target in a load-ish test.
 
 ## Tests (TDD)
-- Each rule isolated (fixed clock, fake Redis via harness): triggers and non-triggers.
-- Decision aggregation: thresholds, reasons composition.
-- Micro-latency guard: scoring 1000 sequential calls in IT stays well under budget (soft assert with generous ceiling to avoid flaky CI).
+- `FraudScoreIT` — normal ⇒ APPROVE; burst (velocity) ⇒ REVIEW/DENY; huge amount ⇒ DENY; new payee flagged in reasons.
+- Latency test — warm p99 < 150ms over N calls (sanity, not a full k6).
 
 ## Verify locally
 ```bash
 curl -s -X POST localhost:8083/internal/fraud/score -H 'Content-Type: application/json' \
- -d '{"accountId":"acc-001","amountCents":900000,"pixKey":"zed@otherbank.com","hourOfDay":3}' | jq
-# high amount + odd hour + new payee → DENY/REVIEW with reasons
+  -d '{"accountId":"acc-001","pixKey":"bob@platinum.com","amountCents":12550,"timestamp":"2026-07-07T12:00:00Z"}' | jq
 ```
 
 ## Definition of Done
-- [ ] Deterministic, explainable decisions from cheap reads only
-- [ ] Latency histogram exported; p99 comfortably < 150ms locally
-- [ ] Thresholds configurable without redeploy (env)
+- [ ] Rule-based decision APPROVE/REVIEW/DENY with reasons; p99 < 150ms
+- [ ] Velocity counters in Redis with correct window expiry
+- [ ] No heavy inference in-path (documented seam for async models)
 
 ## CHANGELOG entry
-`### Added` → `fraud-service: explainable rule-based scoring (velocity, amount, payee novelty, odd hours) within latency budget (step 24)`
+`### Added` → `fraud-service rule-based /score (velocity, amount, novelty, hours) engineered for p99 < 150ms (step 24)`

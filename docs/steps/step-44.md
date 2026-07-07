@@ -1,39 +1,42 @@
-# Step 44 — `labs/ledger-pg`: relational ledger counterpart (two locking strategies)
+# Step 44 — Observability: Prometheus + Grafana + silence alerts + path tracing
+
+> **Sprint 11 — Observability** · **Flow:** see the whole system · **Infra que sobe:** Prometheus + Grafana · **Diagram:** ARCHITECTURE §6.11, §7.7
 
 ## Objective
-Create the non-deployable lab module of ADR-0009: the ledger posting port implemented on PostgreSQL (Testcontainers) with **two interchangeable strategies** — pessimistic (`SELECT ... FOR UPDATE`, deterministic lock order) and optimistic (version-column conditional update with bounded retry).
+Full observability: every service exposes `/actuator/prometheus` (Micrometer); a Prometheus container scrapes all of them; Grafana (provisioned as code in `infra/observability/`) ships two dashboards — **Technical** (latency p50/p99 vs SLO lines, throughput, errors, queue/DLQ depth, cache hit, JVM) and **Business Funnel** (payments per stage RECEIVED→…→SETTLED with REJECTED/REVERSED branches, conversion %, fraud mix, reconciliation actions, R$ settled). An `AlertEvaluator` implements the silence alerts. The SLF4J path-logging contract is audited end to end.
 
 ## Why / what you'll learn
-This is the ground senior interviews dig into and the DynamoDB path never exercises: how row locks actually behave, why lock **ordering** prevents deadlocks, how optimistic concurrency trades retries for throughput, and where the relational `CHECK` constraint sits relative to application checks. Finishing this step means you can argue *both* sides of ADR-0001 from code you wrote.
+Observability in three layers — logs (what happened to *this* request), metrics (how the *system* behaves), dashboards (who needs to see it) — plus the underrated craft of **business observability**: the funnel answers product questions ("where do payments die? what % gets fraud-denied?") from the same Micrometer counters that feed technical panels. Grafana **provisioning as code** (JSON dashboards + YAML datasource committed — no click-ops). **Silence alerts**: async systems fail by *absence*, so the watchdog compares input-side vs output-side activity. Finally the **SLF4J path audit**: prove that one `correlationId` reconstructs a transaction's full journey across all services — the logging contract from CLAUDE.md, now enforced.
 
 ## Prerequisites
-Step 15 (the invariant suite exists and is the parity bar). Independent of Blocks F–P.
+Steps 32, 35, 40 and the flows whose metrics feed the funnel (payments, fraud, settlement, reconciliation).
 
 ## Tasks
-1. New Maven module `labs/ledger-pg` (registered in the parent POM; excluded from Docker/compose entirely).
-2. Schema (Flyway or plain init SQL):
-   - `accounts(account_id text primary key, balance_cents bigint not null, version bigint not null default 0, constraint balance_non_negative check (balance_cents >= 0))`
-   - `entries(entry_id text primary key, tx_id text not null, account_id text not null references accounts, type text not null check (type in ('DEBIT','CREDIT')), amount_cents bigint not null, created_at timestamptz not null default now(), constraint one_leg_per_tx unique (tx_id, account_id, type))`
-3. `PessimisticPostingStrategy`: one DB transaction — `SELECT ... FOR UPDATE` on **both** account rows ordered by `account_id` (document why: lock-ordering is the deadlock cure), verify funds, update both balances, insert both entries.
-4. `OptimisticPostingStrategy`: read versions; conditional `UPDATE ... WHERE version = :v AND balance_cents >= :amt` on the debit leg (+ versioned credit update); on 0 rows updated → classify (insufficient vs conflict) and retry conflicts with jitter, max 5 attempts.
-5. Both strategies implement the same `LedgerPort` used by ledger-service (extract the interface + invariant suite into a small `ledger-port-tck` test-jar if direct reuse is awkward).
-6. Replay safety: the `one_leg_per_tx` unique constraint is the relational twin of the DynamoDB `attribute_not_exists(txId)` condition — assert a replayed `txId` fails cleanly.
+1. Micrometer Prometheus registry in all services; funnel counters standardized: `pix.payments.stage{stage,outcome}`, `pix.fraud.decision{decision}`, `pix.reconciliation.resolved{action}`, `pix.settled.amount`. Metric catalog in `docs/observability.md` (new).
+2. `infra/observability/`: `prometheus.yml`, Grafana provisioning (datasource + dashboard provider) + two dashboard JSONs; compose services `prometheus` (host 9091) and `grafana` (3000, anonymous viewer, admin/admin) — always-on, not an optional profile.
+3. Business Funnel + Technical dashboards as described.
+4. `AlertRule` records + `AlertEvaluator` (settlement-service): settlement silence (debits flowing, no settlements 120s), DLQ depth > 0, `reconciliation.oldest.seconds > 300`, `outbox.lag > 60s`, fraud-skipped rate, cache hit-rate floor — FIRING/RESOLVED lifecycle, structured `ALERT` logs, runbook links.
+5. **SLF4J path audit**: checklist every stage logs a named INFO event with correlationId/txId (payment.accepted, fraud.scored, ledger.posted, outbox.published, settlement.sent, settlement.settled, notification.pushed, reconciliation.resolved); fix gaps; add `scripts/trace.sh <correlationId>` that greps all service logs and prints the ordered path.
 
 ## Tests (TDD)
-- Happy posting moves money and writes exactly 2 entries (each strategy).
-- Insufficient funds → domain error, nothing written (each strategy).
-- Replayed `txId` → rejected by the unique constraint, balances untouched.
-- Optimistic conflict path: forced version bump between read and update → retry succeeds; exhausted retries surface a typed error.
+- Evaluator unit tests — silence rule fires when the debit counter advances and the settle counter stalls; resolves on catch-up; no re-fire spam; DLQ/reconciliation rules against seeded gauges.
+- Metrics IT — a full send increments every funnel stage counter exactly once with correct tags.
+- Path audit test — run one payment in the Testcontainers wiring, capture logs, assert all stage events present for its correlationId, in order.
 
 ## Verify locally
 ```bash
-mvn -q -pl labs/ledger-pg verify
+curl -s localhost:8084/actuator/prometheus | grep pix_payments_stage
+open http://localhost:9091/targets          # all services UP
+open http://localhost:3000                  # both dashboards render with live data
+curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
+docker compose -f infra/docker-compose.yml logs settlement-service | grep '"ALERT"'
+bash scripts/trace.sh <correlationId>       # full cross-service path of one request
 ```
 
 ## Definition of Done
-- [ ] Both strategies pass the same behavioral test set
-- [ ] Lock ordering documented in code (comment + test that reversed order deadlocks — see step 45)
-- [ ] Module builds in CI but ships in no container
+- [ ] Prometheus scraping all services; Grafana dashboards provisioned from the repo, no manual setup
+- [ ] Business funnel answers stage-conversion questions from live traffic
+- [ ] Silence alerts proven by drill; `trace.sh` reconstructs any request path by correlationId
 
 ## CHANGELOG entry
-`### Added` → `labs/ledger-pg: relational ledger counterpart with pessimistic and optimistic posting strategies (step 44)`
+`### Added` → `Prometheus + Grafana (technical + business-funnel dashboards as code), silence alerts and correlationId path tracing (step 44)`

@@ -1,36 +1,38 @@
-# Step 21 — Transactional outbox write
+# Step 21 — Internal orchestration: key resolution + ledger debit
+
+> **Sprint 4 — Send Pix (internal)** · **Flow:** internal Pix moves real money · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.4
 
 ## Objective
-The DEBITED transition and the `PixDebited` outbox item are written in **one `TransactWriteItems`** on `pix_transactions` (tx META update + OUTBOX put). Same for later transitions (SETTLED/REVERSED, wired in their steps). Nothing publishes yet — that's step 22.
+The send flow gains its money-moving core for the **internal** case: resolve the Pix key (step 11 API), command the ledger posting **debit payer / credit payee directly** (both accounts internal), and persist status `DEBITED`. This is the first flow that moves a user's real money — synchronously, with no settlement, queue or BACEN.
 
 ## Why / what you'll learn
-The dual-write problem in the flesh (ADR-0004): if you update status and then publish, a crash in between loses the event → settlement never runs → money stuck in clearing. Committing state+event atomically in the database removes the window entirely; single-table design makes it natural (both items share the `TX#` partition). You'll build the event envelope (eventId, eventType, occurredAt, correlationId, payload) that every consumer will rely on.
+An internal transfer is the *simplest complete* money movement: both legs are inside PlatinumCoin, so one atomic ledger posting (step 14) settles it — there is nothing to settle externally. Treating internal Pix as "immediately settled" is honest and keeps this sprint free of messaging. You'll wire the orchestration order that the external flow (Sprint 6) will extend: resolve → (limit → fraud, already/soon) → debit → persist. Failure mapping matters: KEY_NOT_FOUND ⇒ 422, INSUFFICIENT_FUNDS ⇒ 422 (release the limit reservation), ledger down ⇒ 503 + Retry-After (nothing debited, safe to retry with the same key).
 
 ## Prerequisites
-Step 20.
+Steps 11, 14, 20.
 
 ## Tasks
-1. Event envelope record in common-lib + JSON payload conventions (PascalCase types per CLAUDE.md).
-2. `TransactionRepository.transition(txId, from, to, outboxEvent)` — TransactWriteItems: guarded META update (`#status = :from`) + OUTBOX put (`attribute_not_exists`).
-3. Refactor step-20 orchestrator to use it for RECEIVED→DEBITED emitting `PixDebited{txId,endToEndId,amountCents,creditorInternal,debtorAccountId}`.
-4. Rejection transitions also emit events (`PixRejected`) — the audit trail wants everything.
+1. Call `GET /internal/pix-keys/resolve?key=...`; internal ⇒ creditor accountId; not-found ⇒ 422 `KEY_NOT_FOUND` (external is out of scope until step 27/30).
+2. Command ledger `POST /internal/ledger/postings` debit debtor / credit creditor, `entryType=PIX_INTERNAL`, `txId`.
+3. INSUFFICIENT_FUNDS ⇒ 422 (+release limit); ledger 503/timeout ⇒ 503 + `Retry-After: 5`, circuit-breaker on repeated failures.
+4. On success persist `status=DEBITED` (internal → treated as final/settled for the user), complete the idempotency record.
 
 ## Tests (TDD)
-- `OutboxTransactionIT` — after transition: META shows DEBITED **and** OUTBOX item exists — assert both-or-neither by forcing the guard to fail (wrong `from`) and verifying no outbox item appeared.
-- Envelope serialization round-trip; eventId uniqueness.
+- `InternalSendIT` — alice→bob internal: 202; balances moved atomically (assert both); status DEBITED; idempotent retry replays and does not double-debit.
+- Unknown key ⇒ 422 KEY_NOT_FOUND, no debit. Insufficient funds ⇒ 422, no debit, limit released.
 
 ## Verify locally
 ```bash
-# send a pix, then:
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
- --key-condition-expression 'pk = :p' --expression-attribute-values '{":p":{"S":"TX#<txId>"}}' | jq '.Items[].sk'
-# → "META" and "OUTBOX#evt-..."
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | head -1   # 202
+curl -s localhost:8085/internal/ledger/accounts/acc-002/balance | jq   # bob credited
 ```
 
 ## Definition of Done
-- [ ] State change and event are literally atomic (same transaction)
-- [ ] Guarded transitions prevent illegal jumps
-- [ ] All send-path transitions emit envelope-conformant events
+- [ ] Internal Pix moves real money atomically end-to-end; status DEBITED
+- [ ] Failure mapping correct (KEY_NOT_FOUND / INSUFFICIENT_FUNDS 422; ledger down 503)
+- [ ] Idempotent retry never double-debits
 
 ## CHANGELOG entry
-`### Added` → `Transactional outbox: status transitions and domain events committed in one TransactWriteItems (step 21)`
+`### Added` → `Internal Pix orchestration: key resolution + atomic ledger debit (credit payee directly), status DEBITED (step 21)`

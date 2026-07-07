@@ -107,7 +107,7 @@ A posting `debit A, credit B, amount X, txId T` is exactly four writes in **one*
 
 DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (insufficient funds, replayed txId, concurrent conflict), all four writes are cancelled. This is the mechanical answer to *"how do you guarantee money is never debited without being credited?"* — the debit and the credit are literally the same atomic operation; there is no intermediate state where one exists without the other.
 
-**Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 14) asserts this under a concurrent debit storm.
+**Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 15) asserts this under a concurrent debit storm.
 
 **System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
 
@@ -215,4 +215,4 @@ If the conditional put fails → duplicate → ack the message and skip. This on
 
 - All tables **on-demand** (PAY_PER_REQUEST) — no capacity planning locally, matches the auto-scaling NFR in prod.
 - No DynamoDB Streams used (polling outbox — ADR-0004); GSI3 on `pix_transactions` is sparse.
-- Init scripts and exact `aws dynamodb create-table` commands live in `infra/localstack/init/` (created in step 05) and are mirrored in `docs/local-dev.md`.
+- Init scripts and exact `aws dynamodb create-table` commands live in `infra/localstack/init/` and are mirrored in `docs/local-dev.md`. They are added **incrementally, per sprint** (vertical delivery — see `PLAN.md`): accounts/keys in step 07, ledger in step 12, transactions/idempotency in step 17, `pix_processed_events` in step 29 — so at any point only the tables the built flows need exist.

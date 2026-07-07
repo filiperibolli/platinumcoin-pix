@@ -1,37 +1,37 @@
-# Step 03 — common-lib: error model + correlation id + JSON logging
+# Step 03 — auth-service Spring Boot skeleton with Actuator health
+
+> **Sprint 1 — Foundation & Identity** · **Flow:** login → JWT · **Infra que sobe:** none · **Diagram:** ARCHITECTURE §6.1
 
 ## Objective
-Shared foundations every service uses: RFC 7807 `application/problem+json` error handling with a `code` field, a servlet filter that reads/creates `X-Correlation-Id` and puts it in MDC, and structured JSON logging (logstash-logback-encoder) including `correlationId`.
+The first runnable deployable: `auth-service` boots on port 8081, depends on `common-lib`, exposes `/actuator/health`, and (per the vertical plan) is the first service to join `infra/docker-compose.yml` with a Dockerfile — establishing the pattern every later service reuses.
 
 ## Why / what you'll learn
-In a distributed system, a request touches 4+ services; the **correlation id** is the thread you pull to reconstruct what happened — generated at the edge if absent, propagated on every outgoing call, attached to every log line via MDC. Structured JSON logs make that grep-able (`jq 'select(.correlationId=="...")'`). A uniform problem+json error contract means clients (and you, debugging) parse one error shape platform-wide, and stack traces never leak.
+Walking skeleton first: get a deployable to boot, own a port and report health *before any business logic*. Actuator health is the contract that docker-compose healthchecks and the runbook rely on. Unlike the old horizontal plan (all 8 skeletons at once), here **each service is scaffolded in its own sprint**, so the topology grows with the flows — you never boot a service that has nothing to do yet.
 
 ## Prerequisites
-Step 02.
+Steps 01, 02.
 
 ## Tasks
-1. `common-lib`: `ProblemDetailFactory` + `@RestControllerAdvice GlobalExceptionHandler` (maps validation → 400, `DomainException(code,status)` → its status, fallback → 500 generic, always with `correlationId`).
-2. `CorrelationIdFilter` (highest precedence): read `X-Correlation-Id` or generate UUID; store in MDC key `correlationId`; echo on the response header.
-3. `logback-spring.xml` shared include: JSON encoder with `timestamp, level, logger, message, correlationId, txId` fields; plain console pattern for local `dev` profile if desired.
-4. `RestClientCustomizer` that propagates `X-Correlation-Id` on outgoing `RestClient` calls.
-5. Wire auto-configuration (`@AutoConfiguration` + `AutoConfiguration.imports`) so services get all of this by depending on common-lib — zero per-service boilerplate.
+1. Module `services/auth-service`: POM (parent ref; `spring-boot-starter-web`, `spring-boot-starter-actuator`, `common-lib`), main class `com.platinumcoin.pix.auth.Application`, `application.yml` with `server.port=8081`, `spring.application.name=auth-service`.
+2. Add the module to the parent `<modules>`.
+3. Expose only `health,info,metrics`; `management.endpoint.health.probes.enabled=true` (readiness/liveness groups).
+4. **Dockerize + compose pattern:** `services/auth-service/Dockerfile` (layered Spring Boot jar, `JAVA_TOOL_OPTIONS=-Xmx512m`); add an `auth-service` entry to `infra/docker-compose.yml` (network `pix-net`, healthcheck on `/actuator/health`). Document the pattern in a comment — later services copy it.
 
 ## Tests (TDD)
-- `CorrelationIdFilterTest` — absent header ⇒ generated + echoed; present ⇒ preserved; MDC cleaned after request.
-- `GlobalExceptionHandlerTest` (MockMvc) — `DomainException("LIMIT_EXCEEDED",422)` ⇒ 422 problem+json with code + correlationId; unexpected exception ⇒ 500 with no stack trace in body.
+- `ApplicationContextIT` (`@SpringBootTest`) — the context loads. Catches broken wiring at build time forever after.
 
 ## Verify locally
 ```bash
-mvn -q -pl services/common-lib,services/ledger-service verify
-java -jar services/ledger-service/target/*.jar &
-curl -s localhost:8085/nope -H 'X-Correlation-Id: test-123' | jq   # problem+json, correlationId=test-123
+mvn -q -pl services/auth-service clean package
+java -jar services/auth-service/target/*.jar &
+curl -s localhost:8081/actuator/health | jq        # {"status":"UP"}
 kill %1
 ```
 
 ## Definition of Done
-- [ ] All services emit JSON logs with correlationId via the shared config
-- [ ] Any error from any service is problem+json with `code` and `correlationId`
-- [ ] Outgoing RestClient calls carry the header automatically
+- [ ] auth-service builds, context-load test green, starts standalone with `java -jar`
+- [ ] Port 8081 matches docs/local-dev.md §2
+- [ ] Dockerfile + compose entry present; the "service in compose" pattern is documented for reuse
 
 ## CHANGELOG entry
-`### Added` → `Shared error model (RFC 7807), correlation-id propagation and structured JSON logging in common-lib (step 03)`
+`### Added` → `auth-service Spring Boot skeleton with Actuator health, Dockerfile and compose wiring (step 03)`

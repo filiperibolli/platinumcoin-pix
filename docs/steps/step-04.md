@@ -1,35 +1,37 @@
-# Step 04 — docker-compose: LocalStack + Redis (infra only)
+# Step 04 — auth-service: login endpoint issuing HS256 JWT
+
+> **Sprint 1 — Foundation & Identity** · **Flow:** login → JWT · **Infra que sobe:** none (seeded users) · **Diagram:** ARCHITECTURE §6.1
 
 ## Objective
-`infra/docker-compose.yml` bringing up **LocalStack** (DynamoDB, SQS, SNS, S3 enabled) and **Redis**, with healthchecks, on a named network. No app services yet.
+`POST /v1/auth/login` authenticates seeded demo users (alice, bob) and returns an HS256 JWT with claims `sub` (userId), `accountId`, `jti`, `iat`, `exp` (15 min). No AWS: users are seeded in config; tests run on MockMvc.
 
 ## Why / what you'll learn
-LocalStack is a local AWS emulator: your code uses the real AWS SDK, pointed at `http://localstack:4566` (one edge port for all services) with dummy credentials — so the code you write locally is the code that runs on AWS, only the endpoint differs. Redis rides alongside **because LocalStack does not emulate ElastiCache** (we document this explicitly). Compose `healthcheck` + `depends_on: condition: service_healthy` is how you encode startup ordering — a small taste of the orchestration problems k8s solves at scale.
+The token is the backbone of every later flow (you always have a way to authenticate). HS256 with a shared secret is the *local* choice; the production posture (RS256 + JWKS so services verify with a public key only) is documented in ADR-0007. Putting `accountId` in the token is the mechanism behind Domain Safety Rule #1: the debited account is taken from the token, never from a request body — later services depend on this claim existing.
 
 ## Prerequisites
-Step 01 (repo exists). Independent of steps 02–03.
+Step 03.
 
 ## Tasks
-1. `infra/docker-compose.yml`: services `localstack` (image `localstack/localstack`, port 4566, env `SERVICES=dynamodb,sqs,sns,s3`, `DEBUG=1`, volume for `/etc/localstack/init/ready.d` mounted from `infra/localstack/init/`, healthcheck on `localhost:4566/_localstack/health`) and `redis` (image `redis:7-alpine`, port 6379, healthcheck `redis-cli ping`). Network `pix-net`.
-2. `infra/localstack/init/` empty dir with a `README` note (scripts arrive in step 05).
-3. `infra/.env.example` documenting `AWS_*` dummy values.
+1. Seeded users (alice→acc-001, bob→acc-002) with bcrypt-hashed demo passwords in config; a `UserDirectory` port with an in-memory adapter.
+2. `POST /v1/auth/login` (`{username,password}`) → verify → mint JWT (`JwtIssuer` using the HS256 secret from `JWT_SECRET`); response `{accessToken, tokenType:"Bearer", expiresIn:900}`.
+3. Claims exactly `sub`, `accountId`, `jti` (UUID), `iat`, `exp` (+15 min). Wrong credentials ⇒ `401` (problem+json).
+4. Conform to `docs/api/openapi.yaml` `/auth/login`.
 
 ## Tests (TDD)
-Infrastructure step — verification is the runbook commands below (automated equivalent lands in step 06 with Testcontainers).
+- `LoginIT` (MockMvc) — valid creds ⇒ 200 + parseable JWT with all claims and 15-min expiry; bad creds ⇒ 401 problem+json.
+- `JwtIssuerTest` — signature verifies with the secret; `exp - iat == 900s`; `jti` unique across calls.
 
 ## Verify locally
 ```bash
-docker compose -f infra/docker-compose.yml up -d
-curl -s localhost:4566/_localstack/health | jq '.services | {dynamodb,sqs,sns,s3}'   # all "available"/"running"
-docker compose -f infra/docker-compose.yml exec redis redis-cli ping                  # PONG
-aws --endpoint-url=http://localhost:4566 dynamodb list-tables                         # {"TableNames":[]}
-docker compose -f infra/docker-compose.yml down -v
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq   # claims: sub, accountId, jti, iat, exp
 ```
 
 ## Definition of Done
-- [ ] One command brings both containers up healthy
-- [ ] AWS CLI against 4566 answers for dynamodb/sqs/sns/s3
-- [ ] `down -v` leaves no state behind
+- [ ] Login returns a valid HS256 JWT with the exact claim set; expiry 15 min
+- [ ] Bad credentials ⇒ 401 problem+json (no stack trace)
+- [ ] Behavior matches OpenAPI `/auth/login`
 
 ## CHANGELOG entry
-`### Added` → `docker-compose infrastructure: LocalStack (DynamoDB/SQS/SNS/S3) and Redis with healthchecks (step 04)`
+`### Added` → `auth-service login endpoint issuing HS256 JWT for seeded users (step 04)`

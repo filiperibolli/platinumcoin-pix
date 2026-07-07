@@ -1,38 +1,36 @@
-# Step 18 — Idempotency layer  ✍️ hand-written zone (tests)
+# Step 18 — payment-service: POST /payments/pix walking skeleton
 
-> **Hand-written zone:** the test set of this step (`IdempotencyIT` + hashing unit tests) is written by the human, by hand, first (AI may review afterwards and may still generate the production code from the spec as usual).
+> **Sprint 4 — Send Pix (internal)** · **Flow:** internal Pix moves real money · **Infra que sobe:** payment-service (in compose) · **Diagram:** ARCHITECTURE §6.4
 
 ## Objective
-Implement ADR-0002 on the send endpoint: conditional claim of `IDEM#account#key`, request-hash comparison, stored-response replay, `409` on hash mismatch, `IN_PROGRESS` handling, TTL 24h.
+`POST /v1/payments/pix` exists end-to-end in the thinnest useful form: JWT-authenticated, validates the body per OpenAPI, generates `txId` + Pix-standard `endToEndId`, persists the transaction as `RECEIVED` in `pix_transactions`, returns **202 + `Location`**. No ledger, fraud, limits or idempotency yet — those thicken the skeleton across steps 19–21.
 
 ## Why / what you'll learn
-The full lifecycle of an idempotency record — claim (conditional put, atomically wins or loses), execute, memoize (store status+response), replay — and the sharp edges: canonicalizing the body before hashing (key order, whitespace), the crash-between-claim-and-response window (`IN_PROGRESS` → 409 + Retry-After; reconciliation will finish or void it), and why the record's TTL (24h) must exceed any client retry horizon. This is the API-layer answer to "the user tapped twice / the network retried".
+The **walking-skeleton** technique: get a real, persisted, JWT-protected request working with the correct *shape* (status codes, headers, ids, contract) before adding behavior. You'll generate the `endToEndId` in the Pix standard `E<ISPB><timestamp><random>`, which becomes the idempotency key toward BACEN later. Crucially, the debtor account is read **from the JWT `accountId` claim** — the request body has `pixKey`, `amount`, `description` and *no* source-account field (Domain Safety Rule #1, enforced by making it inexpressible).
 
 ## Prerequisites
-Step 17.
+Steps 05, 17.
 
 ## Tasks
-1. `IdempotencyRepository`: `claim(accountId, key, requestHash)` conditional put status=IN_PROGRESS; `complete(… , httpStatus, responseSnapshot)`; `get(...)`.
-2. Canonical JSON hashing (sorted keys, trimmed) in common-lib.
-3. Controller flow: claim → win: proceed, then complete; lose: load record → same hash+COMPLETED ⇒ replay stored status/body; same hash+IN_PROGRESS ⇒ 409 `REQUEST_IN_PROGRESS` + Retry-After: 2; different hash ⇒ 409 `IDEMPOTENCY_KEY_REUSED`.
-4. Missing header ⇒ 400 `IDEMPOTENCY_KEY_REQUIRED`.
+1. Scaffold `services/payment-service` (skeleton + Dockerfile + compose, port 8084).
+2. `Transaction` domain record + `TransactionRepository` port; `DynamoTransactionRepository.create(...)`.
+3. `POST /v1/payments/pix`: validate (`pixKey` required, `amount` matches `^\d+\.\d{2}$`, `description` ≤140); parse amount → `long` cents; generate `txId` + `endToEndId`; persist `status=RECEIVED` with `debtorAccountId` from the JWT; respond `202` + `Location: /v1/payments/{txId}` + body `{transactionId, endToEndId, status:"PROCESSING"}`.
+4. Validation failures ⇒ 400 problem+json.
 
 ## Tests (TDD)
-- `IdempotencyIT` — first call 202; identical retry ⇒ identical body (same transactionId), **only one transaction item exists**; same key different amount ⇒ 409; concurrent double-fire (2 threads, same key) ⇒ one 202 + one (replay 202 or 409-in-progress), never two transactions.
-- Hash canonicalization unit tests (key order/whitespace don't change the hash; amount change does).
+- `SendSkeletonIT` (MockMvc + LocalStack) — valid request ⇒ 202, `Location` set, item persisted as RECEIVED with debtor = token account; malformed amount ⇒ 400; missing token ⇒ 401.
+- `endToEndId` format test.
 
 ## Verify locally
 ```bash
-IDEM=$(uuidgen); BODY='{"pixKey":"bob@platinum.com","amount":"10.00"}'
-curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' -d "$BODY" | jq .transactionId
-curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' -d "$BODY" | jq .transactionId   # SAME id
-curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' -d '{"pixKey":"bob@platinum.com","amount":"99.00"}' | head -1  # 409
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | head -5
 ```
 
 ## Definition of Done
-- [ ] Retries replay; tampered reuse 409s; double-fire race creates exactly one transaction
-- [ ] Records carry TTL; IN_PROGRESS window handled
-- [ ] Behavior matches ADR-0002 and OpenAPI verbatim
+- [ ] 202 + Location + ids; transaction persisted as RECEIVED
+- [ ] Debtor account comes only from the JWT; body has no source-account field
+- [ ] Amount handled as `long` cents; matches OpenAPI
 
 ## CHANGELOG entry
-`### Added` → `Idempotency layer on send: conditional claim, response replay, 409 on key reuse with different payload (step 18)`
+`### Added` → `payment-service POST /payments/pix walking skeleton: validation, txId/endToEndId, 202 + Location (step 18)`

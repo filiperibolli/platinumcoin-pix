@@ -1,34 +1,36 @@
-# Step 23 — GET /payments/{transactionId}
+# Step 23 — docker-compose Redis + fraud-service skeleton
+
+> **Sprint 5 — Fraud** · **Flow:** fraud score in the path · **Infra que sobe:** Redis + fraud-service · **Diagram:** ARCHITECTURE §6.5
 
 ## Objective
-Status query per OpenAPI: owner-only access, internal→external status mapping (RECEIVED/FRAUD_CHECKED/DEBITED/SENT_TO_SPI ⇒ PROCESSING; SETTLED; FAILED; REVERSED; REJECTED), `settledAt`/`failureReason` when present.
+Bring up **Redis** in docker-compose (its own container — LocalStack does not emulate ElastiCache) and scaffold `fraud-service` (port 8083) with health, Dockerfile and compose wiring.
 
 ## Why / what you'll learn
-The read side of an async API: clients poll (or receive pushes) against a **stable external vocabulary** deliberately smaller than the internal state machine — internal states can be refactored freely without breaking mobile clients (the no-breaking-changes NFR in practice). Plus an authorization detail that matters: 404 (not 403) for someone else's transaction, to avoid leaking transaction-id existence.
+Redis rides alongside LocalStack **because LocalStack does not emulate ElastiCache** (documented explicitly, ADR-0008) — in production this maps 1:1 to ElastiCache for Redis. It comes up in *this* sprint, not earlier, because fraud is the first flow that needs it (velocity counters); the balance cache (Sprint 9) will reuse the same container. You'll add a `RedisTestBase` to the Testcontainers harness so fraud ITs get a disposable Redis.
 
 ## Prerequisites
-Step 17 (richer after 20–22).
+Steps 05 (JWT filter), 08 (harness).
 
 ## Tasks
-1. `GET /v1/payments/{id}`: load by PK; `debtorAccountId != token.accountId` ⇒ 404 (comment why).
-2. `StatusMapper` internal→external with exhaustive switch (compile-time completeness on the enum).
-3. Response per OpenAPI `Payment` schema.
+1. Add `redis` to `infra/docker-compose.yml` (image `redis:7-alpine`, port 6379, healthcheck `redis-cli ping`); env `REDIS_HOST`/`REDIS_PORT`.
+2. Extend the common-lib test harness with `RedisTestBase` (Testcontainers Redis).
+3. Scaffold `services/fraud-service` (skeleton + Dockerfile + compose entry, port 8083); depends on common-lib and a Redis client.
 
 ## Tests (TDD)
-- Mapper: exhaustive — every internal status maps; adding an enum value breaks compilation/test.
-- Controller IT: own tx visible with mapped status; other user's tx ⇒ 404; unknown id ⇒ 404.
+- `ApplicationContextIT` — fraud-service context loads with a Redis connection (against `RedisTestBase`).
+- Harness smoke — `RedisTestBase` starts and `PING` returns `PONG`.
 
 ## Verify locally
 ```bash
-TX=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' -d '{"pixKey":"bob@platinum.com","amount":"5.00"}' | jq -r .transactionId)
-curl -s localhost:8084/v1/payments/$TX -H "Authorization: Bearer $TOKEN" | jq
-curl -si localhost:8084/v1/payments/$TX -H "Authorization: Bearer $BOB" | head -1   # 404
+docker compose -f infra/docker-compose.yml up -d redis fraud-service
+docker compose -f infra/docker-compose.yml exec redis redis-cli ping   # PONG
+curl -s localhost:8083/actuator/health | jq
 ```
 
 ## Definition of Done
-- [ ] Owner-only, non-leaking status endpoint per contract
-- [ ] External statuses stable and exhaustive over internal machine
-- [ ] settledAt/failureReason populated when applicable
+- [ ] Redis up healthy; documented as the ElastiCache stand-in
+- [ ] fraud-service boots with a Redis connection; Dockerfile + compose entry present
+- [ ] `RedisTestBase` available to any module
 
 ## CHANGELOG entry
-`### Added` → `Payment status query with owner-only access and stable external status mapping (step 23)`
+`### Added` → `Redis container (ElastiCache stand-in) + fraud-service skeleton + RedisTestBase harness (step 23)`

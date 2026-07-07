@@ -1,35 +1,38 @@
-# Step 02 — Spring Boot skeletons for all 8 services
+# Step 02 — common-lib: error model + correlation id + JSON logging
+
+> **Sprint 1 — Foundation & Identity** · **Flow:** login → JWT · **Infra que sobe:** none · **Diagram:** ARCHITECTURE §6.1
 
 ## Objective
-Eight runnable Spring Boot modules — auth, account, fraud, payment, ledger, settlement, notification services + mock-bacen-spi — each exposing `/actuator/health` on its assigned port (8081–8087, 9090).
+Shared foundations every service uses: RFC 7807 `application/problem+json` error handling with a `code` field, a servlet filter that reads/creates `X-Correlation-Id` and puts it in MDC, and structured JSON logging (logstash-logback-encoder) including `correlationId`.
 
 ## Why / what you'll learn
-Walking skeletons first: getting every deployable to boot, own a port and report health *before any business logic* means all later steps change one service at a time against a stable topology. Actuator health is also the contract docker-compose healthchecks (step 07) and the runbook rely on.
+In a distributed system, a request touches 4+ services; the **correlation id** is the thread you pull to reconstruct what happened — generated at the edge if absent, propagated on every outgoing call, attached to every log line via MDC. Structured JSON logs make that grep-able (`jq 'select(.correlationId=="...")'`). A uniform problem+json error contract means clients (and you, debugging) parse one error shape platform-wide, and stack traces never leak. Building this *before* the first service means the identity flow is already observable.
 
 ## Prerequisites
 Step 01.
 
 ## Tasks
-1. For each service: module dir `services/<name>`, POM (parent ref; `spring-boot-starter-web`, `spring-boot-starter-actuator`, `common-lib`), main class `com.platinumcoin.pix.<name>.Application`, `application.yml` with `server.port` per docs/local-dev.md §2 and `spring.application.name`.
-2. Add all modules to the parent `<modules>`.
-3. Expose only `health,info,metrics` actuator endpoints.
-4. Set `management.endpoint.health.probes.enabled=true` (readiness/liveness groups — the same shape k8s would use; compose healthchecks use `/actuator/health`).
+1. `common-lib`: `ProblemDetailFactory` + `@RestControllerAdvice GlobalExceptionHandler` (maps validation → 400, `DomainException(code,status)` → its status, fallback → 500 generic, always with `correlationId`).
+2. `CorrelationIdFilter` (highest precedence): read `X-Correlation-Id` or generate UUID; store in MDC key `correlationId`; echo on the response header.
+3. `logback-spring.xml` shared include: JSON encoder with `timestamp, level, logger, message, correlationId, txId` fields; plain console pattern for local `dev` profile if desired.
+4. `RestClientCustomizer` that propagates `X-Correlation-Id` on outgoing `RestClient` calls.
+5. Wire auto-configuration (`@AutoConfiguration` + `AutoConfiguration.imports`) so services get all of this by depending on common-lib — zero per-service boilerplate.
 
 ## Tests (TDD)
-- Per service: `ApplicationContextIT` (`@SpringBootTest`) — the context loads. Catches broken wiring at build time forever after.
+- `CorrelationIdFilterTest` — absent header ⇒ generated + echoed; present ⇒ preserved; MDC cleaned after request.
+- `GlobalExceptionHandlerTest` (MockMvc) — `DomainException("LIMIT_EXCEEDED",422)` ⇒ 422 problem+json with code + correlationId; unexpected exception ⇒ 500 with no stack trace in body.
 
 ## Verify locally
 ```bash
-mvn -q clean package
-java -jar services/ledger-service/target/*.jar &   # spot-check one
-curl -s localhost:8085/actuator/health | jq        # {"status":"UP"}
-kill %1
+mvn -q -pl services/common-lib verify
+# once auth-service exists (step 03), a bad request returns problem+json with the echoed correlationId
 ```
 
 ## Definition of Done
-- [ ] All 8 modules build; each context-load test green
-- [ ] Ports match docs/local-dev.md §2 exactly
-- [ ] Each service starts standalone with `java -jar`
+- [ ] Any error from any consuming service is problem+json with `code` and `correlationId`
+- [ ] Correlation id generated-if-absent, echoed, and cleaned from MDC after each request
+- [ ] Outgoing RestClient calls carry the header automatically
+- [ ] Everything ships via auto-configuration (no per-service wiring)
 
 ## CHANGELOG entry
-`### Added` → `Spring Boot skeletons for all 8 services with Actuator health on assigned ports (step 02)`
+`### Added` → `Shared error model (RFC 7807), correlation-id propagation and structured JSON logging in common-lib (step 02)`

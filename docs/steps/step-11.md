@@ -1,34 +1,34 @@
-# Step 11 — Pix keys: register (globally unique), list, delete
+# Step 11 — internal key resolution endpoint (DICT role for internal keys)
+
+> **Sprint 2 — Accounts & Pix Keys** · **Flow:** register / resolve a Pix key · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.2
 
 ## Objective
-`POST /v1/pix-keys` (CPF/EMAIL/PHONE/EVP), `GET /v1/pix-keys`, `DELETE /v1/pix-keys/{keyValue}` on account-service, with **global uniqueness enforced by conditional PutItem**.
+`GET /internal/pix-keys/resolve?key=...` on account-service resolves **internal** keys from `pix_keys` to their account. Result shape `{internal: true, accountId, keyType}` or `KEY_NOT_FOUND`. External-key delegation to mock-bacen's DICT is deferred to step 30 (Sprint 6), when mock-bacen exists.
 
 ## Why / what you'll learn
-The single most reusable DynamoDB idiom in this project: `PutItem` + `ConditionExpression attribute_not_exists(pk)` = an atomic check-and-insert, i.e. a UNIQUE constraint without a relational engine. Two concurrent registrations of the same key race → exactly one wins, no read-then-write gap. The same trick powers idempotency (step 18), ledger no-double-post (step 14) and event dedup (step 22) — learn it here where the stakes are lowest.
+account-service plays the role of BACEN's **DICT** for keys that live inside PlatinumCoin — this is the hot lookup on the send path (every Pix resolves the destination first). Designing the response as `{internal: bool, accountId? | externalBank?, keyType}` **now** — even though the external branch is a stub returning `KEY_NOT_FOUND` until step 30 — means the send orchestration (step 21) can code against the final contract and the external path slots in later without a reshape. Deferring the external branch is the vertical plan working as intended: no mock-bacen exists yet, so we don't pretend it does.
 
 ## Prerequisites
 Step 10.
 
 ## Tasks
-1. `PixKeyRepository`: `register` (conditional put; translate `ConditionalCheckFailedException` → domain `KeyAlreadyExistsException`), `listByAccount` (GSI1 query), `delete` (conditional on `accountId = :me` — you can only delete your own key; wrong owner ⇒ condition fails ⇒ 403).
-2. Validation per type: CPF 11 digits (checksum optional, document it), EMAIL format, PHONE E.164-ish, EVP server-generated UUID (ignore client value).
-3. Controller per OpenAPI: 201 / 409 KEY_ALREADY_EXISTS / 204 / 403 / 404.
+1. `KeyResolution(internal, accountId, externalBank, keyType)` record; `resolve(key)` in a `KeyResolutionService`.
+2. `GET /internal/pix-keys/resolve?key=...`: look up `KEY#<value>` in `pix_keys`; found ⇒ `{internal:true, accountId, keyType}`; not found ⇒ `KEY_NOT_FOUND` (404) — with a `// TODO(step 30): delegate unknown keys to mock-bacen DICT` seam clearly marked.
+3. Keep it internal-only (no `/v1` exposure).
 
 ## Tests (TDD)
-- `PixKeyRepositoryIT` — register once OK; register same key again ⇒ KeyAlreadyExists; **concurrent registration test**: two threads, same key ⇒ exactly one success; delete by non-owner ⇒ condition failure.
-- `PixKeyControllerTest` — validation per type; EVP returns generated UUID; error codes per contract.
+- `KeyResolutionIT` — a registered internal key resolves to its account; an unknown key ⇒ 404 KEY_NOT_FOUND; the seam is exercised by a unit test asserting the external branch is currently a not-found (so step 30 has a red test to turn green).
 
 ## Verify locally
 ```bash
-curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"keyType":"EVP"}' | jq
-curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
-# duplicate check: register alice@platinum.com again → 409
+curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" | jq   # {internal:true, accountId:"acc-001", ...}
+curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" | head -1   # 404 (external deferred to step 30)
 ```
 
 ## Definition of Done
-- [ ] Uniqueness holds under the concurrent test (no duplicates ever)
-- [ ] Delete enforces ownership atomically (condition, not read-then-check)
-- [ ] All responses match docs/api/openapi.yaml
+- [ ] Internal keys resolve to the owning account
+- [ ] Response uses the final `{internal, accountId?, externalBank?, keyType}` shape
+- [ ] External-delegation seam explicitly marked for step 30 (not silently missing)
 
 ## CHANGELOG entry
-`### Added` → `Pix key management with atomic global uniqueness via conditional writes (step 11)`
+`### Added` → `Internal Pix key resolution endpoint (DICT role), external delegation seam left for step 30 (step 11)`

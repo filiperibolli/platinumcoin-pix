@@ -1,34 +1,36 @@
-# Step 37 — Immutable audit trail + cold archive
+# Step 37 — mock-bacen inbound generator → inbound Pix flow
+
+> **Sprint 8 — Receive & notify** · **Flow:** inbound Pix → SSE push · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.8
 
 ## Objective
-An `AuditWriter` in settlement-service consumes `audit-queue` (subscribed to *all* events) and appends JSON lines to S3 `pix-audit-log` partitioned `yyyy/MM/dd/HH/<service>-<uuid>.jsonl` (batched, e.g. 100 events or 30s). A scheduled `StatementArchiver` copies ledger entries older than a configurable window to `pix-statement-archive` (parquet-ish JSON lines; deletion from hot storage deliberately NOT done locally — documented). Immutability posture documented: versioning + Object Lock compliance mode + retention 5y (flags in init script, real enforcement is AWS-side).
+mock-bacen gains `POST /simulate/inbound-pix` (generates an inbound payment and delivers it to settlement-service's `POST /v1/inbound/pix` webhook, retrying like BACEN would). settlement-service dedupes by `endToEndId` (conditional write), resolves the key, posts **debit `SPI_CLEARING` / credit user**, records an INBOUND transaction with a `PixReceived` outbox event, acks 200.
 
 ## Why / what you'll learn
-Audit as an **event-sourced projection**: because every transition already emits an event through the outbox, the audit trail is just one more subscriber — zero coupling to business code, completeness by construction. S3 write patterns (batching small events into objects; time-partitioned keys enabling Athena later), and the honest line between what LocalStack demonstrates vs what AWS enforces (Object Lock) — knowing that difference *is* the learning.
+Receiving is the double-entry **mirror** of sending: outbound debits the payer and credits clearing; inbound debits clearing and credits the user — same symmetry, opposite direction. Idempotency by `endToEndId` is essential because **BACEN may redeliver** (the inbound webhook is at-least-once, like everything else). You'll dedupe with the conditional-put idiom before the credit posting, so a redelivered inbound never double-credits.
 
 ## Prerequisites
-Steps 05, 22.
+Steps 30 (mock-bacen), 31/33 (settlement + ledger posting patterns), 36 (queues).
 
 ## Tasks
-1. Audit consumer: dedup, buffer, flush on size/time, S3 `PutObject`; flush on shutdown hook; metric `audit.buffer.size`, `audit.flush.count`.
-2. JSONL record: envelope + full payload + ingest timestamp (never mutate — append-only files).
-3. `StatementArchiver` (daily schedule, window `ARCHIVE_AFTER_DAYS=90` local default): query old entries per account page-wise → JSONL objects `account=<id>/yyyy-MM.jsonl` in archive bucket; idempotent (manifest object per completed month).
-4. docs: retention/immutability section in local-dev.md (verification commands) + ARCHITECTURE cross-ref check.
+1. mock-bacen `POST /simulate/inbound-pix {pixKey, amount, payerName}` → build `endToEndId`, call settlement `POST /v1/inbound/pix`, retry on non-2xx.
+2. settlement `POST /v1/inbound/pix`: dedupe by `endToEndId` (conditional write); resolve key → accountId (account-service); ledger posting `debit SPI_CLEARING / credit user` (`entryType=PIX_IN`); persist INBOUND tx `RECEIVED_SETTLED`; outbox `PixReceived`; 200 ack.
+3. Unknown key ⇒ documented handling (reject/return; BACEN would bounce).
 
 ## Tests (TDD)
-- Event ⇒ appears in a flushed S3 object (poll ListObjects); dedup under duplicate delivery; buffer flush on both triggers.
-- Archiver: seeded old entries land in archive bucket exactly once across two runs (manifest idempotency).
+- `InboundPixIT` — simulate inbound to bob ⇒ bob credited, INBOUND tx + PixReceived outbox; **redelivery of the same endToEndId ⇒ single credit** (dedupe).
+- Conservation holds (clearing debited, user credited).
 
 ## Verify locally
 ```bash
-awsl s3 ls s3://pix-audit-log/ --recursive | tail -3
-awsl s3 cp "s3://pix-audit-log/$(awsl s3 ls s3://pix-audit-log/ --recursive | tail -1 | awk '{print $4}')" - | head -2 | jq
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}'
+curl -s localhost:8085/internal/ledger/accounts/acc-002/balance | jq   # bob credited
 ```
 
 ## Definition of Done
-- [ ] Every domain event lands in time-partitioned JSONL audit objects
-- [ ] Archiver idempotent; hot/cold boundary configurable
-- [ ] Immutability posture (lock/versioning/5y) documented with LocalStack-vs-AWS honesty
+- [ ] Inbound credits the user via debit-clearing/credit-user; INBOUND tx + PixReceived
+- [ ] Idempotent by endToEndId (redelivery ⇒ single credit)
+- [ ] Conservation of money holds
 
 ## CHANGELOG entry
-`### Added` → `Immutable S3 audit trail (event-sourced JSONL) and idempotent statement cold-archiver (step 37)`
+`### Added` → `Inbound Pix flow: mock-bacen generator → settlement webhook, dedupe by endToEndId, credit posting, PixReceived (step 37)`
