@@ -56,8 +56,8 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 17](docs/steps/step-17.md) — LocalStack init: `pix_transactions` (+GSIs) + `pix_idempotency` tables
 - [ ] [Step 18](docs/steps/step-18.md) — payment-service: `POST /payments/pix` walking skeleton (validation, txId/endToEndId, 202)
 - [ ] [Step 19](docs/steps/step-19.md) — idempotency layer: conditional claim, response replay, 409 on hash mismatch **✍️ hand-written zone (tests)**
-- [ ] [Step 20](docs/steps/step-20.md) — daily limit enforcement (rolling day window, decision-object seam for future MFA)
-- [ ] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status DEBITED
+- [ ] [Step 20](docs/steps/step-20.md) — daily limit enforcement (calendar-day reservation counter, decision-object seam for future MFA)
+- [ ] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status SETTLED (internal settles instantly)
 - [ ] [Step 22](docs/steps/step-22.md) — `GET /payments/{id}` status endpoint
 
 ## Sprint 5 — Fraud in the path
@@ -90,9 +90,9 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 ## Sprint 8 — Receive Pix & real-time notification
 **Flow delivered:** inbound Pix credits the user and pushes an SSE notification in real time.
-**Infra que sobe:** SQS `notification-queue` + `inbound-pix-queue`; SSE. · **Diagram:** ARCHITECTURE §6.8
+**Infra que sobe:** SQS `notification-queue` (+DLQ); SSE. · **Diagram:** ARCHITECTURE §6.8
 
-- [ ] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` + `inbound-pix-queue` (+DLQs, subscriptions)
+- [ ] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` (+DLQ, filtered subscription)
 - [ ] [Step 37](docs/steps/step-37.md) — mock-bacen inbound generator → inbound flow: dedupe by endToEndId, credit posting
 - [ ] [Step 38](docs/steps/step-38.md) — notification-service: consume notification-queue, SSE stream per user
 - [ ] [Step 39](docs/steps/step-39.md) — wire PixSettled/PixReceived/PixReversed to real-time pushes end to end

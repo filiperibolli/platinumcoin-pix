@@ -17,4 +17,8 @@ Eight deployables: auth-service, account-service, payment-service, ledger-servic
 ## Consequences
 - Cost accepted: network hops, distributed debugging, eventual consistency between services, 8 JVMs locally. Mitigations: outbox pattern, correlation ids everywhere, docker-compose one-command startup, 512MB heap caps to fit 32GB RAM.
 - Shared code via a thin `common-lib` (error model, JWT validation, logging, event envelopes) — kept deliberately small to avoid the distributed-monolith trap.
-- Services never share tables; all cross-service access is API or events.
+- Services never share tables, with **two deliberate, documented exceptions**:
+  1. **settlement-service writes `pix_transactions` directly** (guarded status transitions + outbox items), even though payment-service owns the table. The transactional-outbox guarantee (ADR-0004) requires the state change and the event to commit in **one** `TransactWriteItems`; putting an internal API between the writer and the table would reintroduce exactly the dual-write problem the outbox exists to eliminate. The write surface is constrained: only guarded `ConditionExpression` transitions and outbox puts, never free-form updates.
+  2. **`pix_processed_events`** is a shared dedup table with consumer-scoped keys (`CONSUMER#<name>#EVT#<id>`) — one tiny table instead of N identical ones.
+
+  All other cross-service access is API or events.

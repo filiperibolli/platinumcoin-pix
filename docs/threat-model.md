@@ -91,6 +91,7 @@ are marked ⚠️.
 | Forged JWT | HS256 signature verified in `common-lib` filter on every service ✅ | HS256 shared secret is weaker than RS256 — **prod uses RS256+JWKS** ⚠️ |
 | Replayed stolen token | 15-min `exp`, `jti`, `iat` claims ✅ | No token revocation list locally ⚠️ |
 | Impersonating an internal service | Local trust = network isolation only | **Prod: mTLS between services** ⚠️ |
+| Forged inbound settlement webhook (`POST /v1/inbound/pix`) credits an account with fake money | Shared-token header (`SPI_WEBHOOK_TOKEN`) validated by settlement-service before any posting; dedupe by `endToEndId` ✅ | Local token is a stand-in — **prod: mTLS + BACEN message signing** ⚠️ |
 
 ### T — Tampering (integrity)
 
@@ -101,6 +102,7 @@ are marked ⚠️.
 | Debit written without matching credit | Both legs are the *same* atomic transaction ✅ | — |
 | Rewriting ledger history to hide a debit | Entries are append-only; corrections are compensating postings, never updates/deletes ✅ | Enforced by convention + review; no DB-level immutability locally ⚠️ |
 | Tampering the audit trail | S3 object-write is append-only | **Prod: S3 Object Lock / WORM** ⚠️ |
+| Tampered statement cursor pages another account's entries (the base64 cursor embeds the DynamoDB partition key) | Decoded cursor's `pk` must equal the authenticated account, else `400` (steps 16/41) ✅ | — |
 | Man-in-the-middle altering requests | localhost only | **Prod: TLS everywhere** ⚠️ |
 
 ### R — Repudiation

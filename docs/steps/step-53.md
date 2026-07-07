@@ -1,6 +1,6 @@
 # Step 53 — Cold statement retrieval: async export with polling status URL
 
-> **Sprint 14 — Relational counterpart & extensions (Block Q)** · **Flow:** slow-read async export · **Infra que sobe:** SQS `statement-export-queue` (+DLQ)
+> **Sprint 14 — Relational counterpart & extensions (Block Q)** · **Flow:** slow-read async export · **Infra que sobe:** SQS `statement-export-queue` (+DLQ) + S3 bucket `pix-statement-exports`
 
 ## Objective
 Historical statement (beyond the hot window) as an asynchronous export: `POST` an export request → `202 Accepted` with a status URL → a queue-driven worker assembles the artifact from the cold archive (step 43) into `pix-statement-exports` → the status endpoint flips to `READY` with a download URL. The standard fintech pattern for slow reads ("building your statement…").
@@ -15,7 +15,7 @@ Steps 41 (hot statement API), 43 (cold archive populated).
 1. **Contract first** — extend `docs/api/openapi.yaml`:
    - `POST /v1/accounts/me/statement/exports` body `{ "fromMonth": "2025-01", "toMonth": "2025-06" }` → `202` `{ "exportId", "status": "PENDING", "statusUrl" }`. Requires `Idempotency-Key`; same key+range replays the same `exportId`. Range validation: `fromMonth <= toMonth`, max 24 months, only months at/after account creation; ranges inside the hot window ⇒ `422 USE_HOT_STATEMENT`.
    - `GET /v1/statement-exports/{exportId}` → `{ "exportId", "status", "requestedRange", "downloadUrl"?, "expiresAt"?, "failureReason"? }`. Ownership enforced from the JWT.
-2. Export request item in DynamoDB (`EXPORT#<exportId>`, GSI by account) + message to new `statement-export-queue` (+DLQ) via the outbox.
+2. Export request item in DynamoDB (`EXPORT#<exportId>`, GSI by account) + message to new `statement-export-queue` (+DLQ) via the outbox; extend the init scripts to create the queue(+DLQ) and the `pix-statement-exports` bucket.
 3. Worker: read archive objects `account=<id>/yyyy-MM.jsonl` for the range, merge → CSV artifact `exports/<accountId>/<exportId>.csv` in `pix-statement-exports`, presign (LocalStack) 1h expiry, mark READY. Missing months skipped, not failed. Failures → bounded retries → FAILED with reason; DLQ alarm covers the rest.
 4. Idempotent worker: re-delivery of the same exportId must not duplicate artifacts (conditional PENDING→READY).
 5. Front-of-house polish: `Retry-After: 5` on `PENDING` responses.

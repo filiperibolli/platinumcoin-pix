@@ -6,7 +6,7 @@
 `POST /v1/pix-keys` (CPF/EMAIL/PHONE/EVP), `GET /v1/pix-keys`, `DELETE /v1/pix-keys/{keyValue}` on account-service, with **global uniqueness enforced by a conditional `PutItem`**.
 
 ## Why / what you'll learn
-The **conditional-put-as-UNIQUE-constraint** idiom — the DynamoDB pattern that reappears throughout this project (idempotency, ledger entries, event dedup). `PutItem` with `ConditionExpression: attribute_not_exists(pk)`: two users racing to register the same e-mail → exactly one wins, the other gets `ConditionalCheckFailedException` → `409`. No read-then-write race is possible, because the check and the write are one atomic operation. EVP keys are server-generated UUIDs. Delete is ownership-guarded (only the owning account).
+The **conditional-put-as-UNIQUE-constraint** idiom — the DynamoDB pattern that reappears throughout this project (idempotency, ledger entries, event dedup). `PutItem` with `ConditionExpression: attribute_not_exists(pk)`: two users racing to register the same e-mail → exactly one wins, the other gets `ConditionalCheckFailedException` → `409`. No read-then-write race is possible, because the check and the write are one atomic operation. EVP keys are server-generated UUIDs. Delete is ownership-guarded (only the owning account). Note the deliberate asymmetry with payments: deleting another account's key returns `403` (existence revealed), while reading another account's transaction returns `404` (step 22) — Pix keys are globally resolvable identifiers, so their existence is not secret; a transaction's existence is.
 
 ## Prerequisites
 Step 09.

@@ -42,11 +42,48 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 - ARCHITECTURE §6.3: clearing-account write sharding upgraded from "documented,
   N=1 locally" to implemented and load-proven (step 52), with reversal-shard pinning.
 - ADR-0001 now cross-references the measured relational counterpart (ADR-0009).
+- **Spec consistency pass (pre–step 01)** — a full-repo review resolved contradictions
+  between specs before any code exists:
+  - Internal Pix now terminates in `SETTLED` (was `DEBITED`, which step 22 maps to
+    `PROCESSING` — an internal send would have looked "processing" forever). State
+    machine gains the internal short branch; the terminal transition emits `PixSettled`
+    (ARCHITECTURE §4/§6.4, steps 21/22/28, PLAN).
+  - Daily limit re-specified as a **calendar-day reservation counter**
+    (`LIMIT#<accountId>`/`DAY#<date>` in `pix_transactions`, reserve/release via atomic
+    `ADD`) — the previous "sum today's transactions" had no supported access pattern
+    (no index by debtor account) and "rolling window" contradicted the calendar-day
+    test (data-model §4, step 20, PLAN).
+  - ADR-0006 now documents the two deliberate shared-table exceptions (settlement's
+    guarded outbox writes to `pix_transactions`; `pix_processed_events`) instead of
+    contradicting the design in steps 31/33/34/37.
+  - Dropped the never-consumed `inbound-pix-queue` (step 36, ARCHITECTURE §6.8, PLAN,
+    README, local-dev); the inbound webhook is authenticated with `SPI_WEBHOOK_TOKEN`
+    (step 37, threat model — a forged webhook could mint spendable balance).
+  - Idempotency `IN_PROGRESS` orphans: stale claims (>60s) are reclaimable and
+    `expiresAt` is checked on read (DynamoDB TTL is lazy) — a crash no longer blocks
+    the client until the 24h TTL (ADR-0002, step 19, data-model §5).
 
 ### Fixed
 - README quick-start example sent `amount` as a JSON number (`125.50`); the contract
   requires a decimal **string** (`"125.50"`) — example corrected to match
   `docs/api/openapi.yaml`.
+- OpenAPI contract gaps: added the missing `GET /notifications/stream` (SSE), per-path
+  `servers` mapping each route group to its local port (no gateway), problem+json
+  bodies on 401/404/409/503, the `counterpart` field step 41 maps into
+  `StatementEntry`, and a bounded strictly-positive `amount` pattern (`"0.00"` and
+  overflow-sized values were previously accepted by the contract).
+- Factual/wording corrections from the consistency pass: GSIs *can* be added after
+  table creation — it's LSIs that can't (step 17, scripts also renumbered to avoid a
+  double `03-`); the ledger balance `version` is a change counter, not optimistic
+  locking (ARCHITECTURE §6.3, step 13); partition math restated in WCU with the 2×
+  transactional-write cost (§1.4/§6.3 — the clearing ceiling is ~500 tx/s, not 1,000,
+  strengthening the sharding argument); `SEED` seeds Σ balances to zero and is exempt
+  from the non-negative condition alongside `SPI_CLEARING` (steps 12/14, data-model);
+  statement cursors are validated against the authenticated account — the base64
+  `LastEvaluatedKey` embeds the partition key (steps 16/41, threat model); container
+  diagrams gained the missing FRAUD→Redis and LED→Redis edges; step 53 declares the
+  `pix-statement-exports` bucket it writes to; `docs/observability.md` added to the
+  repo maps (CLAUDE.md, README).
 
 <!--
 Template for step entries (append under the matching category):

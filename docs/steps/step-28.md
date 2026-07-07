@@ -15,7 +15,7 @@ Step 27.
 1. `OutboxEvent(eventId, eventType, payload, occurredAt, correlationId)` + envelope serialization in common-lib.
 2. Replace the plain status write with a `TransactWriteItems`: update tx `META` (status DEBITED, guarded `status = :expectedFrom`) + put `OUTBOX#<eventId>` with `gsi3pk=OUTBOX#UNPUBLISHED`, `gsi3sk=occurredAt`.
 3. Emit `PixDebited` for external sends; also wire `FraudCheckSkipped` (from step 25's seam) as an outbox event.
-4. Keep internal sends' terminal transition writing an outbox event too (for audit/notify later).
+4. Internal sends' terminal transition (→SETTLED, step 21) writes a `PixSettled` outbox event too — audit and notification consume it exactly like an external settlement.
 
 ## Tests (TDD)
 - `OutboxWriteIT` — a send produces the tx in DEBITED **and** exactly one unpublished outbox item, atomically (force a failure → neither is written).

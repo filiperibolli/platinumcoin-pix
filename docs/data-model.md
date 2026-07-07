@@ -109,7 +109,7 @@ DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (i
 
 **Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 15) asserts this under a concurrent debit storm.
 
-**System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
+**System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users — **also exempt**: its balance is negative by construction, the double-entry counterpart of the seeded user balances, so Σ over all accounts nets to **zero**). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
 
 **Statement pagination:** `Query pk = ACCOUNT#id AND begins_with(sk, "ENTRY#")`, `ScanIndexForward=false` (newest first), `Limit=n`; the API cursor is the base64 of `LastEvaluatedKey`. Timestamp-prefixed sort keys give chronological ordering for free — a core DynamoDB idiom.
 
@@ -117,7 +117,7 @@ DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (i
 
 ## 4. `pix_transactions` (owner: payment-service)
 
-Access patterns: get transaction by id (status query); find by endToEndId (reconciliation, inbound dedup); scan stuck transactions by status+age; **write outbox events atomically with the transaction** (same table → same `TransactWriteItems`).
+Access patterns: get transaction by id (status query); find by endToEndId (reconciliation, inbound dedup); scan stuck transactions by status+age; **write outbox events atomically with the transaction** (same table → same `TransactWriteItems`); reserve/release daily-limit usage per account per calendar day.
 
 | | Value |
 |---|---|
@@ -167,6 +167,21 @@ Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark
 
 > **Learning note — sparse GSI:** an item only appears in a GSI if it has the index's key attributes. Removing `gsi3pk` is therefore a cheap, atomic "done" flag: the pending-work index stays O(in-flight), never O(history).
 
+**Daily-limit usage item (same table):** the counter behind step 20's limit check. The table deliberately has **no index by debtor account**, so "today's outbound total" is *not* a query-and-sum — it is a maintained counter with reserve/release semantics:
+
+```json
+{
+  "pk": "LIMIT#acc-001",
+  "sk": "DAY#2026-07-07",
+  "usedCents": 137550,
+  "expiresAt": 1751896800
+}
+```
+
+- **Reserve** (before any money moves): `UpdateItem ADD usedCents :amount` with `ConditionExpression: attribute_not_exists(usedCents) OR usedCents <= :limitMinusAmount` (the account's `dailyLimitCents` is read from account-service first; the comparison value is computed client-side because condition expressions cannot do arithmetic). Condition fails ⇒ `422 LIMIT_EXCEEDED`.
+- **Release** (fraud-deny, insufficient funds, reversal): `ADD usedCents -:amount` — a rejection returns exactly what it reserved.
+- Window: **calendar day** (America/Sao_Paulo), matching how Pix limits are communicated to users; TTL (~48h) cleans past days.
+
 Status transitions are guarded updates (`ConditionExpression: #status = :expectedFrom`) so out-of-order consumers cannot regress a `SETTLED` transaction back to `SENT_TO_SPI`.
 
 > **Learning note — GSI on status:** `STATUS#<status>` as a GSI partition key concentrates all same-status items in few partitions; fine at this scale for a scan every 60s, but at very large scale you'd shard it (`STATUS#DEBITED#<0-15>`). Documented as the scale-out path; N=1 locally.
@@ -193,7 +208,7 @@ Status transitions are guarded updates (`ConditionExpression: #status = :expecte
 }
 ```
 
-Claimed with `attribute_not_exists(pk)`; see ADR-0002 for full semantics (replay, 409 on hash mismatch, IN_PROGRESS handling).
+Claimed with `attribute_not_exists(pk)`; the record also carries `claimedAt` — an `IN_PROGRESS` claim older than 60s is stale (crash mid-flight) and may be re-claimed. Note that DynamoDB TTL deletion is **lazy**: reads must check `expiresAt` themselves and treat expired-but-present records as absent. See ADR-0002 for full semantics (replay, 409 on hash mismatch, IN_PROGRESS handling).
 
 ---
 

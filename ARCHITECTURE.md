@@ -57,7 +57,7 @@ Pix is operated by BACEN through the **SPI** (Sistema de Pagamentos Instantâneo
 ### 1.4 Scale assumptions (back-of-envelope)
 
 - 5M tx/day ÷ 86,400s ≈ **58 TPS average**; peaks 8–10× → **500+ TPS**.
-- Each send produces ~2 ledger entries + 1 transaction item + 1 outbox item ≈ **4 writes/tx** → ~230 WPS average, ~2,000 WPS peak. Well within DynamoDB on-demand capacity; a single partition handles ~1,000 WPS, and our partition key (`accountId`) spreads load across millions of partitions. Hot-partition risk is concentrated on the internal **clearing account** — mitigated in §6.3.
+- Each send produces ~2 ledger entries + 1 transaction item + 1 outbox item ≈ **4 writes/tx** → ~230 writes/s average, ~2,000 writes/s peak. Well within DynamoDB on-demand capacity — but mind the honest unit: a partition caps at **1,000 WCU/s**, and *transactional* writes cost **2× WCU**, so a single hot item sustains only ~**500 transactional updates/s**. Our partition key (`accountId`) spreads user load across millions of partitions; the risk concentrates on the internal **clearing account**, which the 500+ TPS peak pushes right to that ceiling — mitigated in §6.3.
 - Reads are balance-dominated (every app open). Assuming 10 reads per transaction → ~580 RPS avg, ~5,000 RPS peak → **cache required** to meet 300ms p99 cheaply (Redis, §6.9).
 - 5M tx/day × ~2KB (tx + entries) ≈ 10GB/day ≈ 3.6TB/yr hot data → 5-year online requirement pushes old statement pages to **S3 cold archive** (§6.10).
 - All of this scales down to one PC: LocalStack + 8 JVM services + Redis fits comfortably in 32GB (each service capped at 512MB heap).
@@ -103,6 +103,8 @@ graph TB
     PAY --> FRAUD
     PAY --> LED
     PAY --> REDIS
+    FRAUD --> REDIS
+    LED --> REDIS
     LED --> DDB
     ACC --> DDB
     PAY --> DDB
@@ -159,7 +161,8 @@ RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
                 │               │           │
                 └ REJECTED      │           ├→ FAILED → REVERSED (compensating credit)
                   (fraud/limit) │           └→ (timeout) … reconciliation resolves
-                                └ REJECTED (insufficient funds)
+                                ├ REJECTED (insufficient funds)
+                                └ (internal send) → SETTLED directly — no SPI leg
 ```
 
 ---
@@ -254,7 +257,7 @@ graph TB
         a6[+ SNS pix-events · SQS settlement-queue+DLQ · mock-bacen-spi · settlement-service]
     end
     subgraph s8["After S8 — Receive & notify"]
-        a8[+ notification-queue · inbound-pix-queue · notification-service · SSE]
+        a8[+ notification-queue · notification-service · SSE]
     end
     subgraph s10["After S10 — Audit"]
         a10[+ audit-queue · S3 buckets]
@@ -352,12 +355,13 @@ sequenceDiagram
 Guards enforced *inside* the transaction (never as a prior read):
 - `balance >= :amount` on the debtor → **no negative balance**, checked atomically with the debit.
 - `attribute_not_exists` on the entry keyed by `txId` → **the same transaction can never post twice**.
-- `version` attribute (optimistic locking) on balances; DynamoDB serializes conflicting items via `TransactionConflict`, retried with jitter.
+- a `version` counter on balances, incremented on every posting — an audit/debugging aid, **not a lock**: serialization of conflicting transactions is provided by DynamoDB itself (`TransactionConflict`), retried with jitter.
 
 Property-style concurrency tests (Sprint 3, step 15 — hand-written) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
 
 **Clearing-account hot partition (forward reference to Sprint 14).** All external sends credit
-`ACCOUNT#SPI_CLEARING` → at 500 TPS that single item nears DynamoDB's ~1,000 WPS per-partition ceiling.
+`ACCOUNT#SPI_CLEARING` → at 500 TPS that single item exceeds its real ceiling (a partition caps at
+1,000 WCU/s and transactional writes cost 2× WCU → ~500 transactional updates/s for one item).
 Mitigation: **write sharding** — N clearing sub-accounts (`SPI_CLEARING#00..#15`) picked by hash of
 `txId`; the logical balance is the sum. Implemented and **proven under the Black Friday k6 profile in
 step 52** (before/after in `docs/sharding-findings.md`); the shard used at debit time is stored on the
@@ -392,7 +396,7 @@ sequenceDiagram
     PAY->>LED: POST /postings (debit payer, credit payee, txId)
     LED->>DDB: TransactWriteItems (atomic debit+credit+entries)
     DDB-->>LED: OK
-    PAY->>DDB: tx = DEBITED (internal → treated as settled) + complete idempotency
+    PAY->>DDB: tx = SETTLED (internal settles instantly — no SPI leg) + complete idempotency
     PAY-->>App: 202 Accepted {transactionId, status}
     App->>PAY: GET /v1/payments/{id} → status
 ```
@@ -451,6 +455,7 @@ sequenceDiagram
     autonumber
     participant App
     participant PAY as payment-service
+    participant LED as ledger-service
     participant DDB as DynamoDB
     participant SNS as SNS/SQS
     participant SET as settlement-service
@@ -515,7 +520,7 @@ SLO-breach alert. Compensation is a *new* posting, never an update/delete — th
 
 ---
 
-### 6.8 Flow — Receive Pix + real-time notification   · Sprint 8 · infra: **notification-queue + inbound-pix-queue + SSE**
+### 6.8 Flow — Receive Pix + real-time notification   · Sprint 8 · infra: **notification-queue + SSE**
 
 Inbound Pix is idempotent by `endToEndId` (BACEN may redeliver); the clearing account is the debit leg,
 mirroring outbound. The notification-service holds one SSE connection per user and routes events to the
@@ -539,6 +544,11 @@ sequenceDiagram
     Note over SET,NOT: outbox → SNS → notification-queue
     NOT-->>App: SSE push "You received R$ X"
 ```
+
+The inbound webhook is **authenticated with a shared token** (`SPI_WEBHOOK_TOKEN`) locally — it moves
+money, so it is never anonymous; the production posture is mTLS + BACEN message signing (threat model,
+boundary B4). It is handled synchronously and idempotently by settlement-service; a buffering queue in
+front of it is a documented production evolution, not local infra.
 
 ---
 

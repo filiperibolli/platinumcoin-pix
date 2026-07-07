@@ -14,11 +14,11 @@ Steps 05, 17.
 ## Tasks
 1. Scaffold `services/payment-service` (skeleton + Dockerfile + compose, port 8084).
 2. `Transaction` domain record + `TransactionRepository` port; `DynamoTransactionRepository.create(...)`.
-3. `POST /v1/payments/pix`: validate (`pixKey` required, `amount` matches `^\d+\.\d{2}$`, `description` ≤140); parse amount → `long` cents; generate `txId` + `endToEndId`; persist `status=RECEIVED` with `debtorAccountId` from the JWT; respond `202` + `Location: /v1/payments/{txId}` + body `{transactionId, endToEndId, status:"PROCESSING"}`.
+3. `POST /v1/payments/pix`: validate (`pixKey` required, `amount` matches `^\d{1,9}\.\d{2}$` **and is strictly positive** — `"0.00"` ⇒ 400, the bounded pattern keeps the value inside `long` cents, `description` ≤140); parse amount → `long` cents; generate `txId` + `endToEndId`; persist `status=RECEIVED` with `debtorAccountId` from the JWT; respond `202` + `Location: /v1/payments/{txId}` + body `{transactionId, endToEndId, status:"PROCESSING"}`.
 4. Validation failures ⇒ 400 problem+json.
 
 ## Tests (TDD)
-- `SendSkeletonIT` (MockMvc + LocalStack) — valid request ⇒ 202, `Location` set, item persisted as RECEIVED with debtor = token account; malformed amount ⇒ 400; missing token ⇒ 401.
+- `SendSkeletonIT` (MockMvc + LocalStack) — valid request ⇒ 202, `Location` set, item persisted as RECEIVED with debtor = token account; malformed amount ⇒ 400; `"0.00"` ⇒ 400; missing token ⇒ 401.
 - `endToEndId` format test.
 
 ## Verify locally

@@ -15,6 +15,7 @@ ARCHITECTURE.md        system design + answers to the 7 key design questions —
 docs/adr/              decision records — do not contradict them; propose a new ADR to change one
 docs/data-model.md     DynamoDB tables, keys, GSIs, ledger invariants — the schema source of truth
 docs/messaging-kafka-appendix.md  SNS/SQS ↔ Kafka concept mapping (broker portability)
+docs/observability.md  metric catalog + alert rules (created in step 44)
 docs/api/openapi.yaml  REST contract — the API source of truth; code conforms to it, not vice versa
 docs/local-dev.md      runbook: ports, env vars, manual test commands
 docs/steps/step-XX.md  the spec of each implementation step
