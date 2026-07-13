@@ -325,7 +325,7 @@ sequenceDiagram
     App->>AUTH: POST /v1/auth/login {username, password}
     AUTH->>AUTH: verify against seeded users
     AUTH-->>App: 200 {accessToken (JWT HS256), expiresIn: 900}
-    Note over App,AUTH: later calls carry Authorization: Bearer &lt;JWT&gt;;<br/>common-lib JwtAuthFilter validates on every protected route
+    Note over App,AUTH: later calls carry Authorization: Bearer <JWT><br/>common-lib JwtAuthFilter validates on every protected route
 ```
 
 **Why first / what it earns:** a stable auth edge means every subsequent flow can be exercised
@@ -606,16 +606,16 @@ sequenceDiagram
     participant REDIS as Redis
     participant LED as ledger-service
     App->>PAY: GET /v1/accounts/me/balance
-    PAY->>REDIS: GET balance:&lt;accountId&gt;
+    PAY->>REDIS: GET balance:<accountId>
     alt hit
         REDIS-->>PAY: cached balance (≤5s old)
     else miss
         PAY->>LED: GET balance (ConsistentRead)
         LED-->>PAY: balance
-        PAY->>REDIS: SET balance:&lt;accountId&gt; TTL 5s
+        PAY->>REDIS: SET balance:<accountId> TTL 5s
     end
     PAY-->>App: 200 {balance}
-    Note over LED,REDIS: on every posting → DEL balance:&lt;affected accounts&gt;
+    Note over LED,REDIS: on every posting → DEL balance:<affected accounts>
 ```
 
 Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts#txId`,
@@ -639,7 +639,7 @@ sequenceDiagram
     participant S3 as S3 audit-log
     SNS->>Q: every event (fan-out, no filter)
     Q->>SET: batch (100 events or 30s)
-    SET->>S3: append JSONL yyyy/MM/dd/HH/&lt;service&gt;-&lt;uuid&gt;.jsonl
+    SET->>S3: append JSONL yyyy/MM/dd/HH/<service>-<uuid>.jsonl
     Note over SET,S3: bucket: versioning + Object Lock (compliance) + retention 5y
 ```
 
@@ -710,8 +710,8 @@ sequenceDiagram
     PAY-->>App: 202 {exportId, status: PENDING, statusUrl}
     Note over PAY,Q: export request item + outbox event →<br/>SNS → filtered subscription → queue
     Q->>PAY: export requested (worker · dedupe by eventId)
-    PAY->>S3: read archive account=&lt;id&gt;/yyyy-MM.jsonl for the range
-    PAY->>S3: write exports/&lt;accountId&gt;/&lt;exportId&gt;.csv · presign (1h)
+    PAY->>S3: read archive account=<id>/yyyy-MM.jsonl for the range
+    PAY->>S3: write exports/<accountId>/<exportId>.csv · presign (1h)
     PAY->>PAY: guarded PENDING → READY
     App->>PAY: GET /v1/statement-exports/{exportId}
     PAY-->>App: 200 {status: READY, downloadUrl, expiresAt}
