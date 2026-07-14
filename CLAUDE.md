@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-Personal project with two goals: **learning** (AWS/LocalStack, DynamoDB modeling, messaging, distributed-systems patterns, observability — every step explains the *why*) and **portfolio** (a realistic, well-documented payments platform with honest trade-offs). Optimize decisions for clarity and pedagogical value over cleverness.
+My staff/architect-level answer to one question: *if I owned Pix at a fintech and started from a blank page, how would I build it?* The artifact is a realistic instant-payments platform where money correctness is non-negotiable and everything else is an explicit budget, every non-trivial decision is written down with its trade-off (ADRs), and the code exists to prove the design survives real failure modes. The build doubles as deliberate practice with the underlying stack (AWS/LocalStack, DynamoDB modeling, messaging, distributed-systems patterns, observability) — so **every step still explains the *why***, and decisions optimize for clarity and reviewability over cleverness.
 
 ## Project in one paragraph
 
