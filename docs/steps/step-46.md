@@ -1,6 +1,8 @@
 # Step 46 — End-to-end journey + failure drill
 
 > **Sprint 12 — Hardening, E2E & load** · **Flow:** whole-system proof · **Infra que sobe:** none new
+>
+> **Validates (README §OKRs & KPIs):** KR1.1 (conservation-of-money assertion across all accounts), KR3.1 (failure drill reconciles < 5 min), KR3.2 (DLQ drains after the drill), KR4.1 (one journey followed by correlationId across every service).
 
 ## Objective
 One automated E2E suite (and a mirrored manual runbook script) proving the whole story on the full compose stack: login → register key → check balance → send internal Pix (idempotent retry included) → send external Pix → settlement completes → sender notified → inbound Pix → receiver notified in real time → statement shows everything → **failure drill** (BACEN down: DLQ fills, reconciliation reverses or completes < 5 min, alerts fire and resolve) → conservation of money asserted across all accounts.

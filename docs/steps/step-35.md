@@ -1,6 +1,8 @@
 # Step 35 — Reconciliation resolution + <5-min SLO alert
 
 > **Sprint 7 — Resilience & reconciliation** · **Flow:** failure → bounded resolution · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.7
+>
+> **Validates (README §OKRs & KPIs):** KR3.1 (`reconciliation.oldest.seconds` metric with the `>300` SLO alert); feeds the DLQ/retry/SPI-error KPI's reconciliation angle.
 
 ## Objective
 `ReconciliationResolver` completes the loop: for each stuck tx, query SPI by `endToEndId` — SETTLED there ⇒ finalize locally; FAILED/not-found (and older than a safety window) ⇒ reverse via the step-33 path; SPI unreachable ⇒ leave for next cycle. Alert when `reconciliation.oldest.seconds > 300` (the SLO). DLQ messages become redundant-but-harmless (the resolver is idempotent).

@@ -1,6 +1,8 @@
 # Step 44 — Observability: Prometheus + Grafana + silence alerts + path tracing
 
 > **Sprint 11 — Observability** · **Flow:** see the whole system · **Infra que sobe:** Prometheus + Grafana · **Diagram:** ARCHITECTURE §6.11, §7.7
+>
+> **Validates (README §OKRs & KPIs):** KR1.1 (funnel REJECTED branch + idempotency-replay counter = 0), KR2.1/KR2.2 (p99-vs-SLO latency panels), KR3.2 (DLQ-depth alert), KR4.1 (`scripts/trace.sh` + per-stage path-audit); KPIs: funnel conversion, send/balance p99, fraud mix + fail-open rate, DLQ/retry/SPI-error.
 
 ## Objective
 Full observability: every service exposes `/actuator/prometheus` (Micrometer); a Prometheus container scrapes all of them; Grafana (provisioned as code in `infra/observability/`) ships two dashboards — **Technical** (latency p50/p99 vs SLO lines, throughput, errors, queue/DLQ depth, cache hit, JVM) and **Business Funnel** (payments per stage RECEIVED→…→SETTLED with REJECTED/REVERSED branches, conversion %, fraud mix, reconciliation actions, R$ settled). An `AlertEvaluator` implements the silence alerts. The SLF4J path-logging contract is audited end to end.

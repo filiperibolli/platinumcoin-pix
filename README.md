@@ -86,26 +86,54 @@ graph TB
     NOT -->|SSE/WebSocket| APP
 ```
 
-## Why one domain (and why fraud lives next to the ledger)
+## Why one domain (and what splitting it would cost)
 
-Eight deployables, but **one bounded context**. The whole platform models a *single* business capability — "move a Pix from A to B, correctly and fast" — with one ubiquitous language (accounts, keys, transactions, ledger entries, settlement) owned by one team in one repo. The services are a decomposition **inside** that domain along technical seams — where **consistency, latency and scaling profiles differ** — not a split into separate business domains. The ledger needs serializable-ish writes; fraud needs single-digit-ms reads and independent failure isolation; settlement is IO-bound on a slow external rail; notifications hold long-lived connections. Those are different *shapes of the same problem*, so they become different services — but not different domains (ADR-0006).
+Eight deployables, but **one bounded context** — a deliberate choice, and the honest first reason is the one people skip past: **this is a single-machine, single-team, learning-and-portfolio artifact.** The whole platform runs under one `docker-compose`, is owned by one person in one repo, and exists to be read and argued with end to end. At that scale, carving it into separate *business* domains would be organizational machinery with no organization to serve — coordination cost with nothing to coordinate.
 
-**Why keep fraud in the same domain as the ledger?** At a large fintech, anti-fraud is often its own org — a shared risk platform spanning cards, onboarding and Pix. I deliberately did *not* model it that way here, because at this scale a cross-domain boundary would cost more than it buys:
+But "it's local" is not the only reason it *should* stay one domain even at real scale-for-one-team:
 
-- **The fraud engine is Pix-specific.** Its signals are velocity, amount, new-payee and odd-hours *over Pix transactions*. There is no other product to share it with yet — a shared platform would be abstraction ahead of a second consumer.
-- **It sits on the money path under a 200ms budget.** Fraud scoring is called synchronously between limit-check and ledger debit. A separate domain means a network + contract + versioning boundary in the hottest latency path — pure cost against the p99 < 2s send SLO.
-- **Failure isolation is already handled without a domain split.** Fraud is fail-open (ADR-0005): if it's slow or down, the payment proceeds and the case is reviewed post-hoc. That gives the blast-radius separation a domain boundary would give — without the coupling.
+- **It models a single business capability.** "Move a Pix from A to B, correctly and fast" is one capability with one ubiquitous language (accounts, keys, transactions, ledger entries, settlement). The services are a decomposition **inside** that domain along *technical* seams — where consistency, latency and scaling profiles differ (the ledger needs serializable-ish writes; fraud needs single-digit-ms reads; settlement is IO-bound on a slow external rail; notifications hold long-lived connections) — not a split into separate businesses (ADR-0006).
+- **Conway's law.** One team maps cleanly to one domain. Multiple domains presuppose multiple owning teams with independent roadmaps; inventing those boundaries before the teams exist manufactures coordination cost, not autonomy.
+- **Avoid premature abstraction.** A shared risk platform, a standalone rail-integration domain, an identity domain — each is the *right* target the day a second consumer or a second team appears. Building them now is abstraction ahead of a second caller: the contract-and-versioning tax paid before anything collects it.
+- **Keep the failure story readable.** One deploy pipeline, one `correlationId` that reconstructs a whole transaction, one place to reason about what breaks. The blast-radius isolation a domain boundary would buy is already provided *within* the domain — fraud is fail-open (ADR-0005), settlement is fully buffered by SQS (BACEN down ⇒ queue grows, users unaffected at accept-time).
 
-**Trade-offs I'm accepting:**
+**What splitting into multiple domains would look like** — the day the org (not the code) demands it:
+
+| Domain (would-be) | Services it absorbs | Core responsibility | Cross-domain communication | What changes / the trade-off |
+|---|---|---|---|---|
+| **Payments** (core) | payment-service, ledger-service | Orchestrate the send/receive saga; own the money and its invariants | Publishes `PixDebited`/`PixSettled`; calls Risk and Rail via versioned contracts | Stays the anchor, but in-process calls (fraud, key resolution) become network hops with contracts to version |
+| **Risk** | fraud-service (+ shared models) | Scoring across *all* products (Pix, cards, onboarding), block-lists, case management | Sync `score` API under an SLA contract; consumes the event stream for async re-scoring | Reusable by other products — but adds a network + contract + versioning boundary **on the 200ms money path**, the exact cost the one-domain design avoids today |
+| **Rail integration** | settlement-service, mock-bacen-spi | Own every external rail (SPI today; TED/cards/boletos later), retries, reconciliation, rail auth | Consumes settlement events; calls back via `PixSettled`/`PixReversed` | Rails evolve independently of payments; the outbox→queue→worker seam already exists, so this is the **cheapest** split — but reconciliation now spans two domains' state |
+| **Identity & directory** | auth-service, account-service | Users, credentials/MFA, accounts, Pix keys, DICT resolution | Issues JWT; serves key→account lookups as an API | Independently hardened and audited — but key resolution (hot path of every send) becomes a cross-domain call instead of a local one |
+| **Customer comms** | notification-service | All outbound customer messaging (push, SSE, email, SMS) | Consumes the event fan-out; no callbacks | Already an event consumer only, so it's the **lowest-risk** split — mostly a team-ownership move |
+
+**How the data would split — and why that's the expensive part.** A real domain split is a **data** split first: each domain **privately owns its store**, no other domain reads its tables directly, and data crosses a boundary only through an API call or an event (*data on the inside vs. data on the outside*). Mapping today's stores onto the would-be domains:
+
+| Domain (would-be) | Owns its data store | Data it holds | How other domains touch it |
+|---|---|---|---|
+| **Payments** (core) | DynamoDB `pix_ledger`, `pix_transactions` (+ outbox, daily-limit counters, exports), `pix_idempotency`; Redis balance cache | Balances, double-entry entries, tx state machine, idempotency keys | Others read balance/status via the Payments **API**; state changes are emitted as **events** — never a direct table read |
+| **Risk** | Redis velocity counters + its own scoring/block-list store | Per-account velocity windows, block-lists, case state | Payments calls the `score` **API**; Risk consumes the **event stream** for async re-scoring — it never reads the ledger |
+| **Rail integration** | Its own settlement store; S3 audit bucket | Settlement lifecycle, reconciliation cursors, rail audit trail | Consumes settlement **events**, calls back via `PixSettled`/`PixReversed` **events** |
+| **Identity & directory** | DynamoDB `pix_accounts`, `pix_keys` | Users, credentials, Pix keys, the DICT map | Serves key→account resolution and account reads as an **API**; issues JWTs |
+| **Customer comms** | Its own delivery/read-model store | Notification log, delivery status, SSE registry | **Event** consumer only; nobody reads its store |
+
+The expensive part is not drawing that table — it's that **two things the current design does in a single atomic write can no longer happen across a boundary**, both documented as deliberate exceptions in ADR-0006:
+
+1. **The outbox stops being free.** Today settlement-service writes `pix_transactions` *directly* so a status change **and** its outbox event commit in one `TransactWriteItems` (ADR-0004) — no dual-write window. Move settlement into a **Rail** domain and that table belongs to **Payments**: the atomic state-change-plus-event can't span two domains' stores, so you reintroduce exactly the dual-write problem the outbox exists to kill — now solved with a cross-domain **saga** and inter-domain reconciliation, not just reconciliation against BACEN.
+2. **Shared dedup fragments.** The one tiny `pix_processed_events` table (ADR-0006 exception #2) becomes one consumer-dedup store **per domain** — more moving parts, same guarantee.
+
+So the split is cheap on the *service* seams (they already talk via ports/APIs/events) and expensive on the *data* seams (atomicity that lives inside one DynamoDB transaction today turns into eventual consistency plus reconciliation between domains). That asymmetry is the whole reason the boundary is drawn where it is.
+
+**The trade-off I'm accepting by staying one domain:**
 
 | Keeping it one domain buys | The cost / risk | How it's mitigated |
 |---|---|---|
 | One ubiquitous language; no cross-domain contract & versioning tax | Can't be independently owned/scaled by separate orgs | Right call for one team at this scale (Conway); revisit when a second team appears |
 | Cheap refactoring across service seams (still one repo) | Risk of drifting into a **distributed monolith** | `common-lib` kept deliberately thin; **no shared tables** except two documented exceptions (ADR-0006); APIs/events only |
-| `correlationId` reconstructs a whole transaction across all services trivially | Fraud can't yet be reused by other products | Fraud sits behind a port — it can **graduate to its own domain** later without touching the payment orchestrator |
+| `correlationId` reconstructs a whole transaction across all services trivially | Capabilities (fraud, rail) can't yet be reused by other products | Each sits behind a port/API/event — any row above can **graduate to its own domain** later without rewriting the payment orchestrator |
 | One deploy pipeline, one failure story to reason about | 8 JVMs of operational surface for one team | 512MB heap caps, one-command `docker-compose`, fail-open so fraud down ≠ payments down |
 
-The seams are drawn so this *can* split later — fraud into a risk platform, settlement into a rail-integration domain — the day the org (not the code) demands it. Splitting earlier would be paying an organizational tax nobody is collecting yet.
+The seams are drawn so each row of the split table **can** become its own domain later — because every cross-service call already goes through a port, an API or an event, never a shared in-memory object. Splitting earlier would pay an organizational tax nobody is collecting yet.
 
 ## Roadmap — 14 sprints (vertical, flow by flow)
 
@@ -164,40 +192,38 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 
 ## OKRs & KPIs
 
-Framed as if this were a real platform: **OKRs** are the outcomes the architecture commits to (each Key Result is a hard, testable number — the k6 profiles and Grafana dashboards turn them into pass/fail), and **KPIs** are the steady-state signals you'd watch on the wall afterwards. The KRs are the SLOs from [The problem](#the-problem) made measurable.
+Framed as if this were a real platform: **OKRs** are the outcomes the architecture commits to, and **KPIs** are the steady-state signals you'd watch on the wall afterwards. The KRs are the SLOs from [The problem](#the-problem) made measurable.
+
+This set is deliberately **trimmed to the outcomes an operator can verify from live telemetry** — Prometheus metrics, structured logs, and k6 thresholds. Each retained KR/KPI names *where and how* it is observed. Guarantees that are proven by tests rather than metrics (append-only history, concurrency invariants) live in the invariant suite; postures that are not reproducible on one machine (99.99% availability) live in the ADRs — both are intentionally kept out of the KR set so every number below is one you can actually watch turn green.
 
 **Objective 1 — Never lose or corrupt money.** *(the non-negotiable one)*
-- **KR1.1** 0 negative-balance and 0 double-spend defects — the invariant-storm suite (concurrent debits) stays 100% green.
-- **KR1.2** 0 duplicate debits under client retries — every money-moving POST is idempotent end to end.
-- **KR1.3** Ledger stays append-only — 0 updates/deletes of entries; corrections exist only as compensating postings.
+- **KR1.1** 0 negative-balance / 0 double-spend / 0 duplicate-debit — money is conserved end to end.
+  *Observed:* the invariant-storm suite ([step 15](docs/steps/step-15.md)) proves it under concurrency; the **conservation-of-money assertion** in the E2E journey ([step 46](docs/steps/step-46.md)) closes `Σ balances == seeded supply` after a chaotic run; in runtime, the funnel's **REJECTED** branch and the idempotency-replay counter ([step 44](docs/steps/step-44.md)) show overdrafts/duplicates rejected = 0.
 
 **Objective 2 — Keep the user-facing path fast.**
 - **KR2.1** Send-Pix acknowledgement **p99 < 2s**.
+  *Observed:* k6 threshold `http_req_duration{endpoint:send} p(99)<2000` fails the run on breach ([step 47](docs/steps/step-47.md)); the *Technical* dashboard's p99-vs-SLO panel ([step 44](docs/steps/step-44.md)).
 - **KR2.2** Balance read **p99 < 300ms**.
-- **KR2.3** Fraud scoring adds **≤ 200ms** to the flow (engineered for fraud p99 < 150ms).
+  *Observed:* k6 threshold `{endpoint:balance} p(99)<300` ([step 47](docs/steps/step-47.md)); *Technical* dashboard latency + cache-hit panels ([step 44](docs/steps/step-44.md)).
 
 **Objective 3 — Stay reliable behind a slow, flaky external rail.**
 - **KR3.1** Stuck transactions detected and reconciled in **< 5 min**.
+  *Observed:* the `reconciliation.oldest.seconds` metric with its `>300` SLO alert ([step 35](docs/steps/step-35.md)); the E2E failure drill confirms resolution under 5 min ([step 46](docs/steps/step-46.md)).
 - **KR3.2** DLQ depth returns to 0 after a simulated SPI outage — retries with backoff drain the backlog, nothing is lost.
-- **KR3.3** 99.99% availability target for the send/receive path (documented production posture; single-instance locally).
+  *Observed:* the DLQ-depth gauge with its `>0` alert in the AlertEvaluator/dashboard ([step 44](docs/steps/step-44.md)); drain proven under the failure drill ([step 46](docs/steps/step-46.md)).
 
 **Objective 4 — Make it operable and auditable.**
 - **KR4.1** A single `correlationId` reconstructs 100% of a transaction's path across all services.
-- **KR4.2** The business funnel (RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED) is observable end to end in Grafana.
-- **KR4.3** Every architectural decision is backed by an ADR with an explicit trade-off.
+  *Observed:* `scripts/trace.sh <correlationId>` plus the path-audit test over the per-stage INFO events ([step 44](docs/steps/step-44.md)); exercised end to end in the E2E journey ([step 46](docs/steps/step-46.md)).
 
 **KPIs (steady-state health):**
 
-| KPI | What it tells you | Healthy signal |
-|---|---|---|
-| Payment success rate (settled ÷ accepted) | End-to-end money delivery | ≈ 100% minus legitimate rejections |
-| Funnel conversion per stage | *Where* payments drop off (fraud vs. settlement) | No unexpected cliff between stages |
-| Send p99 / Balance p99 | User-facing latency vs. budget | < 2s / < 300ms |
-| Fraud decision mix + fail-open rate | Risk posture & how often the budget is blown | Stable mix; fail-open rare |
-| Reconciliation actions/day & mean stuck-age | Health of the async settlement loop | Low count; age well under 5 min |
-| DLQ depth / retry rate / SPI error rate | Reliability of the external-rail integration | DLQ trends to 0; retries bounded |
-| Balance cache hit rate | Effectiveness of the read path | High enough to hold the 300ms budget |
-| Money volume settled/day | Business throughput | Tracks expected traffic |
+| KPI | What it tells you | Healthy signal | Where it's observed |
+|---|---|---|---|
+| Funnel conversion per stage (RECEIVED→…→SETTLED, REJECTED/REVERSED branches) | *Where* payments drop off (fraud vs. settlement) | No unexpected cliff between stages | Grafana Business-Funnel dashboard — `pix.payments.stage{stage,outcome}` ([step 44](docs/steps/step-44.md)) |
+| Send p99 / Balance p99 | User-facing latency vs. budget | < 2s / < 300ms | Grafana Technical dashboard + k6 thresholds ([steps 44](docs/steps/step-44.md), [47](docs/steps/step-47.md)) |
+| Fraud decision mix + fail-open rate | Risk posture & how often the 200ms budget is blown | Stable mix; fail-open rare | Grafana — `pix.fraud.decision{decision}` + `FraudCheckSkipped` rate ([step 44](docs/steps/step-44.md)) |
+| DLQ depth / retry rate / SPI error rate | Reliability of the external-rail integration | DLQ trends to 0; retries bounded | Grafana Technical + AlertEvaluator DLQ-depth alert ([steps 44](docs/steps/step-44.md), [35](docs/steps/step-35.md)) |
 
 ## Repository layout
 
@@ -265,6 +291,51 @@ Detailed runbook, ports, env vars and per-flow test commands: [`docs/local-dev.m
 2. Read its spec in `docs/steps/step-XX.md` — it defines objective, tasks, tests (TDD) and acceptance criteria.
 3. Implement **one step at a time** (rules in [`CLAUDE.md`](CLAUDE.md)), tests first.
 4. When tests pass and acceptance criteria are met: update `CHANGELOG.md`, check the box in `PLAN.md`, commit (Conventional Commits).
+
+### Starter prompt for a new step session
+
+Paste this at the start of a fresh Claude Code conversation to run one step under the mandatory workflow. Leave `STEP` blank to take the first unchecked step, or name one (e.g. `STEP = 14`):
+
+```text
+You are working on the PlatinumCoin Pix platform. Follow CLAUDE.md exactly — it overrides any default behavior.
+
+STEP = <blank = first unchecked step in PLAN.md>
+
+Before writing any code:
+1. Read CLAUDE.md in full: conventions, the six domain safety rules, the mandatory per-step workflow,
+   hand-written zones (✍️), and the per-step AI-metrics rule.
+2. Open PLAN.md and take that step only (or the first unchecked one if STEP is blank).
+3. Read its docs/steps/step-XX.md completely — the step file IS the spec (spec-driven). Also read
+   anything it references: the relevant ARCHITECTURE.md § and ADRs, and the step's ADR learning
+   companion if one exists (docs/steps/step-XX-adrNNNN.md).
+4. Confirm the step's prerequisites are checked in PLAN.md. If not, STOP and tell me.
+
+Then, BEFORE coding, reply with a short plan and WAIT for my "go":
+- Restate the step's objective in one or two sentences.
+- List the exact files you intend to add or change.
+- Flag whether any part is a ✍️ hand-written zone — if so, you review only, you do NOT generate that code.
+- Write down your honest time estimate now (the `est` metric).
+
+After I say "go":
+5. TDD: write the step's tests first (red) → minimum code to pass (green) → refactor. Every money
+   invariant gets an explicit test. Money is integer cents (long) — never float/double.
+6. Implement ONLY what the step's tasks describe. If something adjacent is broken, note it — don't fix it
+   silently. If reality diverges from the docs (API/schema/ADR), STOP and update the doc in the SAME change.
+7. Verify with the step's "How to verify locally" commands and `mvn verify` for touched modules.
+   All tests green, nothing skipped.
+8. Check the step's Definition of Done items one by one — quote each and check it off.
+9. Update CHANGELOG.md with the step's entry, followed by the metrics line:
+   `  AI: est <Xh> / actual <Yh> / ~<Z>% generated / <N> issues caught in human review`
+   Then check the step's box in PLAN.md.
+10. Commit with Conventional Commits (e.g. `feat(ledger): atomic double-entry posting (step 14)`),
+    one step = one commit (or a small clean series). Only commit/push if I asked; branch first if on main.
+11. STOP — do not start the next step. End with one open-ended conceptual question that tests my grasp of a
+    trade-off or edge case this step introduced.
+
+Never bend: idempotency on money-moving POSTs; debit account from the JWT, never the payload; never a
+negative balance (condition inside the write); debit+credit atomic; ledger append-only (compensate, never
+update/delete). Explain your reasoning as you go — trade-offs, edge cases, deviations.
+```
 
 ## Security
 

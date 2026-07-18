@@ -1,6 +1,8 @@
 # Step 47 — k6 load tests: low / standard / Black Friday with SLO thresholds
 
 > **Sprint 12 — Hardening, E2E & load** · **Flow:** SLO validation · **Infra que sobe:** k6
+>
+> **Validates (README §OKRs & KPIs):** KR2.1 (`http_req_duration{endpoint:send} p(99)<2000`) and KR2.2 (`{endpoint:balance} p(99)<300`) as run-failing thresholds; feeds the "Send p99 / Balance p99" KPI.
 
 ## Objective
 Three k6 scripts in `load/k6/` derived from the brief's numbers, each with **thresholds that fail the run** when SLOs break: `low.js` (~5 TPS), `standard.js` (~58 TPS — the 5M tx/day average — sustained 10 min), `black-friday.js` (ramp 58 → 300 → **500+ TPS** peak, spike-and-soak). A shared `lib.js` handles login, key setup and scenario mix (70% send / 20% balance / 10% statement). Results summarized in `load/RESULTS.md`.
