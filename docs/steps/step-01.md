@@ -12,7 +12,7 @@ Multi-module Maven is how a polyrepo-like microservice layout lives in one repo:
 None (first step).
 
 ## Tasks
-1. `git init`; add `.gitignore` (Maven `target/`, IDE files, `.env`, LocalStack volume dirs) and `.editorconfig` (4-space Java, LF, UTF-8).
+1. add `.gitignore` (Maven `target/`, IDE files, `.env`, LocalStack volume dirs) and `.editorconfig` (4-space Java, LF, UTF-8).
 2. Root `pom.xml`: `packaging=pom`; properties `java.version=21`, `maven.compiler.release=21`; `dependencyManagement` importing Spring Boot BOM (3.3.x), AWS SDK v2 BOM, Testcontainers BOM; `modules` listing `services/common-lib`; plugins: surefire (unit `*Test`), failsafe (integration `*IT`), spring-boot-maven-plugin managed.
 3. `services/common-lib/pom.xml`: jar module, parent reference; dependencies: spring-boot-starter (minimal), slf4j.
 4. One placeholder class `com.platinumcoin.pix.common.Placeholder` + one trivial test so the test plugins are exercised.
