@@ -168,6 +168,12 @@ graph TB
 
 **Why this decomposition (summary of ADR-0006):** boundaries follow domain seams with different consistency, latency and scaling profiles — the ledger needs strict serializable-ish writes; fraud needs low-latency reads and can be scaled/replaced independently; settlement is IO-bound on a slow external system; notifications hold long-lived connections. Splitting them keeps failure domains small (fraud down ≠ payments down, thanks to fail-open) and matches team ownership at a real fintech. The cost — network hops, distributed debugging, eventual consistency between services — is accepted and mitigated with the outbox pattern and correlation ids.
 
+### Inside a service — clean/hexagonal-lite (ADR-0010)
+
+ADR-0006 decides the seams *between* services; **every service is built the same way inside**: three packages under `com.platinumcoin.pix.<service>` — `api/` (inbound adapters: controllers, request/response records, exception mapping), `domain/` (entities & value objects, domain services, and **ports** — the outbound interfaces the domain calls), and `infra/` (outbound adapters implementing those ports: DynamoDB/SQS/SNS/Redis/HTTP + Spring config).
+
+The **dependency rule points inward** — `api → domain ← infra`, and `domain` depends on nothing outward: no Spring-web, AWS SDK, servlet or Jackson-binding imports live in `domain/`, so the money logic is testable as plain Java without a container. It is deliberately the **lite** variant: **ports only for outbound infrastructure** (not for internal collaborators), and a **DTO+mapper only where the wire shape diverges** from the domain type (money formats to a decimal string only at the `api/` edge; it stays `long` cents inside). The rule is not aspirational — each service ships one **ArchUnit** `*ArchitectureTest` that fails the build on a violation. `common-lib` is exempt: it *is* the shared adapter layer, so it legitimately depends on the web/servlet stack. The port boundary is also what lets ADR-0009's `labs/ledger-pg` reuse the ledger's domain on PostgreSQL without touching domain code.
+
 ---
 
 ## 4. Data model (summary — full detail in [docs/data-model.md](docs/data-model.md))
