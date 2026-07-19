@@ -1,0 +1,38 @@
+# PlatinumCoin Pix — local stack (docker-compose).
+#
+# Vertical delivery (PLAN.md): this file grows one flow at a time. Sprint 1 boots only
+# auth-service — no AWS/LocalStack/Redis yet, because login → JWT needs none of it.
+# Later sprints add localstack, redis, mock-bacen-spi, the other services, etc.
+#
+# ── "Service in compose" pattern — LATER SERVICES COPY THIS BLOCK ─────────────
+#   build.context: ..            → repo root, so the Dockerfile sees target jars & common-lib
+#   build.dockerfile: <path>     → the service's own Dockerfile
+#   networks: [pix-net]          → shared bridge; services reach each other by name
+#   healthcheck → /actuator/health → the contract compose (and the runbook) depend on;
+#     `depends_on: condition: service_healthy` in later services gates startup on it.
+#   Prereq: `mvn clean package` must have built the jars before `docker compose build`.
+# ──────────────────────────────────────────────────────────────────────────────
+services:
+  auth-service:
+    build:
+      context: ..
+      dockerfile: services/auth-service/Dockerfile
+    image: platinumcoin/auth-service
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    networks:
+      - pix-net
+    healthcheck:
+      # amazoncorretto:21 ships /usr/bin/curl; hit the readiness group so the container
+      # is only "healthy" once the app can actually serve, not merely once the JVM is up.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  pix-net:
+    name: pix-net
+    driver: bridge

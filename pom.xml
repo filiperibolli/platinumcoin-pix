@@ -46,6 +46,7 @@
 
     <modules>
         <module>services/common-lib</module>
+        <module>services/auth-service</module>
     </modules>
 
     <dependencyManagement>
@@ -127,6 +128,13 @@
                         <includes>
                             <include>**/*IT.java</include>
                         </includes>
+                        <!-- Service modules run spring-boot:repackage in the `package` phase, which
+                             replaces the project's main artifact with a fat jar (app classes under
+                             BOOT-INF/classes). Surefire/Failsafe 3.x otherwise put that fat jar on the
+                             test classpath as the classes dir, so @SpringBootTest can't find the
+                             @SpringBootApplication (it's not at the scannable root). Pinning the classes
+                             dir to target/classes keeps *IT working for every repackaged service. -->
+                        <classesDirectory>${project.build.outputDirectory}</classesDirectory>
                     </configuration>
                     <executions>
                         <execution>

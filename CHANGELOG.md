@@ -11,6 +11,8 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- auth-service Spring Boot skeleton with Actuator health, Dockerfile and compose wiring (step 03)
+  AI: est 1h / actual 0.7h / ~85% generated / 1 issues caught in human review
 - Shared error model (RFC 7807), correlation-id propagation and structured JSON logging in common-lib (step 02)
   AI: est 1.5h / actual 0.6h / ~90% generated / 2 issues caught in human review
 - Maven multi-module scaffold with parent POM (Java 21, Spring Boot & AWS BOMs) and common-lib module (step 01)

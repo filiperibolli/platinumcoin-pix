@@ -29,8 +29,9 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
-        <!-- Structured JSON logging encoder used by the shared logback-common.xml include.
-             Compile scope so consuming services get the encoder on their runtime classpath. -->
+        <!-- Structured JSON logging encoder used by the shared logback-spring.xml that this
+             library auto-ships to every consumer. Compile scope so consuming services get the
+             encoder on their runtime classpath. -->
         <dependency>
             <groupId>net.logstash.logback</groupId>
             <artifactId>logstash-logback-encoder</artifactId>
