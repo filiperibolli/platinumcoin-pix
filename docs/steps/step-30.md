@@ -12,7 +12,7 @@ A **controllable external dependency** is what makes the resilience work (Sprint
 Steps 11 (resolution seam), 26 (messaging), and needed by 31.
 
 ## Tasks
-1. Scaffold `services/mock-bacen-spi` (skeleton + Dockerfile + compose, port 9090); in-memory settlement store.
+1. Scaffold `services/mock-bacen-spi` (skeleton + Dockerfile + compose + `README.md`, port 9090); in-memory settlement store.
 2. `POST /spi/settlements` (body incl. `endToEndId`): idempotent (same e2e ⇒ same result); sleep `BACEN_LATENCY_MS`; roll `BACEN_FAILURE_RATE` (⇒ 5xx) and `BACEN_TIMEOUT_RATE` (⇒ hang past client timeout).
 3. `GET /spi/settlements/{endToEndId}` → SETTLED/FAILED/UNKNOWN.
 4. `POST /admin/config` → mutate latency/failureRate/timeoutRate at runtime.
@@ -29,6 +29,7 @@ curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" | jq   
 ```
 
 ## Definition of Done
+- [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] SPI settle/status endpoints idempotent by endToEndId with configurable latency/failure/timeout
 - [ ] Runtime admin config works
 - [ ] External key resolution delegates to mock-bacen; step-11 seam closed

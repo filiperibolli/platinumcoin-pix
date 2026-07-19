@@ -12,7 +12,7 @@ The first **queue-driven consumer**: scaling is driven by queue depth, not user 
 Steps 29 (publisher + dedup), 30 (SPI).
 
 ## Tasks
-1. Scaffold `services/settlement-service` (skeleton + Dockerfile + compose, port 8086).
+1. Scaffold `services/settlement-service` (skeleton + Dockerfile + compose + `README.md`, port 8086).
 2. SQS long-poll consumer on `settlement-queue`; `ProcessedEventStore` dedup by `eventId`.
 3. Guarded DEBITED→SENT_TO_SPI; call SPI (`POST /spi/settlements`, timeout 12s); on 2xx guarded SENT_TO_SPI→SETTLED + `PixSettled` outbox event (settlement-service runs its own outbox publisher or reuses the shared component).
 4. Happy path only: on failure/timeout, for now just leave the message (Sprint 7 makes this robust) — note the seam.
@@ -28,6 +28,7 @@ watch -n1 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOK
 ```
 
 ## Definition of Done
+- [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] Consumer settles the happy path: DEBITED→SENT_TO_SPI→SETTLED with PixSettled event
 - [ ] Dedup by eventId (effectively-once); transitions guarded
 - [ ] External send now reaches SETTLED end to end

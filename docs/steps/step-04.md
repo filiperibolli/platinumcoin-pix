@@ -12,7 +12,7 @@ The token is the backbone of every later flow (you always have a way to authenti
 Step 03.
 
 ## Tasks
-1. Seeded users (alice→acc-001, bob→acc-002) with bcrypt-hashed demo passwords in config; a `UserDirectory` port with an in-memory adapter.
+1. Seeded users (alice→acc-001, bob→acc-002) with bcrypt-hashed demo passwords in config; a `UserRepository` port with an in-memory adapter.
 2. `POST /v1/auth/login` (`{username,password}`) → verify → mint JWT (`JwtIssuer` using the HS256 secret from `JWT_SECRET`); response `{accessToken, tokenType:"Bearer", expiresIn:900}`.
 3. Claims exactly `sub`, `accountId`, `jti` (UUID), `iat`, `exp` (+15 min). Wrong credentials ⇒ `401` (problem+json).
 4. Conform to `docs/api/openapi.yaml` `/auth/login`.

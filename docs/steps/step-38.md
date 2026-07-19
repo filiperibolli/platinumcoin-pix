@@ -12,7 +12,7 @@
 Steps 05 (JWT/SSE allow-list hook), 36 (notification-queue).
 
 ## Tasks
-1. Scaffold `services/notification-service` (skeleton + Dockerfile + compose, port 8087).
+1. Scaffold `services/notification-service` (skeleton + Dockerfile + compose + `README.md`, port 8087).
 2. `GET /v1/notifications/stream` (JWT): register an `SseEmitter` under the user's account; heartbeat pings; remove on completion/timeout/error.
 3. Consume `notification-queue`; dedupe by `eventId`; route each event to the affected user's emitter(s) if connected (drop if not — state remains queryable).
 4. Resolve the SSE auth handshake per the step-05 allow-list hook.
@@ -28,6 +28,7 @@ curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB"  
 ```
 
 ## Definition of Done
+- [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] Per-user SSE stream; events routed only to the affected user
 - [ ] Heartbeats keep connections alive; disconnects clean up
 - [ ] Consumer dedupes; missed pushes don't affect correctness

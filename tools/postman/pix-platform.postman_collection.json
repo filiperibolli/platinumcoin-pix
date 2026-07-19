@@ -1,0 +1,133 @@
+{
+  "info": {
+    "_postman_id": "b1f0c0de-0001-4a00-9a00-platinumcoin04",
+    "name": "PlatinumCoin Pix — Local",
+    "description": "Living collection for testing the platform locally, **organized one folder per service**.\n\nIt grows incrementally: every step that adds a public endpoint adds the request here, under its service's folder (convention in CLAUDE.md). Step 48 only finalizes it (pre-request auth, idempotency automation, richer examples).\n\n## How to use\n1. Import this file and `pix-platform.local.postman_environment.json` into Postman; select the **PlatinumCoin Pix — Local** environment.\n2. Run **auth-service → Login (alice)** first — it saves `accessToken` into the environment, so every authenticated request below reuses it automatically.\n3. Base URLs come from `*BaseUrl` env vars (ports mirror `docs/local-dev.md`).\n\nCLI alternative: `newman run tools/postman/pix-platform.postman_collection.json -e tools/postman/pix-platform.local.postman_environment.json`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "auth-service",
+      "description": "Identity service — port 8081. Login issues the HS256 JWT that every other service validates. See services/auth-service/README.md.",
+      "item": [
+        {
+          "name": "Login (alice)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('accessToken present', () => pm.expect(body.accessToken).to.be.a('string'));",
+                  "pm.test('tokenType is Bearer', () => pm.expect(body.tokenType).to.eql('Bearer'));",
+                  "// Save the token so every authenticated request in this collection reuses it.",
+                  "pm.environment.set('accessToken', body.accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"alice\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{authBaseUrl}}/v1/auth/login",
+              "host": ["{{authBaseUrl}}"],
+              "path": ["v1", "auth", "login"]
+            },
+            "description": "Authenticate the seeded user alice (acc-001). On success, saves `accessToken` to the environment."
+          }
+        },
+        {
+          "name": "Login (bob)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.environment.set('accessToken', pm.response.json().accessToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"bob\",\n  \"password\": \"bob\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{authBaseUrl}}/v1/auth/login",
+              "host": ["{{authBaseUrl}}"],
+              "path": ["v1", "auth", "login"]
+            },
+            "description": "Authenticate the seeded user bob (acc-002). Switches `accessToken` to bob's token."
+          }
+        },
+        {
+          "name": "Login — bad credentials (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('problem+json with INVALID_CREDENTIALS', () => {",
+                  "  const p = pm.response.json();",
+                  "  pm.expect(p.code).to.eql('INVALID_CREDENTIALS');",
+                  "  pm.expect(p.correlationId).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"wrong\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{authBaseUrl}}/v1/auth/login",
+              "host": ["{{authBaseUrl}}"],
+              "path": ["v1", "auth", "login"]
+            },
+            "description": "Wrong password ⇒ 401 application/problem+json (no stack trace). Demonstrates the RFC 7807 error contract."
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{authBaseUrl}}/actuator/health",
+              "host": ["{{authBaseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
+    }
+  ]
+}

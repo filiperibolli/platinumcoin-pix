@@ -22,13 +22,14 @@ docs/local-dev.md      runbook: ports, env vars, manual test commands
 docs/steps/step-XX.md  the spec of each implementation step
 PLAN.md                roadmap: 14 sprints (one flow each), status checkboxes — vertical, not big-bang
 CHANGELOG.md           Keep a Changelog; one entry per completed step
-services/<name>/       one Maven module per service (added incrementally per sprint, common-lib first in step 01)
+services/<name>/       one Maven module per service (added incrementally per sprint, common-lib first in step 01); each ships a README.md
+services/<name>/README.md  per-service card: purpose, port, endpoints, config/env, run & test, ADRs — services/auth-service/README.md is the template
 services/common-lib/   shared: error model, JWT validation, logging, event envelope — keep it THIN
 labs/ledger-pg/        non-deployable relational ledger lab (ADR-0009, steps 50-51) — never wired to the platform
 infra/                 docker-compose.yml, localstack init scripts, seed data
 infra/observability/   Prometheus config, Grafana provisioning + dashboards (step 44)
 load/k6/               k6 load-test scripts: low / standard / black-friday (step 47)
-tools/postman/         unified Postman collection + environment (step 48)
+tools/postman/         Postman collection + environment — created early (step 04), grown incrementally (one folder per service; each new endpoint added in its own step); finalized in step 48
 tools/api-explorer/    single-file HTML API explorer with valid sample requests (step 49)
 ```
 
@@ -42,6 +43,8 @@ tools/api-explorer/    single-file HTML API explorer with valid sample requests 
   - **Enforced**: each service ships one `*ArchitectureTest` (ArchUnit) failing the build if `domain/` imports a framework/infra package. `common-lib` is exempt (it *is* the shared adapter layer).
 - REST: resources under `/v1/...`; errors as RFC 7807 `application/problem+json` with a `code` field (e.g. `LIMIT_EXCEEDED`) and `correlationId`. Never leak stack traces.
 - Naming: tables `pix_*`; queues `<purpose>-queue` + `<purpose>-queue-dlq`; SNS topic `pix-events`; events in PascalCase past tense (`PixDebited`, `PixSettled`, `PixReceived`, `FraudCheckSkipped`).
+- **Every service module ships a `services/<name>/README.md`.** Creating a new service (its skeleton step) is not done until its README exists. Keep it a short, consistent card: purpose + port, key endpoints, configuration/env vars, how to run (`mvn` / `java -jar` / `docker compose`), how to test (a curl example), and the ADRs it implements. `services/auth-service/README.md` is the template later services copy; `common-lib` is a shared library, not a service, and is exempt.
+- **Every public endpoint is added to the Postman collection (`tools/postman/pix-platform.postman_collection.json`) in the same step that introduces it**, under its service's folder, with a working local request: base URL via the `{{<service>BaseUrl}}` env var (never a hard-coded host), `Authorization: Bearer {{accessToken}}` when authenticated, a minimal test-script assertion (and an auto-generated idempotency key on money-moving POSTs). The collection is a living manual-test harness, not a step-48-only artifact; **step 48 only finalizes it** (pre-request auth, richer happy/error examples). Adding an endpoint without adding its request is doc/code drift.
 - Logging: **SLF4J everywhere** (never `System.out`, never a concrete logger API in code), structured JSON via the logback encoder. Every log line carries `correlationId` (+ `txId` when present) through MDC, and every meaningful stage of a flow logs at INFO with consistent event names — the explicit goal is that **one `correlationId` reconstructs the full path of a request across all services**. DEBUG for payloads (masked), WARN for retries/degradations, ERROR only for actionable failures.
 - Tests: JUnit 5. Unit tests colocated per module (`*Test`); integration tests (`*IT`) use **Testcontainers** (LocalStack module, Redis) — never depend on the compose stack being up. Every money invariant has an explicit test.
 

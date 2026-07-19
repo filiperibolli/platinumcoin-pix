@@ -14,7 +14,7 @@ Steps 05 (JWT filter), 08 (harness).
 ## Tasks
 1. Add `redis` to `infra/docker-compose.yml` (image `redis:7-alpine`, port 6379, healthcheck `redis-cli ping`); env `REDIS_HOST`/`REDIS_PORT`.
 2. Extend the common-lib test harness with `RedisTestBase` (Testcontainers Redis).
-3. Scaffold `services/fraud-service` (skeleton + Dockerfile + compose entry, port 8083); depends on common-lib and a Redis client.
+3. Scaffold `services/fraud-service` (skeleton + Dockerfile + compose entry + `README.md`, port 8083); depends on common-lib and a Redis client.
 
 ## Tests (TDD)
 - `ApplicationContextIT` — fraud-service context loads with a Redis connection (against `RedisTestBase`).
@@ -28,6 +28,7 @@ curl -s localhost:8083/actuator/health | jq
 ```
 
 ## Definition of Done
+- [ ] `README.md` present for fraud-service (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] Redis up healthy; documented as the ElastiCache stand-in
 - [ ] fraud-service boots with a Redis connection; Dockerfile + compose entry present
 - [ ] `RedisTestBase` available to any module
