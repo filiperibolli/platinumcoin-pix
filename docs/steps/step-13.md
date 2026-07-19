@@ -12,7 +12,7 @@ Read before you write: validating the model against the seed data de-risks the h
 Steps 05, 08, 12.
 
 ## Tasks
-1. Scaffold `services/ledger-service` (skeleton + Dockerfile + compose, port 8085).
+1. Scaffold `services/ledger-service` (skeleton + Dockerfile + compose + `README.md`, port 8085).
 2. Domain: `Balance(accountId, balanceCents, version)`, `LedgerEntry(txId, direction, amountCents, counterpart, timestamp, type)` as records; `LedgerRepository` port.
 3. `DynamoLedgerRepository.getBalance` — `GetItem (pk=ACCOUNT#id, sk=BALANCE)`, **`ConsistentRead=true`** (learning note in code).
 4. `GET /internal/ledger/accounts/{id}/balance`; unknown ⇒ 404 `LEDGER_ACCOUNT_NOT_FOUND`.
@@ -27,6 +27,7 @@ curl -s localhost:8085/internal/ledger/accounts/acc-001/balance | jq   # {"balan
 ```
 
 ## Definition of Done
+- [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] Balance reads are strongly consistent and adapter-isolated
 - [ ] Money is `long` cents in domain, decimal string only at the API edge
 - [ ] Model matches docs/data-model.md exactly

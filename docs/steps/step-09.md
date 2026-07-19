@@ -12,7 +12,7 @@ The first service that talks to DynamoDB via the AWS SDK. You'll practice the **
 Steps 05, 08.
 
 ## Tasks
-1. Scaffold `services/account-service` (skeleton + Dockerfile + compose entry, per the step-03 pattern; port 8082).
+1. Scaffold `services/account-service` (skeleton + Dockerfile + compose entry + `README.md`, per the step-03 pattern; port 8082).
 2. Domain: `Account(accountId, userId, status, dailyLimitCents, createdAt)` record; `AccountRepository` port.
 3. `DynamoAccountRepository`: get by account id via GSI1; `GetItem` by user for `/me`.
 4. `GET /v1/accounts/me` (from JWT) and `GET /internal/accounts/{accountId}`; unknown ⇒ 404 `ACCOUNT_NOT_FOUND` (problem+json).
@@ -28,6 +28,7 @@ curl -s localhost:8082/internal/accounts/acc-001 | jq
 ```
 
 ## Definition of Done
+- [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
 - [ ] `/me` derives the account from the JWT, never from input
 - [ ] Domain code imports no AWS SDK types (adapter-isolated)
 - [ ] Model matches docs/data-model.md
