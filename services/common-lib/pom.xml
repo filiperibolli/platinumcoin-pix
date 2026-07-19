@@ -29,10 +29,54 @@
             <artifactId>slf4j-api</artifactId>
         </dependency>
 
+        <!-- Structured JSON logging encoder used by the shared logback-common.xml include.
+             Compile scope so consuming services get the encoder on their runtime classpath. -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+        </dependency>
+
+        <!-- Web types are OPTIONAL: common-lib compiles the filter, @RestControllerAdvice and
+             RestClientCustomizer against them, but does NOT force web onto every consumer.
+             Each service brings its own spring-boot-starter-web; the auto-configuration is
+             guarded by @ConditionalOnClass so it only activates in web apps. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- JUnit 5 (managed by the Spring Boot BOM) -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Web stack in test scope so MockMvc can exercise the shared advice/filter here,
+             even though production consumers supply web themselves. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

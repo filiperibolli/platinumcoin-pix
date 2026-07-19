@@ -236,7 +236,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── CHANGELOG.md               ← Keep a Changelog; one entry per completed step
 ├── docs/
 │   ├── brief.md               ← the exercise brief + the 7 design questions, verbatim
-│   ├── adr/                   ← Architecture Decision Records (0001–0009)
+│   ├── adr/                   ← Architecture Decision Records (0001–0010)
 │   ├── api/openapi.yaml       ← REST contract
 │   ├── data-model.md          ← DynamoDB tables, keys, GSIs, ledger invariants
 │   ├── messaging-kafka-appendix.md ← SNS/SQS ↔ Kafka concept mapping

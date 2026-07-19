@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared logging include. A service's logback-spring.xml pulls this in with:
+
+      <include resource="logback-common.xml"/>
+
+  It defines a JSON appender (logstash-logback-encoder) whose lines carry timestamp, level,
+  logger, message and every MDC entry — crucially correlationId and txId — so one id
+  reconstructs a request's full path via `jq 'select(.correlationId=="…")'`.
+
+  The `dev` Spring profile swaps in a human-readable console pattern; anything else logs JSON.
+-->
+<included>
+
+    <!-- Structured JSON for real environments (and for local greppability). -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <logger>logger</logger>
+                <thread>[ignore]</thread>
+                <version>[ignore]</version>
+                <levelValue>[ignore]</levelValue>
+            </fieldNames>
+            <!-- correlationId and txId flow in automatically as MDC entries. -->
+        </encoder>
+    </appender>
+
+    <!-- Human-readable console for local `dev` work. -->
+    <appender name="PLAIN" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level [%X{correlationId}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <springProfile name="dev">
+        <root level="INFO">
+            <appender-ref ref="PLAIN"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!dev">
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+</included>
