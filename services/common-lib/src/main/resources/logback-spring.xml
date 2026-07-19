@@ -1,16 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Shared logging include. A service's logback-spring.xml pulls this in with:
+  Shared logging configuration for EVERY PlatinumCoin service.
 
-      <include resource="logback-common.xml"/>
+  This file is named `logback-spring.xml` and ships at the root of common-lib.jar, so
+  Spring Boot's logback support auto-discovers it on the classpath of any service that
+  depends on common-lib — no per-service logging file, no opt-in, no "I forgot the
+  include and now this service silently logs plain text" failure mode. Add common-lib
+  and you inherit structured JSON logging.
 
   It defines a JSON appender (logstash-logback-encoder) whose lines carry timestamp, level,
   logger, message and every MDC entry — crucially correlationId and txId — so one id
   reconstructs a request's full path via `jq 'select(.correlationId=="…")'`.
 
   The `dev` Spring profile swaps in a human-readable console pattern; anything else logs JSON.
+
+  Per-service tuning: adjust levels via `logging.level.*` in the service's application.yml
+  (Spring applies them over this config) — that covers the common case without a competing
+  logback file. A service must NOT ship its own logback-spring.xml: two of them on the
+  classpath resolve non-deterministically. Structural log shape is deliberately uniform
+  across services (that uniformity is what makes correlationId tracing work), so it is owned
+  here, not overridable per service.
+
+  Named logback-spring.xml (not logback.xml) because <springProfile> below is a Spring Boot
+  logback extension — plain logback would not resolve those tags.
 -->
-<included>
+<configuration>
 
     <!-- Structured JSON for real environments (and for local greppability). -->
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
@@ -45,4 +59,4 @@
         </root>
     </springProfile>
 
-</included>
+</configuration>

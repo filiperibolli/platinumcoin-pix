@@ -1,0 +1,20 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: auth-service
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+# Business/ops surface stays minimal on a walking skeleton.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups (/actuator/health/liveness,
+      # /actuator/health/readiness) — the contract compose/K8s-style probes use.
+      probes:
+        enabled: true
