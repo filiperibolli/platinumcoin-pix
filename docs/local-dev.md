@@ -75,6 +75,41 @@ for p in 8081 8082 8083 8084 8085 8086 8087 9090; do
 
 Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes LocalStack/Redis data → next `up` reseeds a clean world).
 
+### How the build works (there is no service image in git)
+
+The repo versions the **recipe** (each `services/<name>/Dockerfile`), never the built image. Service images
+like `platinumcoin/auth-service` don't exist until *you* build them locally, and this project is **100% local
+by design** (ADR/CLAUDE.md: no Kubernetes, no registry) — **images are never pushed to a registry, not even at
+the end**. So the first `docker compose up` on a fresh clone has nothing to run until it builds.
+
+There is a hard **ordering** you must respect, and it's the usual first stumble:
+
+1. `mvn clean package` produces the fat jars under each `services/<name>/target/`.
+2. `docker compose ... up -d --build` builds each image — its Dockerfile does `COPY services/<name>/target/*.jar`.
+
+If you skip step 1 (or change code and don't rebuild the jar), the image build fails or ships a **stale** jar —
+the container runs old code. Rule of thumb: **touched Java → re-run `mvn package` → `up --build`**.
+
+You do **not** `cd` into a service and run `docker build` by hand: `docker compose --build` reads each service's
+`build.context`/`build.dockerfile` and builds all of them in one shot. The layered Dockerfile keeps it fast — a
+code-only change re-ships just the tiny `application/` layer; dependencies stay cached.
+
+### Iterating on a single service (skip Docker)
+
+Docker Compose is for the **integrated stack** (services + LocalStack + Redis talking to each other). When you're
+hacking on **one** service, running it straight from Maven is a much faster inner loop — no image rebuild:
+
+```bash
+# from repo root — auth-service needs no AWS/Redis, so it runs standalone
+JWT_SECRET=dev-only-hs256-secret-change-me-please-32b \
+  mvn -pl services/auth-service spring-boot:run
+# or, after `mvn package`:  java -jar services/auth-service/target/*.jar
+```
+
+Pick the loop by what you're doing: **`spring-boot:run` / `java -jar`** for one service, **`mvn verify`** for tests
+(Testcontainers boots its own LocalStack/Redis — the compose stack does *not* need to be up), **`docker compose
+up`** only when you want several services wired together.
+
 ### What the init scripts do (`infra/localstack/init/*.sh`)
 
 LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator is ready — this is the standard "infrastructure as init script" pattern for local AWS. The scripts are **added incrementally, one flow at a time** (vertical delivery — see `PLAN.md`): each sprint enables the LocalStack `SERVICES` and creates the resources its flow needs, so a partial checkout only stands up what the built flows use. Once the whole platform is built, the full set below runs on every `up`:
