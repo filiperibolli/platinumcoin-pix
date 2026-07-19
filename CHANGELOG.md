@@ -11,6 +11,8 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Maven multi-module scaffold with parent POM (Java 21, Spring Boot & AWS BOMs) and common-lib module (step 01)
+  AI: est 0.5h / actual 0.4h / ~90% generated / 1 issues caught in human review
 - Planning & documentation baseline: ARCHITECTURE.md, ADRs 0001–0009, data model,
   OpenAPI contract, local-dev runbook, CLAUDE.md, PLAN.md and the full step specs.
 - Sprint 14 (Block Q, steps 50–53): relational ledger counterpart lab (`labs/ledger-pg`,
