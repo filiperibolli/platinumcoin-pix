@@ -5,6 +5,26 @@ spring:
   application:
     name: auth-service
 
+# HS256 signing (ADR-0007). The secret comes from JWT_SECRET in real runs; the fallback here is a
+# dev-only key (must be >= 32 bytes for HS256). Production posture is RS256 + JWKS — documented, not
+# built. TTL is the 15-minute token lifetime the /auth/login contract advertises as expiresIn=900.
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  ttl: PT15M
+
+# Seeded demo users (no user store in the local build). Passwords are bcrypt hashes of the demo
+# credentials (username == password for alice/bob). userId/accountId follow docs/data-model.md.
+auth:
+  users:
+    - username: alice
+      userId: u-alice
+      accountId: acc-001
+      passwordHash: "$2a$10$HD5SrCCwSD8oImjhkhQoyehewtSdNLZJV3OM7HjJI6NZdTRTYNpZa"
+    - username: bob
+      userId: u-bob
+      accountId: acc-002
+      passwordHash: "$2a$10$SbC7Fb2XCvD/bzvPUe/5XOcHqFQ62dFlv53pFk3zqvwfr2WocYm/y"
+
 # Actuator: expose only what compose healthchecks and the runbook rely on.
 # Business/ops surface stays minimal on a walking skeleton.
 management:

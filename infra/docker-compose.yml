@@ -21,6 +21,10 @@ services:
     container_name: auth-service
     ports:
       - "8081:8081"
+    environment:
+      # HS256 shared secret (>= 32 bytes). Dev-only value; a real deployment injects a managed
+      # secret. Every service that later VALIDATES tokens must share this exact value.
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
     networks:
       - pix-net
     healthcheck:

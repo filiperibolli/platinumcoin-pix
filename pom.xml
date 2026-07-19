@@ -36,6 +36,9 @@
         <!-- ArchUnit enforces the ADR-0010 dependency rule (domain/ imports nothing outward);
              each service module declares archunit-junit5 in test scope for its *ArchitectureTest. -->
         <archunit.version>1.3.0</archunit.version>
+        <!-- JJWT (HS256 signing/parsing) — not in any BOM above, pinned here so no module
+             declares a version by hand. api compile-scope; impl+jackson runtime-scope. -->
+        <jjwt.version>0.12.6</jjwt.version>
 
         <!-- Build plugin versions — NOT managed by the Spring BOM (only starter-parent does that).
              We import the BOM, so every build plugin must be pinned here explicitly. -->
@@ -90,6 +93,24 @@
                 <groupId>com.tngtech.archunit</groupId>
                 <artifactId>archunit-junit5</artifactId>
                 <version>${archunit.version}</version>
+            </dependency>
+
+            <!-- JJWT — three artifacts, one version. Consumers pick scopes (api compile,
+                 impl+jackson runtime). Not managed by any imported BOM. -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

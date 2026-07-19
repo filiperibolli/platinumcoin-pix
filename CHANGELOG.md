@@ -11,6 +11,17 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- auth-service login endpoint issuing HS256 JWT for seeded users (step 04)
+  AI: est 1.5h / actual 0.6h / ~90% generated / 3 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Spec gap — no per-service README convention. Added `services/<name>/README.md` (auth-service
+     is the template) and made it a standing rule in CLAUDE.md + the service-scaffold step DoDs
+     (09, 13, 18, 23, 30, 31, 38).
+  2. Spec gap — no incremental Postman collection. Created `tools/postman/` (one folder per
+     service, token auto-saved on login) with a rule that every endpoint is added in its own step;
+     step 48 reframed from "create from scratch" to "finalize".
+  3. Naming — the outbound port `UserDirectory` renamed to `UserRepository`
+     (`InMemoryUserRepository`), matching its repository role in the ADR-0010 vocabulary.
 - auth-service Spring Boot skeleton with Actuator health, Dockerfile and compose wiring (step 03)
   AI: est 1h / actual 0.7h / ~85% generated / 1 issues caught in human review
 - Shared error model (RFC 7807), correlation-id propagation and structured JSON logging in common-lib (step 02)
