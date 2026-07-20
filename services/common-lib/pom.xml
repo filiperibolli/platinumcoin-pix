@@ -37,6 +37,25 @@
             <artifactId>logstash-logback-encoder</artifactId>
         </dependency>
 
+        <!-- HS256 JWT validation is a common-lib responsibility (one validator, no drift): every
+             consuming service inherits a working parser transitively. api is compile scope (the
+             filter compiles against the fluent parser); impl + jackson are runtime-only, resolved
+             via ServiceLoader. NOT optional — unlike web, a service that skips validation is a bug. -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Web types are OPTIONAL: common-lib compiles the filter, @RestControllerAdvice and
              RestClientCustomizer against them, but does NOT force web onto every consumer.
              Each service brings its own spring-boot-starter-web; the auto-configuration is

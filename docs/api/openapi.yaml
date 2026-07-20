@@ -60,6 +60,31 @@ paths:
                   expiresIn: { type: integer, example: 900 }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/me:
+    servers:
+      - url: http://localhost:8081/v1
+        description: auth-service (local)
+    get:
+      tags: [auth]
+      summary: Return the caller identity carried by the bearer token
+      description: |
+        Echoes the identity the platform derived from the validated JWT — `userId` (the token
+        subject) and `accountId` (the `accountId` claim). Proves the shared common-lib
+        `JwtAuthFilter` is enforcing auth: reaching this endpoint at all means the token passed
+        validation. There is no way to name a different account — the identity comes only from the
+        token, which is the same mechanism money-moving flows use to pick the debited account.
+      responses:
+        '200':
+          description: The authenticated caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId: { type: string, example: u-alice }
+                  accountId: { type: string, example: acc-001 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /payments/pix:
     post:
       tags: [payments]
