@@ -36,6 +36,33 @@ services:
       retries: 5
       start_period: 30s
 
+  # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: this flow (Sprint 2,
+  # Pix keys) needs DynamoDB and nothing else, so SERVICES pins DynamoDB ONLY. Each later
+  # sprint flips on the next service (sns,sqs,s3) by extending this list — not before.
+  # The version is pinned (not `latest`) for reproducible local runs.
+  localstack:
+    image: localstack/localstack:3
+    container_name: localstack
+    ports:
+      - "4566:4566"          # single edge port for every emulated AWS service
+    environment:
+      SERVICES: dynamodb     # enable ONLY DynamoDB for now
+      DEBUG: "1"             # verbose logs — this is a dev-only emulator
+    volumes:
+      # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);
+      # step 07 drops the pix_accounts / pix_keys creation scripts here.
+      - ./localstack/init:/etc/localstack/init/ready.d
+    networks:
+      - pix-net
+    healthcheck:
+      # The emulator's own health endpoint; the image ships curl. Gates any later service's
+      # `depends_on: { localstack: { condition: service_healthy } }` on DynamoDB being up.
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 networks:
   pix-net:
     name: pix-net

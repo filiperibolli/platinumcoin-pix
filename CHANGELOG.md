@@ -11,6 +11,14 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- docker-compose LocalStack (DynamoDB) with healthchecks, infra network and env template (step 06)
+  AI: est 0.5h / actual 0.5h / ~90% generated / 1 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Verification gap — the DoD item "AWS CLI against 4566 answers for dynamodb" was first
+     checked with the in-container `awslocal` wrapper because the host had no AWS CLI, not with
+     the runbook's own command. Installed AWS CLI v2 and re-ran the exact runbook command
+     `aws --endpoint-url=http://localhost:4566 dynamodb list-tables` → `{"TableNames": []}`,
+     closing the gap with the real tool the runbook prescribes.
 - common-lib JWT validation filter and AuthenticatedUser principal, protecting service endpoints (step 05)
   AI: est 2h / actual 0.9h / ~85% generated / 0 issues caught in human review
 - auth-service login endpoint issuing HS256 JWT for seeded users (step 04)
