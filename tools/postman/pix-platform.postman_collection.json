@@ -115,6 +115,35 @@
           }
         },
         {
+          "name": "Me (echo principal)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('userId present', () => pm.expect(body.userId).to.be.a('string'));",
+                  "pm.test('accountId present', () => pm.expect(body.accountId).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{authBaseUrl}}/v1/auth/me",
+              "host": ["{{authBaseUrl}}"],
+              "path": ["v1", "auth", "me"]
+            },
+            "description": "Return the caller identity the common-lib JwtAuthFilter derived from the bearer token (`{userId, accountId}`). Run a Login request first so `{{accessToken}}` is set. Without the header it returns 401 problem+json (`code: UNAUTHORIZED`)."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",

@@ -19,13 +19,17 @@ them (from step 05).
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/auth/login` | public | Authenticate `{username,password}` → `{accessToken, tokenType:"Bearer", expiresIn:900}` |
+| `GET`  | `/v1/auth/me` | Bearer | Echo the caller identity from the token → `{userId, accountId}`; proves the shared `JwtAuthFilter` is enforcing auth |
 | `GET`  | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 **JWT claims** (exactly): `sub` (userId), `accountId`, `jti` (UUID), `iat`, `exp` (+15 min).
 Signed HS256. Bad credentials ⇒ `401 application/problem+json` (`code: INVALID_CREDENTIALS`), with
 no distinction between "unknown user" and "wrong password" (so usernames don't leak).
 
-Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/auth/login`.
+The `/v1/auth/me` route is protected by the common-lib `JwtAuthFilter` (step 05), inherited purely
+by depending on the library — auth-service adds no security wiring of its own.
+
+Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/auth/login`, `/auth/me`.
 
 ## Configuration
 

@@ -11,6 +11,8 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- common-lib JWT validation filter and AuthenticatedUser principal, protecting service endpoints (step 05)
+  AI: est 2h / actual 0.9h / ~85% generated / 0 issues caught in human review
 - auth-service login endpoint issuing HS256 JWT for seeded users (step 04)
   AI: est 1.5h / actual 0.6h / ~90% generated / 3 issues caught in human review
   Issues caught in human review (fixed in this change):

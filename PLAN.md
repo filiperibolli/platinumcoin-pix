@@ -26,7 +26,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 02](docs/steps/step-02.md) — common-lib: RFC 7807 error model + correlation-id filter + JSON logging
 - [x] [Step 03](docs/steps/step-03.md) — auth-service Spring Boot skeleton with Actuator health
 - [x] [Step 04](docs/steps/step-04.md) — auth-service: login endpoint issuing HS256 JWT; seeded users
-- [ ] [Step 05](docs/steps/step-05.md) — common-lib JWT validation filter + `AuthenticatedUser` principal
+- [x] [Step 05](docs/steps/step-05.md) — common-lib JWT validation filter + `AuthenticatedUser` principal
 
 ## Sprint 2 — Accounts & Pix Keys
 **Flow delivered:** register / list / delete a Pix key and resolve an internal key → account.
