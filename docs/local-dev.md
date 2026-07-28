@@ -124,6 +124,40 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6) → `+s3` (Sprint 10).
 
+#### Table DDL (mirror of `infra/localstack/init/*.sh`)
+
+The exact `create-table` commands the init scripts run — kept here verbatim so the schema is reviewable without reading the scripts, and runnable by hand against a running LocalStack (`aws --endpoint-url=http://localhost:4566 ...`). Added incrementally, one sprint at a time.
+
+**Step 07 — `pix_accounts` + `pix_keys`** (both PAY_PER_REQUEST, one `gsi1` on `gsi1pk`, no TTL):
+
+```bash
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_accounts \
+  --attribute-definitions \
+      AttributeName=pk,AttributeType=S \
+      AttributeName=sk,AttributeType=S \
+      AttributeName=gsi1pk,AttributeType=S \
+  --key-schema \
+      AttributeName=pk,KeyType=HASH \
+      AttributeName=sk,KeyType=RANGE \
+  --global-secondary-indexes \
+      '[{"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
+  --billing-mode PAY_PER_REQUEST
+
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_keys \
+  --attribute-definitions \
+      AttributeName=pk,AttributeType=S \
+      AttributeName=sk,AttributeType=S \
+      AttributeName=gsi1pk,AttributeType=S \
+  --key-schema \
+      AttributeName=pk,KeyType=HASH \
+      AttributeName=sk,KeyType=RANGE \
+  --global-secondary-indexes \
+      '[{"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
+  --billing-mode PAY_PER_REQUEST
+```
+
 ## 5. Testing each flow by hand
 
 ### 5.1 Login

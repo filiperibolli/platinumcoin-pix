@@ -11,6 +11,14 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- LocalStack init: pix_accounts and pix_keys tables (GSIs) + seed accounts (step 07)
+  AI: est 0.5h / actual 0.5h / ~90% generated / 1 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Doc drift — the step task title and `infra/localstack/init/README.md` described these
+     tables as having "GSIs and TTL", but `docs/data-model.md` (the schema source of truth)
+     defines no TTL on `pix_accounts`/`pix_keys` (TTL is only on `pix_idempotency` /
+     `pix_processed_events`). Corrected the init README wording to match the data model; the
+     scripts create no TTL.
 - docker-compose LocalStack (DynamoDB) with healthchecks, infra network and env template (step 06)
   AI: est 0.5h / actual 0.5h / ~90% generated / 1 issues caught in human review
   Issues caught in human review (fixed in this change):
