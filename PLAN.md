@@ -126,10 +126,10 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
 
 ## Sprint 13 — API tooling & DX
-**Flow delivered:** unified Postman collection + single-file HTML API explorer.
+**Flow delivered:** the two living manual-test harnesses — Postman collection + single-file HTML API explorer — **finalized** (both grown incrementally, one entry per endpoint, since their first endpoint).
 **Infra que sobe:** none.
 
-- [ ] [Step 48](docs/steps/step-48.md) — unified Postman collection (all services, auth pre-request, happy/error examples)
+- [ ] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
 - [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
 
 ## Sprint 14 — Relational counterpart & interview-grade extensions (Block Q)
