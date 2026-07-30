@@ -8,16 +8,20 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
 
 ## What lives here
 
-Right now: nothing but this note. **Step 06** brings up LocalStack with
-**DynamoDB only** and no tables — `aws dynamodb list-tables` returns an empty
-list on purpose.
+- **`01-dynamodb-accounts.sh`** (step 07) — creates the account-domain tables
+  `pix_accounts` and `pix_keys`, each with its `gsi1` index, on-demand billing.
+  Idempotent (`describe-table || create-table`). Neither table uses TTL — TTL is
+  only on `pix_idempotency` / `pix_processed_events` (arriving in later sprints);
+  see `docs/data-model.md`.
+- **`04-seed-accounts.sh`** (step 07) — seeds demo accounts alice (`acc-001`) and
+  bob (`acc-002`) with `dailyLimitCents=500000`, `status=ACTIVE`. No Pix keys are
+  seeded — they're registered via the account-service API in step 10.
 
-**Step 07** adds the first table-creation script(s) here (`pix_accounts` +
-`pix_keys`, with their GSIs and TTL) plus seed data. Each later sprint that
-flips on a new AWS service adds its own resource script in the same directory,
-matching the vertical-delivery discipline (one flow's infra at a time).
+Each later sprint that flips on a new AWS service adds its own resource script in
+the same directory, matching the vertical-delivery discipline (one flow's infra
+at a time). The exact `create-table` commands are mirrored in `docs/local-dev.md`.
 
-## Convention (for the scripts arriving in step 07)
+## Convention
 
 - Name `NN-<purpose>.sh`, executable, idempotent (safe to re-run on restart).
 - Use the in-container endpoint `http://localhost:4566` (the script runs *inside*
