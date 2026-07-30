@@ -6,6 +6,10 @@ platform — **every step that adds a public endpoint adds its request here in t
 (convention in `CLAUDE.md`). Step 48 finalizes it (pre-request auth, idempotency automation,
 richer happy/error examples).
 
+Its twin is the [HTML API explorer](../api-explorer/) (`tools/api-explorer/`): the same
+living, one-entry-per-endpoint convention, but a zero-install, open-from-disk page. Both are kept
+in lock-step — an endpoint added to one is added to the other in the same step.
+
 ## Files
 
 | File | What it is |

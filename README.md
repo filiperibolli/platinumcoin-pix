@@ -185,7 +185,7 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 - **Microservice decomposition by domain**, spec-driven implementation, TDD, and AI-assisted development discipline (`CLAUDE.md`).
 - **Observability that answers business questions**: Grafana dashboards including a payment funnel (received → fraud-checked → debited → settled) on top of Prometheus metrics, plus SLF4J structured logs that let you follow one transaction across every service by `correlationId`.
 - **Load testing against the stated SLOs**: three k6 profiles (low, standard ~58 TPS, Black Friday 500+ TPS) asserting the p99 targets.
-- **API DX**: a unified Postman collection and a self-contained HTML API explorer with pre-filled valid requests.
+- **API DX, built incrementally**: two **living** manual-test harnesses that grow with the platform, not big-bang artifacts — a **Postman collection** and a self-contained, offline **HTML API explorer** (open-from-disk, pre-filled valid requests, tabs per service, in-memory token auto-attached). Every endpoint is added to *both* in the same step that introduces it (convention enforced in `CLAUDE.md`); Sprint 13 only *finalizes* them (auth/idempotency automation, the guided journey, richer happy/error examples).
 - **The relational counterpart, measured**: a `labs/ledger-pg` module implements the same ledger port on PostgreSQL with **both** locking strategies (pessimistic `SELECT FOR UPDATE` and optimistic versioning), passes the same invariant storm suite, and documents `EXPLAIN` plans, index write-cost and a contention benchmark vs. the DynamoDB path (ADR-0009, Block Q).
 - **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 53).
 - **Messaging portability**: an explicit [SNS/SQS ↔ Kafka appendix](docs/messaging-kafka-appendix.md) mapping every concept used here to its Kafka equivalent.
@@ -248,8 +248,8 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── infra/                     ← (created in step 06) docker-compose, LocalStack init
 │   └── observability/         ← (step 44) Prometheus config + Grafana provisioning/dashboards
 ├── load/k6/                   ← (step 47) k6 load-test scripts: low, standard, black-friday
-├── tools/postman/             ← (step 48) unified Postman collection + environment
-├── tools/api-explorer/        ← (step 49) single-file HTML API explorer with valid sample calls
+├── tools/postman/             ← Postman collection + env (living: one request per endpoint; finalized step 48)
+├── tools/api-explorer/        ← single-file HTML API explorer (living: one card per endpoint; finalized step 49)
 └── pom.xml                    ← (created in step 01) parent POM
 ```
 

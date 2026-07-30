@@ -130,7 +130,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Infra que sobe:** none.
 
 - [ ] [Step 48](docs/steps/step-48.md) — unified Postman collection (all services, auth pre-request, happy/error examples)
-- [ ] [Step 49](docs/steps/step-49.md) — single-file HTML API explorer: unified swagger-like page with valid, clickable sample requests
+- [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
 
 ## Sprint 14 — Relational counterpart & interview-grade extensions (Block Q)
 > Steps 50–51 may be taken any time after Sprint 3; 52 requires 47; 53 requires 41 & 43.

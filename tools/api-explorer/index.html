@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PlatinumCoin Pix — API Explorer (local)</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,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" />
+  <!--
+    Single self-contained file: vanilla JS + embedded CSS + embedded (base64) logo. No build step,
+    no CDN, no server, no external request other than the API calls you trigger. Open from disk.
+
+    LIVING artifact, exactly like tools/postman: created early and grown one card per endpoint, in
+    the same step that adds the endpoint (convention in CLAUDE.md). Step 49 only FINALIZES it.
+    Today it mirrors the Postman collection 1:1: the auth-service tab.
+
+    Opened from disk the browser Origin is "null", so calls are cross-origin — the target service
+    must allow CORS. auth-service does (local-dev CorsConfig, ordered before the JWT auth filter).
+  -->
+  <style>
+    :root {
+      /* neutral charcoal base + a single emerald brand accent (money) */
+      --bg:        #0b0c0f;   --bg-1:      #0e0f13;
+      --surface:   #131519;   --surface-2: #171a1f;   --elev: #1b1e24;
+      --line:      #23262d;   --line-2:    #2c3038;
+      --text:      #f0f2f6;   --text-2:    #b6bcc7;   --muted: #7b8290;  --faint: #565c68;
+      --accent:    #24b47e;   --accent-h:  #1f9d6d;   --accent-soft: rgba(36,180,126,.12); --accent-line: rgba(36,180,126,.30);
+      --btn:       #3f7fd6;   --btn-h:     #3569b5;
+      --blue:      #5b93d6;   --blue-soft: rgba(91,147,214,.13); --blue-line: rgba(91,147,214,.28);
+      --gold:      #d6a441;   --gold-soft: rgba(214,164,65,.13); --gold-line: rgba(214,164,65,.30);
+      --ok:        #2ec38c;   --err:       #e2626f;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; color: var(--text); background: var(--bg);
+      font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+      font-feature-settings: "cv02","cv03","cv04","tnum";
+    }
+    ::selection { background: var(--accent-soft); }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: #23262d; border-radius: 6px; border: 2px solid var(--bg); }
+
+    /* ---- header ---- */
+    header {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; gap: 13px; padding: 14px 28px;
+      background: rgba(11,12,15,.85); backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+    }
+    header .logo {
+      width: 38px; height: 38px; border-radius: 9px; object-fit: contain; padding: 2px;
+      background: #14161b; border: 1px solid var(--line-2);
+    }
+    .brand { display: flex; flex-direction: column; gap: 1px; }
+    .brand .name { font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
+    .brand .name .sep { color: var(--faint); font-weight: 400; margin: 0 6px; }
+    .brand .name .tag { color: var(--muted); font-weight: 500; }
+    .brand .sub { font-size: 11.5px; color: var(--muted); }
+    header .spacer { flex: 1; }
+    .env { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+           color: var(--text-2); background: var(--surface-2); border: 1px solid var(--line);
+           padding: 6px 12px; border-radius: 8px; }
+    .env .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+    main { max-width: 940px; margin: 0 auto; padding: 26px 28px 100px; }
+
+    /* ---- panels ---- */
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; margin-bottom: 16px; }
+    .eyebrow { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--faint); font-weight: 700; margin: 0 0 16px; }
+    .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+    .field { flex: 1 1 170px; min-width: 150px; }
+    label { font-size: 11.5px; color: var(--muted); font-weight: 600; display: block; margin-bottom: 7px; letter-spacing: .01em; }
+    input, textarea {
+      width: 100%; color: var(--text); font-size: 13px; background: var(--bg-1);
+      border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+      transition: border-color .14s, box-shadow .14s;
+    }
+    input::placeholder, textarea::placeholder { color: var(--faint); }
+    input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    textarea { font-family: var(--mono); resize: vertical; min-height: 96px; line-height: 1.55; color: var(--text-2); }
+
+    button {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: #fff; background: var(--btn); border: 1px solid var(--btn);
+      border-radius: 8px; padding: 9px 16px; cursor: pointer; font: 600 13px var(--sans);
+      transition: background .14s, border-color .14s, transform .04s;
+    }
+    button:hover { background: var(--btn-h); border-color: var(--btn-h); }
+    button:active { transform: translateY(1px); }
+    button.ghost { color: var(--text-2); background: transparent; border: 1px solid var(--line-2); }
+    button.ghost:hover { background: var(--surface-2); color: var(--text); border-color: var(--line-2); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button svg { width: 14px; height: 14px; }
+
+    .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 7px; font-size: 11.5px; font-weight: 600; border: 1px solid transparent; }
+    .pill.ok  { background: var(--accent-soft); color: var(--ok);  border-color: var(--accent-line); }
+    .pill.off { background: var(--surface-2);   color: var(--muted); border-color: var(--line); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .muted { color: var(--muted); } .mono { font-family: var(--mono); }
+    code { background: var(--bg-1); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font: 12px var(--mono); color: var(--text-2); }
+    a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+
+    /* ---- service tabs (segmented nav) ---- */
+    .tabs { display: flex; gap: 26px; margin: 8px 4px 0; border-bottom: 1px solid var(--line); }
+    .tab { position: relative; padding: 12px 2px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--muted); transition: color .14s; display: inline-flex; align-items: center; gap: 8px; }
+    .tab:hover { color: var(--text-2); }
+    .tab.active { color: var(--text); }
+    .tab.active::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); border-radius: 2px; }
+    .tab .port { font: 500 11px var(--mono); color: var(--faint); }
+    .svc-panel { padding: 20px 2px 0; }
+    .svc-head { margin: 0 0 16px; }
+    .svc-head h3 { margin: 0 0 3px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+    .svc-head p { margin: 0; font-size: 12.5px; color: var(--muted); }
+
+    /* ---- endpoint cards ---- */
+    .card { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; background: var(--surface); transition: border-color .14s; }
+    .card:hover { border-color: var(--line-2); }
+    .card.open { border-color: var(--line-2); }
+    .card > .head { display: flex; align-items: center; gap: 14px; padding: 13px 15px; cursor: pointer; }
+    .card > .head:hover { background: var(--surface-2); }
+    .method { font: 700 10.5px var(--mono); letter-spacing: .06em; padding: 5px 8px; border-radius: 6px; min-width: 52px; text-align: center; border: 1px solid transparent; }
+    .method.GET  { background: var(--blue-soft); color: var(--blue); border-color: var(--blue-line); }
+    .method.POST { background: var(--gold-soft); color: var(--gold); border-color: var(--gold-line); }
+    .path { font: 500 13px var(--mono); color: var(--text); }
+    .card .title { color: var(--muted); font-size: 12.5px; margin-left: auto; display: flex; align-items: center; gap: 9px; }
+    .title .lock { color: var(--faint); display: inline-flex; }
+    .chev { color: var(--faint); transition: transform .2s ease, color .14s; display: inline-flex; }
+    .card.open .chev { transform: rotate(90deg); color: var(--text-2); }
+    .card > .body { display: none; padding: 16px 15px; border-top: 1px solid var(--line); background: var(--bg-1); }
+    .card.open > .body { display: block; }
+    .card .desc { color: var(--text-2); font-size: 12.5px; line-height: 1.6; margin: 0 0 14px; }
+    pre { background: var(--bg); color: #cbd4e0; border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow: auto; font: 12.5px/1.6 var(--mono); margin: 14px 0 0; max-height: 360px; }
+    .respbar { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+    .status { font: 600 12px var(--mono); }
+    .status.ok { color: var(--ok); } .status.bad { color: var(--err); } .status.pending { color: var(--muted); }
+
+    /* ---- journey ---- */
+    .journey-step { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+    .journey-step:last-child { border-bottom: 0; }
+    .journey-step b { color: var(--text); font-weight: 600; }
+
+    .footnote { margin-top: 28px; font-size: 12px; color: var(--faint); line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <header>
+    <img class="logo" src="data:image/png;base64,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" alt="PlatinumCoin" />
+    <div class="brand">
+      <div class="name">PlatinumCoin<span class="sep">·</span>Pix<span class="sep">·</span><span class="tag">API Explorer</span></div>
+      <div class="sub">Zero-dependency. Open from disk, log in, and send requests to your local stack.</div>
+    </div>
+    <div class="spacer"></div>
+    <span class="env"><span class="live"></span>local</span>
+  </header>
+
+  <main>
+    <!-- Session --------------------------------------------------------------------------------- -->
+    <section class="panel">
+      <p class="eyebrow">Session</p>
+      <div class="row">
+        <div class="field">
+          <label for="authBaseUrl">auth-service base URL</label>
+          <input id="authBaseUrl" value="http://localhost:8081" />
+        </div>
+        <div class="field">
+          <label for="loginUser">Username</label>
+          <input id="loginUser" value="alice" />
+        </div>
+        <div class="field">
+          <label for="loginPass">Password</label>
+          <input id="loginPass" value="alice" type="password" />
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button id="loginBtn">Log in</button>
+          <button id="logoutBtn" class="ghost">Log out</button>
+        </div>
+      </div>
+      <div class="status pending" id="sessionStatus" style="margin-top:16px;"></div>
+      <div class="row" style="margin-top:16px;">
+        <div class="field" style="flex: 1 1 100%;">
+          <label for="idemKey">Idempotency-Key <span class="muted">· for money-moving POSTs (arrives with the payment flow)</span></label>
+          <div style="display:flex; gap:8px;">
+            <input id="idemKey" class="mono" placeholder="click Generate to mint a UUID" readonly />
+            <button id="genIdem" class="ghost" style="white-space:nowrap;">Generate UUID</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Guided journey -------------------------------------------------------------------------- -->
+    <section class="panel">
+      <p class="eyebrow">Guided journey</p>
+      <p class="muted" style="margin:-8px 0 15px; font-size:13px; line-height:1.6;">The product story in one click.
+        Today: <b style="color:var(--text-2)">log in → who am I</b>. As the flows land it grows into
+        <b style="color:var(--text-2)">send Pix → poll status → statement</b> (step 49 finalizes it).</p>
+      <button id="runJourney"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>Run journey (alice)</button>
+      <div id="journeyOut" style="margin-top:16px;"></div>
+    </section>
+
+    <!-- Service tabs + endpoint cards ----------------------------------------------------------- -->
+    <div class="tabs" id="tabs"></div>
+    <div class="svc-panel" id="servicePanel"></div>
+
+    <p class="footnote">
+      Every endpoint added to the platform gets a card here in the same step (like the Postman collection).<br>
+      Contract source of truth: <code>docs/api/openapi.yaml</code>.
+    </p>
+  </main>
+
+  <script>
+    // ---- SVG icons ----------------------------------------------------------------------------
+    const ICON = {
+      chev: '<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
+      lock: '<span class="lock"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>',
+      send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>',
+    };
+
+    // ---- In-memory session (never persisted) --------------------------------------------------
+    let accessToken = null;
+    let identity = null;
+
+    const $ = (id) => document.getElementById(id);
+    const authBase = () => $('authBaseUrl').value.replace(/\/+$/, '');
+
+    function renderSession() {
+      const el = $('sessionStatus');
+      el.className = 'status';
+      if (accessToken) {
+        el.innerHTML = `<span class="pill ok"><span class="dot"></span>token in memory</span> `
+          + `<span class="muted" style="margin-left:8px;">logged in${identity ? ` as <code>${identity.userId}</code> · account <code>${identity.accountId}</code>` : ''} — auto-attached to authenticated requests.</span>`;
+      } else {
+        el.innerHTML = `<span class="pill off"><span class="dot"></span>no token</span> `
+          + `<span class="muted" style="margin-left:8px;">the access token lives in memory only; it is auto-attached as <code>Authorization: Bearer …</code>.</span>`;
+      }
+    }
+
+    // ---- Core request helper ------------------------------------------------------------------
+    async function send({ method, path, headers = {}, body = null, auth = false }) {
+      const h = { ...headers };
+      if (auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
+      let res;
+      try {
+        res = await fetch(authBase() + path, { method, headers: h, body });
+      } catch (e) {
+        throw new Error('Request failed (network or CORS). Is the service up at ' + authBase()
+          + ' and is CORS enabled? Original: ' + e.message);
+      }
+      const text = await res.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch (_) {}
+      return { ok: res.ok, status: res.status, statusText: res.statusText, bodyText: text, json };
+    }
+
+    const pretty = (r) => (r.json !== null ? JSON.stringify(r.json, null, 2) : (r.bodyText || '(empty body)'));
+
+    // ---- Session actions ----------------------------------------------------------------------
+    async function doLogin(username, password) {
+      const r = await send({
+        method: 'POST', path: '/v1/auth/login',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (r.ok && r.json && r.json.accessToken) {
+        accessToken = r.json.accessToken;
+        try {
+          const p = JSON.parse(atob(accessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+          identity = { userId: p.sub, accountId: p.accountId };
+        } catch (_) { identity = null; }
+        renderSession();
+      }
+      return r;
+    }
+
+    async function loginFromForm() {
+      $('loginBtn').disabled = true;
+      try { await doLogin($('loginUser').value, $('loginPass').value); }
+      catch (e) { alert(e.message); }
+      finally { $('loginBtn').disabled = false; }
+    }
+    $('loginBtn').onclick = loginFromForm;
+    $('logoutBtn').onclick = () => { accessToken = null; identity = null; renderSession(); };
+    $('genIdem').onclick = () => { $('idemKey').value = crypto.randomUUID(); };
+    ['loginUser', 'loginPass', 'authBaseUrl'].forEach((id) =>
+      $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') loginFromForm(); }));
+
+    // ---- Service catalogue (data-driven tabs; mirrors tools/postman) ---------------------------
+    const SERVICES = [
+      {
+        id: 'auth', name: 'auth-service', port: 8081,
+        blurb: 'Issues the HS256 JWT every other service validates.',
+        endpoints: [
+          {
+            method: 'POST', path: '/v1/auth/login', title: 'Login (alice)', auth: false, capturesToken: true,
+            desc: 'Authenticate the seeded user alice (acc-001). On 200 the token is captured into the session.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'alice', password: 'alice' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/auth/login', title: 'Login (bob)', auth: false, capturesToken: true,
+            desc: 'Authenticate the seeded user bob (acc-002). Switches the in-memory token to bob.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'bob', password: 'bob' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/auth/login', title: 'Login — bad credentials (401)', auth: false, capturesToken: false,
+            desc: 'Wrong password ⇒ 401 application/problem+json (code: INVALID_CREDENTIALS, no stack trace). Shows the RFC 7807 contract.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'alice', password: 'wrong' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/v1/auth/me', title: 'Me (echo principal)', auth: true, capturesToken: false,
+            desc: 'Returns the caller identity the common-lib JwtAuthFilter derived from the token ({userId, accountId}). Log in first. Without a token: 401 (code: UNAUTHORIZED).',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
+    ];
+
+    let activeService = SERVICES[0].id;
+
+    function renderTabs() {
+      const bar = $('tabs'); bar.innerHTML = '';
+      SERVICES.forEach((svc) => {
+        const tab = document.createElement('div');
+        tab.className = 'tab' + (svc.id === activeService ? ' active' : '');
+        tab.innerHTML = `${svc.name} <span class="port">:${svc.port}</span>`;
+        tab.onclick = () => { activeService = svc.id; renderTabs(); renderServicePanel(); };
+        bar.appendChild(tab);
+      });
+    }
+
+    function renderServicePanel() {
+      const svc = SERVICES.find((s) => s.id === activeService);
+      const wrap = $('servicePanel'); wrap.innerHTML = '';
+
+      const head = document.createElement('div');
+      head.className = 'svc-head';
+      head.innerHTML = `<h3>${svc.name}</h3><p>${svc.blurb}</p>`;
+      wrap.appendChild(head);
+
+      svc.endpoints.forEach((ep, idx) => wrap.appendChild(makeCard(ep, `${svc.id}-${idx}`)));
+      const firstCard = wrap.querySelector('.card');
+      if (firstCard) firstCard.classList.add('open');
+    }
+
+    function makeCard(ep, key) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      const hasBody = ep.body !== null && ep.method !== 'GET';
+      card.innerHTML = `
+        <div class="head">
+          <span class="method ${ep.method}">${ep.method}</span>
+          <span class="path">${ep.path}</span>
+          <span class="title">${ep.title}${ep.auth ? ' ' + ICON.lock : ''}${ICON.chev}</span>
+        </div>
+        <div class="body">
+          <p class="desc">${ep.desc}</p>
+          ${hasBody ? `<label>Request body</label><textarea id="body-${key}">${ep.body}</textarea>` : ''}
+          <div class="respbar"><button data-send>${ICON.send}Send</button><span class="status pending" id="status-${key}"></span></div>
+          <pre id="out-${key}" style="display:none;"></pre>
+        </div>`;
+      card.querySelector('.head').onclick = () => card.classList.toggle('open');
+      card.querySelector('[data-send]').onclick = async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget; btn.disabled = true;
+        const statusEl = $('status-' + key), outEl = $('out-' + key);
+        statusEl.textContent = 'Sending…'; statusEl.className = 'status pending';
+        try {
+          const bodyEl = $('body-' + key);
+          const r = ep.capturesToken
+            ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
+            : await send({ method: ep.method, path: ep.path, headers: ep.headers,
+                           body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth });
+          statusEl.textContent = `${r.status} ${r.statusText}`;
+          statusEl.className = 'status ' + (r.ok ? 'ok' : 'bad');
+          outEl.style.display = 'block'; outEl.textContent = pretty(r);
+        } catch (err) {
+          statusEl.textContent = err.message; statusEl.className = 'status bad';
+          outEl.style.display = 'none';
+        } finally { btn.disabled = false; }
+      };
+      return card;
+    }
+
+    function bodyToCreds(raw) {
+      try { const o = JSON.parse(raw); return [o.username, o.password]; }
+      catch (_) { return ['', '']; }
+    }
+
+    // ---- Guided journey -----------------------------------------------------------------------
+    $('runJourney').onclick = async () => {
+      const out = $('journeyOut'); out.innerHTML = ''; $('runJourney').disabled = true;
+      const step = (label) => {
+        const d = document.createElement('div'); d.className = 'journey-step';
+        d.innerHTML = `<b>${label}</b> <span class="muted">…</span>`; out.appendChild(d); return d;
+      };
+      try {
+        let d = step('1 · Log in as alice');
+        let r = await doLogin('alice', 'alice');
+        d.innerHTML = `<b>1 · Log in as alice</b> — <span class="${r.ok ? 'status ok' : 'status bad'}">${r.status} ${r.statusText}</span>`;
+        if (!r.ok) return;
+
+        d = step('2 · Who am I (GET /v1/auth/me)');
+        r = await send({ method: 'GET', path: '/v1/auth/me', auth: true });
+        d.innerHTML = `<b>2 · Who am I</b> — <span class="${r.ok ? 'status ok' : 'status bad'}">${r.status} ${r.statusText}</span><pre>${pretty(r)}</pre>`;
+
+        const done = document.createElement('div'); done.className = 'journey-step muted';
+        done.innerHTML = '→ next chapters (send Pix, status, statement) unlock as those flows land.';
+        out.appendChild(done);
+      } catch (e) {
+        const d = document.createElement('div'); d.className = 'journey-step status bad';
+        d.textContent = e.message; out.appendChild(d);
+      } finally { $('runJourney').disabled = false; }
+    };
+
+    // ---- boot ---------------------------------------------------------------------------------
+    renderSession();
+    renderTabs();
+    renderServicePanel();
+  </script>
+</body>
+</html>
