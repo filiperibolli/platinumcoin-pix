@@ -256,9 +256,9 @@ docker run --rm -i --network=host grafana/k6 run - < load/k6/low.js
 docker run --rm -i --network=host grafana/k6 run - < load/k6/standard.js
 docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
 
-# Postman (step 48): import tools/postman/pix-platform.postman_collection.json + environment
+# Postman (living since step 04, finalized step 48): import tools/postman/pix-platform.postman_collection.json + environment
 
-# API explorer (step 49): open in a browser, click any request
+# API explorer (living since auth-service, finalized step 49): open from disk, log in, click any request
 open tools/api-explorer/index.html
 ```
 

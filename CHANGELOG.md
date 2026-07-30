@@ -11,6 +11,21 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Single-file HTML API explorer bootstrapped as a living artifact (`tools/api-explorer/index.html`),
+  mirroring the Postman collection 1:1 for auth-service (login alice/bob, bad-credentials 401,
+  `/v1/auth/me`, health) — in-memory token auto-attached, auto-UUID idempotency helper, guided
+  journey (login → me). Reframes the tooling to match the Postman lifecycle: **created early, grown
+  one card per endpoint in its own step, finalized in step 49** (was a step-49 big-bang "create").
+  Professional fintech-style dark UI (neutral charcoal, single emerald accent with blue primary
+  buttons, method-colored chips, SVG icons; the Tibia platinum-coin image embedded as a base64
+  data-URI so the file stays offline/self-contained). Local-dev CORS enabled on auth-service
+  (`CorsConfig`, ordered ahead of `JwtAuthFilter` so pre-flight `OPTIONS` isn't 401'd) so the
+  open-from-disk explorer (Origin `null`) can reach it. Docs squared up to convey both harnesses are
+  incremental: CLAUDE.md convention now mandates BOTH per endpoint; README + ARCHITECTURE §6.13 +
+  the Postman README reframed as living/twins; step-49 spec + PLAN reframed to "finalize";
+  local-dev runbook updated.
+  AI: est 1h / actual 2.5h / ~90% generated / 0 issues caught in human review (UI theme went through
+  several human-directed design iterations — preference, not defects)
 - LocalStack init: pix_accounts and pix_keys tables (GSIs) + seed accounts (step 07)
   AI: est 0.5h / actual 0.5h / ~90% generated / 1 issues caught in human review
   Issues caught in human review (fixed in this change):

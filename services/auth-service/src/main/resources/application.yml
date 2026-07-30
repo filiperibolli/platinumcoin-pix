@@ -5,6 +5,14 @@ spring:
   application:
     name: auth-service
 
+# Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can
+# call this service from the browser. Permissive + credential-free by design here (the token is a
+# Bearer header, never a cookie); a deployed posture pins these origins (step-45 hardening). See
+# infra/CorsConfig — the filter is ordered ahead of the JWT auth filter so pre-flights aren't 401'd.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
 # HS256 signing (ADR-0007). The secret comes from JWT_SECRET in real runs; the fallback here is a
 # dev-only key (must be >= 32 bytes for HS256). Production posture is RS256 + JWKS — documented, not
 # built. TTL is the 15-minute token lifetime the /auth/login contract advertises as expiresIn=900.

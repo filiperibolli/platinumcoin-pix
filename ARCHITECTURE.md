@@ -692,7 +692,9 @@ Black Friday 500+ TPS) turn the SLOs into pass-fail thresholds. Steps 45–47.
 The portfolio front door: a unified Postman collection (auth as a pre-request script, auto-UUID
 idempotency keys, happy + error examples per request) and a **single-file HTML API explorer** — open
 from disk, no build, every endpoint pre-filled with valid seed data and a guided full-journey section.
-Steps 48–49.
+Both are **living harnesses grown one entry per endpoint**, in the same step that adds the endpoint
+(CLAUDE.md convention) — created as soon as the first endpoint exists, not in this sprint; Sprint 13
+(steps 48–49) only *finalizes* them.
 
 ### 6.14 Flow — Block Q: relational counterpart, sharding & cold export   · Sprint 14 · infra: **statement-export-queue + statement-exports bucket + PostgreSQL (lab)**
 
