@@ -170,6 +170,37 @@ paths:
               schema: { $ref: '#/components/schemas/Payment' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /accounts/me:
+    servers:
+      - url: http://localhost:8082/v1
+        description: account-service (local)
+    get:
+      tags: [accounts]
+      summary: The authenticated caller's own account
+      description: |
+        Returns the caller's account, derived **only** from the JWT (`accountId` claim) — there is no
+        path or body parameter that could name a different account, the same mechanism that protects
+        the debited account in the send flow. Served by account-service (8082), distinct from the
+        cache-backed `/accounts/me/balance` and `/accounts/me/statement` reads (payment-service, 8084).
+        The internal service-to-service lookup `GET /internal/accounts/{accountId}` is intentionally
+        not part of this public contract.
+      responses:
+        '200':
+          description: The caller's account
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { type: string, example: acc-001 }
+                  status: { type: string, example: ACTIVE }
+                  dailyLimit:
+                    type: string
+                    description: Daily Pix limit as a decimal BRL string (stored internally as integer cents)
+                    example: "5000.00"
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /accounts/me/balance:
     get:
       tags: [accounts]
