@@ -45,6 +45,8 @@
         <compiler.version>3.13.0</compiler.version>
         <surefire.version>3.2.5</surefire.version>
         <failsafe.version>3.2.5</failsafe.version>
+        <!-- Pinned so common-lib can publish its test-jar (the reusable *IT harness) reproducibly. -->
+        <jar.version>3.4.1</jar.version>
     </properties>
 
     <modules>
@@ -172,6 +174,14 @@
                     <groupId>org.springframework.boot</groupId>
                     <artifactId>spring-boot-maven-plugin</artifactId>
                     <version>${spring-boot.version}</version>
+                </plugin>
+
+                <!-- Pinned so common-lib can publish a test-jar of its reusable *IT harness
+                     (LocalStackTestBase) that later service modules consume in test scope. -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${jar.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>

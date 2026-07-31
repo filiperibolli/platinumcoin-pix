@@ -99,5 +99,47 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- Testcontainers LocalStack harness (LocalStackTestBase) — TEST scope only: the disposable
+             integration-test emulator never ships to consumers, keeping common-lib THIN at runtime.
+             Versions come from the Testcontainers BOM in the parent. Consuming service modules that
+             extend the base re-declare these three in their own test scope (test-scope deps of a
+             test-jar are not transitive) — the accepted trade-off for the reuse. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- DynamoDB SDK v2 in test scope so the smoke IT can read a seeded item; version via the
+             AWS SDK BOM in the parent. Not a runtime dependency of common-lib. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Publish the reusable *IT harness as a test-jar so later service modules can
+                 `extends LocalStackTestBase` by depending on common-lib with <type>test-jar</type>. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>publish-test-jar</id>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>
