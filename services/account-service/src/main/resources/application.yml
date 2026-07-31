@@ -31,6 +31,14 @@ aws:
   access-key-id: ${AWS_ACCESS_KEY_ID:test}
   secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
 
+# Logging: this service's own package at DEBUG so the DynamoDB adapter calls (GetItem/Query, with
+# keys + found=true/false) are visible in the container logs — the whole request path is then
+# traceable end to end by correlationId (`docker compose logs -f account-service`). Dev-only; a
+# deployed profile would raise this back to INFO. Everything else stays at the root INFO level.
+logging:
+  level:
+    com.platinumcoin.pix.account: DEBUG
+
 # Actuator: expose only what compose healthchecks and the runbook rely on.
 management:
   endpoints:

@@ -3,6 +3,8 @@ package com.platinumcoin.pix.account.infra;
 import com.platinumcoin.pix.common.security.JwtAuthFilter;
 import com.platinumcoin.pix.common.web.CorrelationId;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -26,12 +28,18 @@ import org.springframework.web.filter.CorsFilter;
 @Configuration
 public class CorsConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(CorsConfig.class);
+
     /** After {@code CorrelationIdFilter} (HIGHEST_PRECEDENCE), before {@link JwtAuthFilter} (+10). */
     static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 5;
 
     @Bean
     FilterRegistrationBean<CorsFilter> corsFilterRegistration(
             @Value("${web.cors.allowed-origin-patterns:*}") List<String> allowedOriginPatterns) {
+        // Startup breadcrumb: confirms the CORS filter is wired and its order relative to the auth
+        // filter, so a container operator can see pre-flights are handled before auth runs.
+        log.info("cors.filter.registered order={} allowedOriginPatterns={} allowCredentials=false",
+                ORDER, allowedOriginPatterns);
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowedOriginPatterns(allowedOriginPatterns);
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));

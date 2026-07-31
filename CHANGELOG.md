@@ -23,7 +23,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   `/accounts/me` (account-service 8082); step-09 spec's verify note records the internal-JWT
   decision; Postman + API explorer each grow an `account-service` section (`/me`, internal lookup,
   health), the explorer extended with per-service editable base URLs.
-  AI: est 2.5h / actual 3h / ~85% generated / 1 issues caught in human review
+  AI: est 2.5h / actual 3.5h / ~85% generated / 2 issues caught in human review
   Issues caught in human review (fixed in this change):
   1. Logging gap — each endpoint logged a single INFO on entry only, so a `correlationId` could
      not reconstruct the flow's *outcome* stages (resolved vs missing) the way CLAUDE.md's logging
@@ -32,6 +32,12 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
      account degradation (`account.me.missing`) and the ordinary internal lookup miss
      (`account.internal.miss`), plus DEBUG adapter logs for the GetItem/Query in
      `DynamoAccountRepository`.
+  2. Logs not observable in containers — the new adapter logs were DEBUG, so with the root level at
+     INFO they never appeared in `docker compose logs`, and there was no startup breadcrumb showing
+     which DynamoDB endpoint the service connected to. Container operators could not actually trace
+     calls. Fixed by enabling `logging.level.com.platinumcoin.pix.account: DEBUG` (dev-only) so the
+     GetItem/Query lines surface, and adding INFO startup logs in `DynamoConfig`
+     (`dynamodb.client.init endpoint=… region=…`) and `CorsConfig` (`cors.filter.registered …`).
   Notable: the local Docker engine (Desktop 29.3.0, API 1.54, MinAPIVersion 1.40) rejects
   Testcontainers/docker-java's default API v1.32 with HTTP 400; ITs run with
   `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change).

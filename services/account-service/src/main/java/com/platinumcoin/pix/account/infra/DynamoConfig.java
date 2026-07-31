@@ -1,6 +1,8 @@
 package com.platinumcoin.pix.account.infra;
 
 import java.net.URI;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,8 +20,13 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 @EnableConfigurationProperties(AwsProperties.class)
 public class DynamoConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(DynamoConfig.class);
+
     @Bean
     DynamoDbClient dynamoDbClient(AwsProperties aws) {
+        // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets
+        // (e.g. http://localstack:4566). Credentials are never logged.
+        log.info("dynamodb.client.init endpoint={} region={}", aws.endpointUrl(), aws.region());
         return DynamoDbClient.builder()
                 .endpointOverride(URI.create(aws.endpointUrl()))
                 .region(Region.of(aws.region()))
