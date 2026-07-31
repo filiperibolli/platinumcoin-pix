@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.platinumcoin.pix</groupId>
+        <artifactId>platinumcoin-pix-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>account-service</artifactId>
+    <packaging>jar</packaging>
+
+    <name>PlatinumCoin Pix — account-service</name>
+    <description>Accounts &amp; Pix keys service: reads pix_accounts from DynamoDB. The first service to
+        talk to the AWS SDK (step 09: accounts repository + GET account).</description>
+
+    <!-- No <version> on any dependency: all versions come from the parent's BOMs. -->
+    <dependencies>
+        <!-- Shared library: error model, correlation-id filter, JWT validation, JSON logging. -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Web + Actuator: the service owns port 8082 and reports health. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- DynamoDB SDK v2 — this is the first service to read from DynamoDB. Confined to infra/
+             (DynamoAccountRepository, DynamoConfig); the ArchUnit test fails the build if a domain
+             type imports software.amazon.awssdk.*. Version via the AWS SDK BOM in the parent. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+        </dependency>
+
+        <!-- Context-load + repository + controller ITs (*IT → failsafe, runs on `mvn verify`). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Reusable LocalStack harness (LocalStackTestBase) published by common-lib as a test-jar.
+             Test-scope deps of a test-jar are NOT transitive, so the three Testcontainers/DynamoDB
+             deps below are re-declared here (accepted trade-off, per common-lib/pom.xml). -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ArchUnit: enforces the ADR-0010 dependency rule (domain/ imports nothing outward). -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into a runnable, layered fat jar so `java -jar target/*.jar` and the
+                 Dockerfile's layered extraction both work (same pattern as auth-service). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -36,6 +36,38 @@ services:
       retries: 5
       start_period: 30s
 
+  # account-service — first service to read DynamoDB (Sprint 2). Copies the auth-service
+  # "service in compose" block, and additionally gates startup on LocalStack being healthy
+  # (depends_on: service_healthy) since it reads pix_accounts. AWS_ENDPOINT_URL points at the
+  # localstack container by name on pix-net.
+  account-service:
+    build:
+      context: ..
+      dockerfile: services/account-service/Dockerfile
+    image: platinumcoin/account-service
+    container_name: account-service
+    ports:
+      - "8082:8082"
+    environment:
+      # Must match auth-service's JWT_SECRET — account-service only validates tokens.
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # Reach LocalStack by service name on the shared network.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      localstack:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: this flow (Sprint 2,
   # Pix keys) needs DynamoDB and nothing else, so SERVICES pins DynamoDB ONLY. Each later
   # sprint flips on the next service (sns,sqs,s3) by extending this list — not before.
