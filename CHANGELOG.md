@@ -11,6 +11,22 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- account-service with accounts repository, GET /accounts/me and internal account lookup (step 09)
+  First DynamoDB-backed service (port 8082): `AccountRepository` port in `domain/`,
+  `DynamoAccountRepository` adapter in `infra/` (the only place the AWS SDK appears, enforced by
+  `AccountArchitectureTest`). `GET /v1/accounts/me` derives the account from the JWT (`dailyLimit`
+  formatted as a decimal BRL string at the API edge); `GET /internal/accounts/{accountId}` is a
+  service-to-service seam (ADR-0006) that keeps `dailyLimitCents` as integer cents. Both endpoints
+  require a valid token (the internal one is behind `JwtAuthFilter`, not on the public allow-list).
+  Dockerfile + compose entry (depends_on localstack healthy) + README + local-dev CORS
+  (`CorsConfig`). Docs/tooling squared up in the same change: `docs/api/openapi.yaml` gains
+  `/accounts/me` (account-service 8082); step-09 spec's verify note records the internal-JWT
+  decision; Postman + API explorer each grow an `account-service` section (`/me`, internal lookup,
+  health), the explorer extended with per-service editable base URLs.
+  AI: est 2.5h / actual 3h / ~85% generated / 0 issues caught in human review
+  Notable: the local Docker engine (Desktop 29.3.0, API 1.54, MinAPIVersion 1.40) rejects
+  Testcontainers/docker-java's default API v1.32 with HTTP 400; ITs run with
+  `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change).
 - Testcontainers LocalStack harness in common-lib running the real init scripts (step 08)
   AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - Single-file HTML API explorer bootstrapped as a living artifact (`tools/api-explorer/index.html`),

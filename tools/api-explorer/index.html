@@ -11,7 +11,7 @@
 
     LIVING artifact, exactly like tools/postman: created early and grown one card per endpoint, in
     the same step that adds the endpoint (convention in CLAUDE.md). Step 49 only FINALIZES it.
-    Today it mirrors the Postman collection 1:1: the auth-service tab.
+    Today it mirrors the Postman collection 1:1: the auth-service and account-service tabs.
 
     Opened from disk the browser Origin is "null", so calls are cross-origin — the target service
     must allow CORS. auth-service does (local-dev CorsConfig, ordered before the JWT auth filter).
@@ -237,14 +237,15 @@
     }
 
     // ---- Core request helper ------------------------------------------------------------------
-    async function send({ method, path, headers = {}, body = null, auth = false }) {
+    async function send({ method, path, headers = {}, body = null, auth = false, base = null }) {
       const h = { ...headers };
       if (auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
+      const target = (base || authBase()) + path;
       let res;
       try {
-        res = await fetch(authBase() + path, { method, headers: h, body });
+        res = await fetch(target, { method, headers: h, body });
       } catch (e) {
-        throw new Error('Request failed (network or CORS). Is the service up at ' + authBase()
+        throw new Error('Request failed (network or CORS). Is the service up at ' + (base || authBase())
           + ' and is CORS enabled? Original: ' + e.message);
       }
       const text = await res.text();
@@ -288,7 +289,7 @@
     // ---- Service catalogue (data-driven tabs; mirrors tools/postman) ---------------------------
     const SERVICES = [
       {
-        id: 'auth', name: 'auth-service', port: 8081,
+        id: 'auth', name: 'auth-service', port: 8081, baseUrl: 'http://localhost:8081',
         blurb: 'Issues the HS256 JWT every other service validates.',
         endpoints: [
           {
@@ -321,6 +322,27 @@
           },
         ],
       },
+      {
+        id: 'account', name: 'account-service', port: 8082, baseUrl: 'http://localhost:8082',
+        blurb: 'First DynamoDB-backed service. Reads pix_accounts; the account comes from the JWT.',
+        endpoints: [
+          {
+            method: 'GET', path: '/v1/accounts/me', title: 'My account (from JWT)', auth: true, capturesToken: false,
+            desc: 'The caller\'s own account ({accountId, status, dailyLimit}), derived only from the JWT accountId claim — no way to name another account. Log in as alice vs bob to see it track the token. dailyLimit is a decimal BRL string ("5000.00"), formatted at the API edge. Without a token: 401 (code: UNAUTHORIZED).',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/accounts/acc-001', title: 'Internal lookup (by id)', auth: true, capturesToken: false,
+            desc: 'Service-to-service lookup by account id (ADR-0006). Returns integer dailyLimitCents (500000) for callers that do integer math on the limit — the internal counterpart to the decimal string on /me. Requires a valid token but is not account-scoped (an internal seam). Unknown id ⇒ 404 (code: ACCOUNT_NOT_FOUND).',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
     ];
 
     let activeService = SERVICES[0].id;
@@ -336,6 +358,14 @@
       });
     }
 
+    // The base URL a request targets. auth-service reuses the Session field (login lives there); every
+    // other service gets its own editable base field in its panel, defaulting to http://localhost:<port>.
+    function currentServiceBase(svc) {
+      if (svc.id === 'auth') return authBase();
+      const el = $('base-' + svc.id);
+      return (el ? el.value : svc.baseUrl).replace(/\/+$/, '');
+    }
+
     function renderServicePanel() {
       const svc = SERVICES.find((s) => s.id === activeService);
       const wrap = $('servicePanel'); wrap.innerHTML = '';
@@ -345,12 +375,23 @@
       head.innerHTML = `<h3>${svc.name}</h3><p>${svc.blurb}</p>`;
       wrap.appendChild(head);
 
-      svc.endpoints.forEach((ep, idx) => wrap.appendChild(makeCard(ep, `${svc.id}-${idx}`)));
+      // Editable per-service base URL (auth-service uses the Session panel's field instead).
+      if (svc.id !== 'auth') {
+        const baseRow = document.createElement('div');
+        baseRow.className = 'row';
+        baseRow.style.margin = '0 0 14px';
+        baseRow.innerHTML = `<div class="field" style="flex:1 1 100%;">`
+          + `<label for="base-${svc.id}">${svc.name} base URL</label>`
+          + `<input id="base-${svc.id}" value="${svc.baseUrl}" /></div>`;
+        wrap.appendChild(baseRow);
+      }
+
+      svc.endpoints.forEach((ep, idx) => wrap.appendChild(makeCard(ep, `${svc.id}-${idx}`, svc)));
       const firstCard = wrap.querySelector('.card');
       if (firstCard) firstCard.classList.add('open');
     }
 
-    function makeCard(ep, key) {
+    function makeCard(ep, key, svc) {
       const card = document.createElement('div');
       card.className = 'card';
       const hasBody = ep.body !== null && ep.method !== 'GET';
@@ -377,7 +418,8 @@
           const r = ep.capturesToken
             ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
             : await send({ method: ep.method, path: ep.path, headers: ep.headers,
-                           body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth });
+                           body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
+                           base: currentServiceBase(svc) });
           statusEl.textContent = `${r.status} ${r.statusText}`;
           statusEl.className = 'status ' + (r.ok ? 'ok' : 'bad');
           outEl.style.display = 'block'; outEl.textContent = pretty(r);
