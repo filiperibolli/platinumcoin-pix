@@ -324,7 +324,7 @@
       },
       {
         id: 'account', name: 'account-service', port: 8082, baseUrl: 'http://localhost:8082',
-        blurb: 'First DynamoDB-backed service. Reads pix_accounts; registers Pix keys in pix_keys with global uniqueness (conditional PutItem). The account comes from the JWT.',
+        blurb: 'First DynamoDB-backed service. Reads pix_accounts; registers Pix keys in pix_keys with global uniqueness (conditional PutItem); resolves keys to accounts (the DICT role). The account comes from the JWT.',
         endpoints: [
           {
             method: 'GET', path: '/v1/accounts/me', title: 'My account (from JWT)', auth: true, capturesToken: false,
@@ -350,6 +350,11 @@
           {
             method: 'DELETE', path: '/v1/pix-keys/alice@platinum.com', title: 'Delete a Pix key', auth: true, capturesToken: false,
             desc: 'Delete an owned key ⇒ 204. Ownership-guarded: another account\'s key ⇒ 403 (code: KEY_FORBIDDEN, existence revealed on purpose — Pix keys are globally resolvable); an absent key ⇒ 404 (code: KEY_NOT_FOUND). Edit the value in the path to target a different key.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/pix-keys/resolve?key=alice@platinum.com', title: 'Resolve a Pix key (DICT)', auth: true, capturesToken: false,
+            desc: 'account-service\'s DICT role: resolve a Pix key to its destination. An internal key ⇒ {internal:true, accountId, keyType} — register alice@platinum.com first (Register a Pix key) so it resolves. An unknown key ⇒ 404 (code: KEY_NOT_FOUND): external-PSP delegation is deferred to step 30, but the {internal, accountId?, externalBank?, keyType} shape is final now. Requires a valid token (/internal/** is not public); the key is lowercase-normalized to mirror registration. Edit the ?key= value to try another.',
             headers: {}, body: null,
           },
           {

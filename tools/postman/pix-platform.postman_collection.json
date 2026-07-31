@@ -315,6 +315,40 @@
           }
         },
         {
+          "name": "Resolve Pix key (internal / DICT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('internal key', () => pm.expect(body.internal).to.be.true);",
+                  "pm.test('resolves to an account', () => pm.expect(body.accountId).to.be.a('string'));",
+                  "// Register `alice@platinum.com` first (Register Pix key) so this resolves; an unknown",
+                  "// key ⇒ 404 KEY_NOT_FOUND (external-PSP delegation is deferred to step 30)."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/internal/pix-keys/resolve?key=alice@platinum.com",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["internal", "pix-keys", "resolve"],
+              "query": [
+                { "key": "key", "value": "alice@platinum.com" }
+              ]
+            },
+            "description": "account-service's DICT role (ADR-0006 internal seam): resolve a Pix key to its destination. An internal key ⇒ `{internal:true, accountId, keyType}` (register it first via `Register Pix key`); an unknown key ⇒ 404 problem+json (`code: KEY_NOT_FOUND`). The final `{internal, accountId?, externalBank?, keyType}` shape is fixed now — external-PSP delegation lands in step 30. Requires a valid token (`/internal/**` is not public); the incoming key is lowercase-normalized to mirror registration."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",

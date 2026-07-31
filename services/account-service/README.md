@@ -2,7 +2,7 @@
 
 > Accounts & Pix-keys service for the PlatinumCoin Pix platform. The **first service that talks to
 > DynamoDB** via the AWS SDK. Step 09 delivers account reads; step 10 adds Pix-key
-> register/list/delete with global uniqueness; internal key resolution lands in step 11.
+> register/list/delete with global uniqueness; step 11 adds internal key resolution (the DICT role).
 
 - **Port:** `8082`
 - **Depends on:** `common-lib` (error model, correlation-id filter, JWT validation, JSON logging)
@@ -26,6 +26,7 @@ flow (Domain Safety Rule #1).
 | `POST` | `/v1/pix-keys` | Bearer | Register a Pix key (`CPF`/`EMAIL`/`PHONE`/`EVP`). EVP ⇒ server-generated UUID. `201` → `{keyType, keyValue, createdAt}`. Owner from the JWT. |
 | `GET` | `/v1/pix-keys` | Bearer | List the caller's Pix keys (scoped to the JWT account) → `[{keyType, keyValue, createdAt}]`. |
 | `DELETE` | `/v1/pix-keys/{keyValue}` | Bearer | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
+| `GET` | `/internal/pix-keys/resolve?key=…` | Bearer | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key; unknown ⇒ `404 KEY_NOT_FOUND` (external delegation deferred to step 30). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND`. No token ⇒ `401`
@@ -42,6 +43,22 @@ Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND
 - **Delete is ownership-guarded** and reveals existence on purpose: a foreign key ⇒ `403 KEY_FORBIDDEN`
   (not `404`). Pix keys are globally resolvable identifiers, so their existence is not secret — unlike
   a foreign `transactionId`, which returns `404` (step 22) to avoid leaking that it exists.
+
+### Key resolution — the DICT role (step 11)
+
+`GET /internal/pix-keys/resolve?key=…` is account-service acting as BACEN's **DICT** for keys living
+inside PlatinumCoin — the hot lookup on the send path (every Pix resolves its destination key first,
+step 21). The answer uses the **final** shape now, even though the external branch is still a stub:
+
+- **internal key found** ⇒ `200 {internal:true, accountId, keyType}` (`externalBank` omitted/null).
+- **unknown key** ⇒ `404 KEY_NOT_FOUND`. External-PSP delegation is deferred to **step 30**, when
+  mock-bacen exists — a `// TODO(step 30)` seam in `KeyResolutionService.resolveExternal` marks it.
+  Designing `{internal, accountId?, externalBank?, keyType}` up front lets the send orchestration code
+  against the final contract; the external path slots in later without a reshape.
+
+The incoming key is **lowercase-normalized before lookup**, mirroring registration (EMAIL is stored
+lowercase). So a payer who typed `Alice@x.com` still resolves the registration stored as `alice@x.com`;
+it is a no-op for CPF/PHONE and the server-minted (lowercase) EVP.
 
 ### Why `/me` and `/internal` differ
 
@@ -60,12 +77,12 @@ internal seam is intentionally left out of the *public* OpenAPI contract and doc
 
 ```
 api/    AccountController (/v1/accounts/me), InternalAccountController (/internal/accounts/{id}),
-        PixKeyController (/v1/pix-keys), AccountResponse, InternalAccountResponse,
-        RegisterPixKeyRequest, PixKeyResponse                                       (inbound adapters)
-domain/ Account, PixKey (records), PixKeyType (enum), AccountRepository,
-        PixKeyRepository (ports)                                                    (plain Java)
+        PixKeyController (/v1/pix-keys), InternalPixKeyController (/internal/pix-keys/resolve),
+        AccountResponse, InternalAccountResponse, RegisterPixKeyRequest, PixKeyResponse (inbound adapters)
+domain/ Account, PixKey, KeyResolution (records), PixKeyType (enum), KeyResolutionService,
+        AccountRepository, PixKeyRepository (ports)                                  (plain Java)
 infra/  DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK), DynamoConfig,
-        AwsProperties                                                              (outbound adapter + wiring)
+        AccountBeansConfig, AwsProperties                                          (outbound adapter + wiring)
 ```
 
 `domain/` imports nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson) — enforced by
@@ -112,6 +129,11 @@ curl -s localhost:8082/internal/accounts/acc-001 -H "Authorization: Bearer $TOKE
 curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' | jq
 curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
+
+# key resolution / DICT role (step 11) — internal key resolves; unknown ⇒ 404 (external deferred to step 30)
+curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $TOKEN" | jq
+curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -1
+
 curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorization: Bearer $TOKEN" -i
 ```
 
