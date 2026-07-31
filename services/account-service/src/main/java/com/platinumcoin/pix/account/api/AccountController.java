@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
+import com.platinumcoin.pix.account.domain.Account;
 import com.platinumcoin.pix.account.domain.AccountRepository;
 import com.platinumcoin.pix.common.error.DomainException;
 import com.platinumcoin.pix.common.security.AuthenticatedUser;
@@ -34,10 +35,17 @@ public class AccountController {
 
     @GetMapping("/me")
     public AccountResponse me(AuthenticatedUser user) {
-        log.info("account.me.lookup accountId={}", user.accountId());
-        return accounts.findByUser(user.userId(), user.accountId())
-                .map(AccountResponse::from)
-                .orElseThrow(() -> new DomainException("ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND,
-                        "No account found for the authenticated user."));
+        log.info("account.me.lookup userId={} accountId={}", user.userId(), user.accountId());
+        Account account = accounts.findByUser(user.userId(), user.accountId())
+                .orElseThrow(() -> {
+                    // Valid token but no matching account row — a genuine degradation, not a client
+                    // error: the JWT claimed an account this service can't find. WARN so it surfaces.
+                    log.warn("account.me.missing userId={} accountId={}", user.userId(), user.accountId());
+                    return new DomainException("ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND,
+                            "No account found for the authenticated user.");
+                });
+        log.info("account.me.resolved accountId={} status={} dailyLimitCents={}",
+                account.accountId(), account.status(), account.dailyLimitCents());
+        return AccountResponse.from(account);
     }
 }

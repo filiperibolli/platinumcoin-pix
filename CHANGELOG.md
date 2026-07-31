@@ -23,7 +23,15 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   `/accounts/me` (account-service 8082); step-09 spec's verify note records the internal-JWT
   decision; Postman + API explorer each grow an `account-service` section (`/me`, internal lookup,
   health), the explorer extended with per-service editable base URLs.
-  AI: est 2.5h / actual 3h / ~85% generated / 0 issues caught in human review
+  AI: est 2.5h / actual 3h / ~85% generated / 1 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Logging gap — each endpoint logged a single INFO on entry only, so a `correlationId` could
+     not reconstruct the flow's *outcome* stages (resolved vs missing) the way CLAUDE.md's logging
+     convention requires ("every meaningful stage of a flow logs at INFO"). Added outcome logs
+     (`account.me.resolved` / `account.internal.resolved`), a WARN on the valid-token-but-missing-
+     account degradation (`account.me.missing`) and the ordinary internal lookup miss
+     (`account.internal.miss`), plus DEBUG adapter logs for the GetItem/Query in
+     `DynamoAccountRepository`.
   Notable: the local Docker engine (Desktop 29.3.0, API 1.54, MinAPIVersion 1.40) rejects
   Testcontainers/docker-java's default API v1.32 with HTTP 400; ITs run with
   `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change).

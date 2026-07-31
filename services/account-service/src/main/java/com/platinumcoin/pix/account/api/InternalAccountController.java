@@ -34,9 +34,17 @@ public class InternalAccountController {
     @GetMapping("/{accountId}")
     public InternalAccountResponse byId(@PathVariable("accountId") String accountId) {
         log.info("account.internal.lookup accountId={}", accountId);
-        return accounts.findByAccountId(accountId)
+        InternalAccountResponse response = accounts.findByAccountId(accountId)
                 .map(InternalAccountResponse::from)
-                .orElseThrow(() -> new DomainException("ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND,
-                        "No account found for id " + accountId + "."));
+                .orElseThrow(() -> {
+                    // A caller asked for an id that doesn't exist — an ordinary lookup miss (404),
+                    // not an actionable failure of this service, so INFO keeps the trace complete.
+                    log.info("account.internal.miss accountId={}", accountId);
+                    return new DomainException("ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND,
+                            "No account found for id " + accountId + ".");
+                });
+        log.info("account.internal.resolved accountId={} status={} dailyLimitCents={}",
+                response.accountId(), response.status(), response.dailyLimitCents());
+        return response;
     }
 }

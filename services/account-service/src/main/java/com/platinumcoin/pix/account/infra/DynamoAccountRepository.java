@@ -5,6 +5,8 @@ import com.platinumcoin.pix.account.domain.AccountRepository;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -26,6 +28,8 @@ import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 @Repository
 public class DynamoAccountRepository implements AccountRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(DynamoAccountRepository.class);
+
     private static final String TABLE = "pix_accounts";
     private static final String GSI1 = "gsi1";
 
@@ -37,23 +41,28 @@ public class DynamoAccountRepository implements AccountRepository {
 
     @Override
     public Optional<Account> findByUser(String userId, String accountId) {
+        log.debug("account.repo.getItem table={} pk=USER#{} sk=ACCOUNT#{} consistentRead=true",
+                TABLE, userId, accountId);
         Map<String, AttributeValue> item = dynamo.getItem(request -> request
                 .tableName(TABLE)
                 .consistentRead(true)
                 .key(Map.of(
                         "pk", AttributeValue.fromS("USER#" + userId),
                         "sk", AttributeValue.fromS("ACCOUNT#" + accountId)))).item();
+        log.debug("account.repo.getItem.result accountId={} found={}", accountId, !item.isEmpty());
         return item.isEmpty() ? Optional.empty() : Optional.of(toAccount(item));
     }
 
     @Override
     public Optional<Account> findByAccountId(String accountId) {
+        log.debug("account.repo.query table={} index={} gsi1pk=ACCOUNT#{}", TABLE, GSI1, accountId);
         QueryResponse response = dynamo.query(request -> request
                 .tableName(TABLE)
                 .indexName(GSI1)
                 .keyConditionExpression("gsi1pk = :pk")
                 .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS("ACCOUNT#" + accountId)))
                 .limit(1));
+        log.debug("account.repo.query.result accountId={} found={}", accountId, !response.items().isEmpty());
         return response.items().isEmpty() ? Optional.empty() : Optional.of(toAccount(response.items().get(0)));
     }
 
