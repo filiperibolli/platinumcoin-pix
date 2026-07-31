@@ -224,6 +224,97 @@
           }
         },
         {
+          "name": "Register Pix key (EMAIL)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('keyType echoes the request', () => pm.expect(body.keyType).to.eql('EMAIL'));",
+                  "pm.test('keyValue present', () => pm.expect(body.keyValue).to.be.a('string'));",
+                  "// Re-running against the same value now returns 409 KEY_ALREADY_EXISTS (global uniqueness)."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"keyType\": \"EMAIL\",\n  \"keyValue\": \"alice@platinum.com\"\n}"
+            },
+            "url": {
+              "raw": "{{accountBaseUrl}}/v1/pix-keys",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["v1", "pix-keys"]
+            },
+            "description": "Register a Pix key. Global uniqueness is enforced by a conditional `PutItem` (`attribute_not_exists(pk)`) — a value already taken by any account ⇒ 409 problem+json (`code: KEY_ALREADY_EXISTS`). EMAIL is normalized (trim + lowercase); a malformed value ⇒ 422 (`code: INVALID_PIX_KEY`). For `keyType: EVP` the server mints a UUID and ignores `keyValue`. Owner comes from the JWT, never the body."
+          }
+        },
+        {
+          "name": "List my Pix keys",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('body is an array', () => pm.expect(pm.response.json()).to.be.an('array'));",
+                  "// The list is scoped to the caller's JWT account — never another account's keys."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/v1/pix-keys",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["v1", "pix-keys"]
+            },
+            "description": "List the caller's Pix keys (GSI1 query on `ACCOUNT#<accountId from JWT>`). Returns only this account's keys."
+          }
+        },
+        {
+          "name": "Delete a Pix key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));",
+                  "// Deleting another account's key ⇒ 403 KEY_FORBIDDEN (existence revealed on purpose);",
+                  "// an absent key ⇒ 404 KEY_NOT_FOUND."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/v1/pix-keys/alice@platinum.com",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["v1", "pix-keys", "alice@platinum.com"]
+            },
+            "description": "Delete an owned Pix key ⇒ 204. Ownership-guarded: another account's key ⇒ 403 problem+json (`code: KEY_FORBIDDEN`, existence revealed since Pix keys are globally resolvable); an absent key ⇒ 404 (`code: KEY_NOT_FOUND`)."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",
