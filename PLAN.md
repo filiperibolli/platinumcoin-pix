@@ -34,7 +34,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 06](docs/steps/step-06.md) — docker-compose: LocalStack (DynamoDB) with healthchecks (infra only)
 - [x] [Step 07](docs/steps/step-07.md) — LocalStack init: `pix_accounts` + `pix_keys` tables (GSIs) + seed data
-- [ ] [Step 08](docs/steps/step-08.md) — Testcontainers integration-test harness (LocalStack) in common-lib
+- [x] [Step 08](docs/steps/step-08.md) — Testcontainers integration-test harness (LocalStack) in common-lib
 - [ ] [Step 09](docs/steps/step-09.md) — account-service: accounts repository + `GET /accounts/me` + internal lookup
 - [ ] [Step 10](docs/steps/step-10.md) — Pix key registration with global uniqueness (conditional put) + list/delete
 - [ ] [Step 11](docs/steps/step-11.md) — internal key resolution endpoint (DICT role for internal keys)
