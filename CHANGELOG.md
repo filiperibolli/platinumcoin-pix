@@ -11,6 +11,8 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Testcontainers LocalStack harness in common-lib running the real init scripts (step 08)
+  AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - Single-file HTML API explorer bootstrapped as a living artifact (`tools/api-explorer/index.html`),
   mirroring the Postman collection 1:1 for auth-service (login alice/bob, bad-credentials 401,
   `/v1/auth/me`, health) — in-memory token auto-attached, auto-UUID idempotency helper, guided
