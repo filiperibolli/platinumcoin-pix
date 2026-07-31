@@ -11,6 +11,45 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- account-service with accounts repository, GET /accounts/me and internal account lookup (step 09)
+  First DynamoDB-backed service (port 8082): `AccountRepository` port in `domain/`,
+  `DynamoAccountRepository` adapter in `infra/` (the only place the AWS SDK appears, enforced by
+  `AccountArchitectureTest`). `GET /v1/accounts/me` derives the account from the JWT (`dailyLimit`
+  formatted as a decimal BRL string at the API edge); `GET /internal/accounts/{accountId}` is a
+  service-to-service seam (ADR-0006) that keeps `dailyLimitCents` as integer cents. Both endpoints
+  require a valid token (the internal one is behind `JwtAuthFilter`, not on the public allow-list).
+  Dockerfile + compose entry (depends_on localstack healthy) + README + local-dev CORS
+  (`CorsConfig`). Docs/tooling squared up in the same change: `docs/api/openapi.yaml` gains
+  `/accounts/me` (account-service 8082); step-09 spec's verify note records the internal-JWT
+  decision; Postman + API explorer each grow an `account-service` section (`/me`, internal lookup,
+  health), the explorer extended with per-service editable base URLs.
+  AI: est 2.5h / actual 4h / ~85% generated / 4 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Logging gap — each endpoint logged a single INFO on entry only, so a `correlationId` could
+     not reconstruct the flow's *outcome* stages (resolved vs missing) the way CLAUDE.md's logging
+     convention requires ("every meaningful stage of a flow logs at INFO"). Added outcome logs
+     (`account.me.resolved` / `account.internal.resolved`), a WARN on the valid-token-but-missing-
+     account degradation (`account.me.missing`) and the ordinary internal lookup miss
+     (`account.internal.miss`), plus DEBUG adapter logs for the GetItem/Query in
+     `DynamoAccountRepository`.
+  2. Logs not observable in containers — the new adapter logs were DEBUG, so with the root level at
+     INFO they never appeared in `docker compose logs`, and there was no startup breadcrumb showing
+     which DynamoDB endpoint the service connected to. Added INFO startup logs in `DynamoConfig`
+     (`dynamodb.client.init endpoint=… region=…`) and `CorsConfig` (`cors.filter.registered …`).
+  3. DEBUG was the wrong lever for call tracing — the fix for #2 raised the whole account package to
+     DEBUG so the adapter lines would show, but call tracing must be legible at INFO (DEBUG is deep
+     detail, off by default). Reverted `logging.level.com.platinumcoin.pix.account: DEBUG`; the call
+     story now lives entirely at INFO, with the DynamoDB adapter lines remaining DEBUG-on-demand.
+  4. No uniform per-call INFO across services — only account-service had ad-hoc INFO logs, so calls
+     to auth-service/common-lib were not observable at INFO; there was no platform-wide "one line
+     per call". Added a shared `INFO http.request method=… path=… status=… durationMs=…` line in
+     common-lib's `CorrelationIdFilter` (inherited by every service, actuator skipped) and an
+     `auth.me` INFO in auth-service's `MeController`. Codified the two-layer INFO logging convention
+     (shared request line + per-service business-stage events, DEBUG for adapter detail only) in
+     CLAUDE.md so every future service and endpoint follows it in the step that introduces it.
+  Notable: the local Docker engine (Desktop 29.3.0, API 1.54, MinAPIVersion 1.40) rejects
+  Testcontainers/docker-java's default API v1.32 with HTTP 400; ITs run with
+  `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change).
 - Testcontainers LocalStack harness in common-lib running the real init scripts (step 08)
   AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - Single-file HTML API explorer bootstrapped as a living artifact (`tools/api-explorer/index.html`),

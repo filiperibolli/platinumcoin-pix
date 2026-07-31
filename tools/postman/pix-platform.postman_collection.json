@@ -157,6 +157,86 @@
           }
         }
       ]
+    },
+    {
+      "name": "account-service",
+      "description": "Accounts & Pix keys — port 8082. First service backed by DynamoDB. Reads pix_accounts. Run auth-service → Login first so `{{accessToken}}` is set. See services/account-service/README.md.",
+      "item": [
+        {
+          "name": "My account (from JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('accountId present', () => pm.expect(body.accountId).to.be.a('string'));",
+                  "pm.test('status present', () => pm.expect(body.status).to.be.a('string'));",
+                  "// Money at the public edge is a decimal BRL string (e.g. \"5000.00\"), never a float.",
+                  "pm.test('dailyLimit is a decimal string', () => pm.expect(body.dailyLimit).to.match(/^\\d+\\.\\d{2}$/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/v1/accounts/me",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["v1", "accounts", "me"]
+            },
+            "description": "The caller's own account (`{accountId, status, dailyLimit}`), derived only from the JWT `accountId` claim — no way to name another account. Login as alice vs bob to see the account track the token. Without the header ⇒ 401 problem+json (`code: UNAUTHORIZED`)."
+          }
+        },
+        {
+          "name": "Internal account lookup",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('accountId echoes the path', () => pm.expect(body.accountId).to.eql('acc-001'));",
+                  "// Service-to-service view keeps money as integer cents (a JSON number), not a string.",
+                  "pm.test('dailyLimitCents is an integer', () => pm.expect(Number.isInteger(body.dailyLimitCents)).to.be.true);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/internal/accounts/acc-001",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["internal", "accounts", "acc-001"]
+            },
+            "description": "Service-to-service lookup by account id (ADR-0006). Returns integer `dailyLimitCents` for callers that do integer math on the limit. Requires a valid token but is not account-scoped (a purely internal seam). Unknown id ⇒ 404 problem+json (`code: ACCOUNT_NOT_FOUND`)."
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{accountBaseUrl}}/actuator/health",
+              "host": ["{{accountBaseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
     }
   ]
 }

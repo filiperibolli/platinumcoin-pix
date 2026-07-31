@@ -24,8 +24,16 @@ Steps 05, 08.
 ## Verify locally
 ```bash
 curl -s localhost:8082/v1/accounts/me -H "Authorization: Bearer $TOKEN" | jq
-curl -s localhost:8082/internal/accounts/acc-001 | jq
+# The internal lookup requires a valid token too (see the decision note below):
+curl -s localhost:8082/internal/accounts/acc-001 -H "Authorization: Bearer $TOKEN" | jq
 ```
+
+> **Decision note (deviation from the original draft):** the internal endpoint is kept **behind the
+> JWT auth filter** (a valid token is required), rather than being added to the public allow-list.
+> Unlike `/me`, it derives the account from the **path**, not the token, so it is deliberately *not*
+> account-scoped — a purely internal service-to-service seam (ADR-0006). A deployed posture would gate
+> it with a service credential/scope or mTLS rather than an end-user token (step-45 hardening). The
+> public OpenAPI contract documents only `/accounts/me`; the internal seam lives in the service README.
 
 ## Definition of Done
 - [ ] `README.md` present (purpose, port, endpoints, config, run/test) — per-service README convention (CLAUDE.md)
