@@ -11,6 +11,24 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Internal Pix key resolution endpoint (DICT role), external delegation seam left for step 30 (step 11)
+  account-service gains `GET /internal/pix-keys/resolve?key=…` — the platform's own **DICT** for keys
+  living inside PlatinumCoin, the hot lookup on the send path (step 21 resolves the destination key
+  first). New plain-Java `KeyResolutionService` in `domain/` (wired by a new `AccountBeansConfig`, so
+  the domain stays Spring-free — ArchUnit still green) and a `KeyResolution(internal, accountId,
+  externalBank, keyType)` record returned directly as the wire shape (no mirror DTO, ADR-0010). The
+  response uses the **final** `{internal, accountId?, externalBank?, keyType}` shape now: an internal
+  key ⇒ `{internal:true, accountId, keyType}`; an unknown key ⇒ `404 KEY_NOT_FOUND`. External-PSP
+  delegation is deferred to step 30 (no mock-bacen yet) via an explicitly marked
+  `// TODO(step 30)` seam in `resolveExternal`, exercised by a unit test asserting the branch is
+  currently a not-found (a red test step 30 turns green). The incoming key is lowercase-normalized
+  before lookup, mirroring registration, so a mixed-case e-mail still resolves its lowercased
+  registration. Kept behind the shared `JwtAuthFilter` like the other `/internal/**` seam (step-09
+  posture): requires a valid token, 401 otherwise. Docs/tooling squared in the same change: README
+  endpoint row + "DICT role" semantics + verify curls; step-11 spec's verify block corrected to pass a
+  token and register the key first (pix_keys is not seeded); Postman + API explorer each grow a resolve
+  entry under account-service.
+  AI: est 1.5h / actual 1h / ~90% generated / 0 issues caught in human review
 - Pix key register/list/delete with global uniqueness via conditional PutItem (step 10)
   account-service gains `POST /v1/pix-keys` (CPF/EMAIL/PHONE/EVP), `GET /v1/pix-keys` and
   `DELETE /v1/pix-keys/{keyValue}` on the step-07 `pix_keys` table. Global uniqueness is a

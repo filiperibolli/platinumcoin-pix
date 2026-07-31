@@ -20,9 +20,15 @@ Step 10.
 - `KeyResolutionIT` — a registered internal key resolves to its account; an unknown key ⇒ 404 KEY_NOT_FOUND; the seam is exercised by a unit test asserting the external branch is currently a not-found (so step 30 has a red test to turn green).
 
 ## Verify locally
+`/internal/**` is not on the public allow-list (step-09 posture), so the endpoint needs a valid token —
+mint one from auth-service first (`TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)`):
 ```bash
-curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" | jq   # {internal:true, accountId:"acc-001", ...}
-curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" | head -1   # 404 (external deferred to step 30)
+# pix_keys is not seeded, so register alice's key first (as alice, so it maps to acc-001):
+curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' >/dev/null
+
+curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $TOKEN" | jq   # {internal:true, accountId:"acc-001", ...}
+curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -1   # 404 (external deferred to step 30)
 ```
 
 ## Definition of Done

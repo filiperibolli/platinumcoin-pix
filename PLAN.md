@@ -37,7 +37,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 08](docs/steps/step-08.md) — Testcontainers integration-test harness (LocalStack) in common-lib
 - [x] [Step 09](docs/steps/step-09.md) — account-service: accounts repository + `GET /accounts/me` + internal lookup
 - [x] [Step 10](docs/steps/step-10.md) — Pix key registration with global uniqueness (conditional put) + list/delete
-- [ ] [Step 11](docs/steps/step-11.md) — internal key resolution endpoint (DICT role for internal keys)
+- [x] [Step 11](docs/steps/step-11.md) — internal key resolution endpoint (DICT role for internal keys)
 
 ## Sprint 3 — Ledger (the heart)
 **Flow delivered:** atomic double-entry posting + balance read + statement, invariants proven.
