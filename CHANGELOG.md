@@ -11,6 +11,33 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Pix key register/list/delete with global uniqueness via conditional PutItem (step 10)
+  account-service gains `POST /v1/pix-keys` (CPF/EMAIL/PHONE/EVP), `GET /v1/pix-keys` and
+  `DELETE /v1/pix-keys/{keyValue}` on the step-07 `pix_keys` table. Global uniqueness is a
+  conditional `PutItem` (`attribute_not_exists(pk)`) on `KEY#<keyValue>` — the DynamoDB UNIQUE-
+  constraint idiom: two accounts racing for the same value, exactly one wins, the other gets
+  `409 KEY_ALREADY_EXISTS` (the `ConditionalCheckFailedException` stays inside `infra/`; the port
+  exposes it as a boolean, so the domain never sees an AWS type). EVP keys are server-generated
+  UUIDs (client `keyValue` ignored); EMAIL is normalized (trim + lowercase) so casing cannot
+  duplicate a key; per-type format validation yields `422 INVALID_PIX_KEY`. List is scoped to the
+  caller's JWT account (GSI1 query); delete is ownership-guarded and deliberately reveals existence
+  (`403 KEY_FORBIDDEN` on a foreign key, `404 KEY_NOT_FOUND` when absent) — Pix keys are globally
+  resolvable identifiers, unlike a transaction whose existence is secret (`404`, step 22). New
+  `PixKey` record + `PixKeyType` enum + `PixKeyRepository` port in `domain/`,
+  `DynamoPixKeyRepository` adapter in `infra/`, `PixKeyController` in `api/` (INFO business-stage
+  logs `account.key.*`, WARN on duplicate/forbidden/invalid). account-service pom adds
+  `spring-boot-starter-validation` for the request-body `@NotNull`. Docs/tooling squared up in the
+  same change: OpenAPI already carried `/pix-keys*`; README endpoint table + Pix-key semantics
+  section; Postman + API explorer each grow register/list/delete under account-service.
+  AI: est 2.5h / actual 2.5h / ~90% generated / 1 issue caught in human review
+  Issues caught in human review (fixed in this change):
+  1. Re-diagnosed a solved environment quirk instead of reusing the documented fix — when the
+     Testcontainers ITs failed with the Docker Desktop HTTP-400 (docker-java default API v1.32 vs
+     MinAPIVersion 1.40), the assistant started debugging sockets/API versions from scratch rather
+     than checking the CHANGELOG, which already records the fix (`-DargLine="-Dapi.version=1.44"`,
+     step 08). Human pointed back at the changelog; ITs then run green with the documented flag. No
+     code change — the lesson (check CHANGELOG/docs for known env quirks first) is now also noted in
+     the account-service README's local-Docker note.
 - account-service with accounts repository, GET /accounts/me and internal account lookup (step 09)
   First DynamoDB-backed service (port 8082): `AccountRepository` port in `domain/`,
   `DynamoAccountRepository` adapter in `infra/` (the only place the AWS SDK appears, enforced by

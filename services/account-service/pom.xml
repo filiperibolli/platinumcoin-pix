@@ -37,6 +37,14 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Bean Validation for the Pix-key request body (@NotNull on keyType). Same reason as
+             auth-service: common-lib ships validation only in test scope, so a service that
+             validates its own request bodies declares the starter itself (step 10). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
         <!-- DynamoDB SDK v2 — this is the first service to read from DynamoDB. Confined to infra/
              (DynamoAccountRepository, DynamoConfig); the ArchUnit test fails the build if a domain
              type imports software.amazon.awssdk.*. Version via the AWS SDK BOM in the parent. -->

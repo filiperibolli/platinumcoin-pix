@@ -324,7 +324,7 @@
       },
       {
         id: 'account', name: 'account-service', port: 8082, baseUrl: 'http://localhost:8082',
-        blurb: 'First DynamoDB-backed service. Reads pix_accounts; the account comes from the JWT.',
+        blurb: 'First DynamoDB-backed service. Reads pix_accounts; registers Pix keys in pix_keys with global uniqueness (conditional PutItem). The account comes from the JWT.',
         endpoints: [
           {
             method: 'GET', path: '/v1/accounts/me', title: 'My account (from JWT)', auth: true, capturesToken: false,
@@ -334,6 +334,22 @@
           {
             method: 'GET', path: '/internal/accounts/acc-001', title: 'Internal lookup (by id)', auth: true, capturesToken: false,
             desc: 'Service-to-service lookup by account id (ADR-0006). Returns integer dailyLimitCents (500000) for callers that do integer math on the limit — the internal counterpart to the decimal string on /me. Requires a valid token but is not account-scoped (an internal seam). Unknown id ⇒ 404 (code: ACCOUNT_NOT_FOUND).',
+            headers: {}, body: null,
+          },
+          {
+            method: 'POST', path: '/v1/pix-keys', title: 'Register a Pix key', auth: true, capturesToken: false,
+            desc: 'Register a Pix key. Global uniqueness via a conditional PutItem (attribute_not_exists(pk)) — a value already taken by any account ⇒ 409 (code: KEY_ALREADY_EXISTS). EMAIL is normalized (trim + lowercase); a malformed value ⇒ 422 (code: INVALID_PIX_KEY). Set keyType to EVP and the server mints a UUID, ignoring keyValue. Owner comes from the JWT. Log in first.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'alice@platinum.com' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/v1/pix-keys', title: 'List my Pix keys', auth: true, capturesToken: false,
+            desc: 'The caller\'s Pix keys (GSI1 query on ACCOUNT#<accountId from JWT>) — scoped to the token, never another account\'s keys. Log in as alice vs bob to see the list track the token.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'DELETE', path: '/v1/pix-keys/alice@platinum.com', title: 'Delete a Pix key', auth: true, capturesToken: false,
+            desc: 'Delete an owned key ⇒ 204. Ownership-guarded: another account\'s key ⇒ 403 (code: KEY_FORBIDDEN, existence revealed on purpose — Pix keys are globally resolvable); an absent key ⇒ 404 (code: KEY_NOT_FOUND). Edit the value in the path to target a different key.',
             headers: {}, body: null,
           },
           {

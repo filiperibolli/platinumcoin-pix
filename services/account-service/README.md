@@ -1,12 +1,12 @@
 # account-service
 
 > Accounts & Pix-keys service for the PlatinumCoin Pix platform. The **first service that talks to
-> DynamoDB** via the AWS SDK. Step 09 delivers account reads; Pix-key registration/resolution land
-> in steps 10–11.
+> DynamoDB** via the AWS SDK. Step 09 delivers account reads; step 10 adds Pix-key
+> register/list/delete with global uniqueness; internal key resolution lands in step 11.
 
 - **Port:** `8082`
 - **Depends on:** `common-lib` (error model, correlation-id filter, JWT validation, JSON logging)
-- **Infra:** LocalStack (DynamoDB, table `pix_accounts`) — created + seeded by the step-07 init scripts
+- **Infra:** LocalStack (DynamoDB, tables `pix_accounts` + `pix_keys`) — created + seeded by the step-07 init scripts
 
 ## Why it exists
 
@@ -23,10 +23,25 @@ flow (Domain Safety Rule #1).
 | ------ | ---- | ---- | ----------- |
 | `GET` | `/v1/accounts/me` | Bearer | The caller's own account → `{accountId, status, dailyLimit}`; `dailyLimit` is a decimal BRL string ("5000.00"). Account derived from the token. |
 | `GET` | `/internal/accounts/{accountId}` | Bearer | Service-to-service lookup by id → `{accountId, userId, status, dailyLimitCents, createdAt}`; money as **integer cents**. |
+| `POST` | `/v1/pix-keys` | Bearer | Register a Pix key (`CPF`/`EMAIL`/`PHONE`/`EVP`). EVP ⇒ server-generated UUID. `201` → `{keyType, keyValue, createdAt}`. Owner from the JWT. |
+| `GET` | `/v1/pix-keys` | Bearer | List the caller's Pix keys (scoped to the JWT account) → `[{keyType, keyValue, createdAt}]`. |
+| `DELETE` | `/v1/pix-keys/{keyValue}` | Bearer | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND`. No token ⇒ `401`
 (`code: UNAUTHORIZED`) — including on `/internal/**`.
+
+### Pix-key semantics (step 10)
+
+- **Global uniqueness** is enforced by a conditional `PutItem` (`attribute_not_exists(pk)`) on
+  `KEY#<keyValue>` — the DynamoDB equivalent of a UNIQUE constraint. Two accounts racing for the same
+  value: exactly one wins, the other gets `409 KEY_ALREADY_EXISTS`. No read-then-check race exists,
+  because the check and the write are one atomic operation. `EMAIL` is normalized (trim + lowercase)
+  so `Alice@x.com` and `alice@x.com` cannot both be registered; format is validated per type (a
+  malformed value ⇒ `422 INVALID_PIX_KEY`).
+- **Delete is ownership-guarded** and reveals existence on purpose: a foreign key ⇒ `403 KEY_FORBIDDEN`
+  (not `404`). Pix keys are globally resolvable identifiers, so their existence is not secret — unlike
+  a foreign `transactionId`, which returns `404` (step 22) to avoid leaking that it exists.
 
 ### Why `/me` and `/internal` differ
 
@@ -45,9 +60,12 @@ internal seam is intentionally left out of the *public* OpenAPI contract and doc
 
 ```
 api/    AccountController (/v1/accounts/me), InternalAccountController (/internal/accounts/{id}),
-        AccountResponse, InternalAccountResponse                                   (inbound adapters)
-domain/ Account (record) + AccountRepository (port)                                (plain Java)
-infra/  DynamoAccountRepository (AWS SDK), DynamoConfig, AwsProperties             (outbound adapter + wiring)
+        PixKeyController (/v1/pix-keys), AccountResponse, InternalAccountResponse,
+        RegisterPixKeyRequest, PixKeyResponse                                       (inbound adapters)
+domain/ Account, PixKey (records), PixKeyType (enum), AccountRepository,
+        PixKeyRepository (ports)                                                    (plain Java)
+infra/  DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK), DynamoConfig,
+        AwsProperties                                                              (outbound adapter + wiring)
 ```
 
 `domain/` imports nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson) — enforced by
@@ -89,7 +107,18 @@ TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
 
 curl -s localhost:8082/v1/accounts/me -H "Authorization: Bearer $TOKEN" | jq
 curl -s localhost:8082/internal/accounts/acc-001 -H "Authorization: Bearer $TOKEN" | jq
+
+# Pix keys (step 10): register → list → delete
+curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' | jq
+curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
+curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorization: Bearer $TOKEN" -i
 ```
+
+> **Local Docker note:** if `mvn verify` fails with a Testcontainers `Could not find a valid Docker
+> environment` / HTTP `400` (Docker Desktop's minimum API version rejects docker-java's default
+> v1.32), run the ITs with `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change — see
+> CHANGELOG step 08).
 
 ## Related decisions
 
