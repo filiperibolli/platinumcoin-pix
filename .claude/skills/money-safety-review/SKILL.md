@@ -37,6 +37,10 @@ For every rule, state **PASS** or **FAIL** with `file:line` evidence; on FAIL, g
 - **Error contract:** every non-2xx is RFC 7807 `problem+json` with `code` + `correlationId`; no stack traces leaked.
 - **Logging:** SLF4J only (never `System.out`, never a concrete logger); `correlationId` (+ `txId`) in MDC on each meaningful stage; payloads only at DEBUG and masked.
 - **Hexagonal-lite:** domain code never imports AWS SDK types.
+- **Use-case layer (ADR-0011):** every inbound operation goes through a `<Verb><Noun>UseCase` in
+  `domain/usecase/`; no business policy in `api/` (no ownership/limit/eligibility check, no value
+  generation or normalization, no `Instant.now()` — inject a `Clock`); no controller injects an
+  outbound port. A money-moving rule sitting in a controller is a finding, not a style note.
 
 ## ADR & doc-drift check
 

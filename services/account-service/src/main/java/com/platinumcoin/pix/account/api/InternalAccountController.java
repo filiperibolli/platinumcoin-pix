@@ -1,10 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
-import com.platinumcoin.pix.account.domain.AccountRepository;
-import com.platinumcoin.pix.common.error.DomainException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
+import com.platinumcoin.pix.account.domain.usecase.GetAccountUseCase;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -18,33 +14,22 @@ import org.springframework.web.bind.annotation.RestController;
  * some other account by id), not from the token. It is therefore deliberately not account-scoped —
  * a purely internal seam. A deployed posture would gate it with a service credential/scope or mTLS
  * rather than an end-user token (tracked for step-45 hardening).
+ *
+ * <p>Per ADR-0011: no port, no policy, no logging of business stages here — the use case owns all
+ * three, and {@link AccountExceptionHandler} maps its "not found" to {@code 404 ACCOUNT_NOT_FOUND}.
  */
 @RestController
 @RequestMapping("/internal/accounts")
 public class InternalAccountController {
 
-    private static final Logger log = LoggerFactory.getLogger(InternalAccountController.class);
+    private final GetAccountUseCase getAccount;
 
-    private final AccountRepository accounts;
-
-    public InternalAccountController(AccountRepository accounts) {
-        this.accounts = accounts;
+    public InternalAccountController(GetAccountUseCase getAccount) {
+        this.getAccount = getAccount;
     }
 
     @GetMapping("/{accountId}")
     public InternalAccountResponse byId(@PathVariable("accountId") String accountId) {
-        log.info("account.internal.lookup accountId={}", accountId);
-        InternalAccountResponse response = accounts.findByAccountId(accountId)
-                .map(InternalAccountResponse::from)
-                .orElseThrow(() -> {
-                    // A caller asked for an id that doesn't exist — an ordinary lookup miss (404),
-                    // not an actionable failure of this service, so INFO keeps the trace complete.
-                    log.info("account.internal.miss accountId={}", accountId);
-                    return new DomainException("ACCOUNT_NOT_FOUND", HttpStatus.NOT_FOUND,
-                            "No account found for id " + accountId + ".");
-                });
-        log.info("account.internal.resolved accountId={} status={} dailyLimitCents={}",
-                response.accountId(), response.status(), response.dailyLimitCents());
-        return response;
+        return InternalAccountResponse.from(getAccount.execute(accountId));
     }
 }

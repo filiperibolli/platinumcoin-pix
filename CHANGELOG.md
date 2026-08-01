@@ -10,6 +10,64 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Changed
+- Explicit use-case layer per inbound operation; no business policy in controllers (ADR-0011)
+  Not a PLAN step — a cross-cutting architecture change requested in review, applied retroactively to
+  every service built so far so none is left on the old shape. **ADR-0011** amends ADR-0010 on one
+  point: its rejection of a use-case ring. Every inbound operation is now a `<Verb><Noun>UseCase`
+  class in `domain/usecase/` with a single `execute(...)`, so `ls domain/usecase/` is the service's
+  capability list; `api/` is left with three jobs (bind + bean-validate, call one use case, map
+  result/exception to HTTP). ADR-0010 is **not** rewritten — it keeps its original reasoning plus an
+  amendment notice, so the trail of *why the first trade-off did not hold* survives.
+  account-service gains `GetMyAccountUseCase`, `GetAccountUseCase`, `RegisterPixKeyUseCase`,
+  `ListPixKeysUseCase`, `DeletePixKeyUseCase` and `ResolvePixKeyUseCase` (renamed from
+  `KeyResolutionService`); auth-service's `AuthenticationService` becomes `LoginUseCase`. Business
+  policy moved out of `api/`: EVP server-generation, e-mail normalization, format validation, the
+  global-uniqueness outcome, the delete ownership guard and every not-found decision. `Instant.now()`
+  is gone from the controllers — `RegisterPixKeyUseCase` takes an injected `java.time.Clock` (new
+  bean), which matters before steps 19/20/34 make time a decision input rather than a stamp. Domain
+  failures are now plain-Java exceptions in `domain/` (`AccountNotFound`, `InvalidPixKey`,
+  `PixKeyAlreadyExists`, `PixKeyNotFound`, `PixKeyNotOwned`) mapped by a new `AccountExceptionHandler`,
+  mirroring auth-service's existing `InvalidCredentialsException` pattern — **the wire contract is
+  unchanged** (same codes, same statuses: 404/422/409/404/403). Business-stage INFO/WARN logging moved
+  with the policy into the use cases, so the `<domain>.<action>.<outcome>` event names are emitted
+  where the stage actually happens; `CorrelationIdFilter`'s per-request line is untouched.
+  Enforcement, not just convention: each `*ArchitectureTest` gains a second ArchUnit rule failing the
+  build when a class in `..api..` depends on an **interface** in `..domain..` — every port is an
+  interface and every use case is a class, so a controller reaching a repository cannot be merged.
+  New plain-Java unit tests (`RegisterPixKeyUseCaseTest`, `DeletePixKeyUseCaseTest`,
+  `GetMyAccountUseCaseTest`, `ResolvePixKeyUseCaseTest`) exercise with a fake port and a fixed clock
+  what previously needed MockMvc — including "EVP ignores the client-supplied value", which is a
+  security rule of the same family as Domain Safety Rule #1. Docs squared in the same change:
+  CLAUDE.md conventions, ARCHITECTURE.md §3 "Inside a service", both service READMEs, the
+  `run-step` and `money-safety-review` skills, and a superseded-name note in the step-11 spec.
+  Verified: **72 tests green** (34 unit + architecture, 38 integration) via
+  `mvn verify -DargLine="-Dapi.version=1.44"` — every pre-existing `*IT` passes **unchanged**, which
+  is the strongest evidence the wire contract did not move; the new ArchUnit rule was itself verified
+  to fail on a deliberately injected violation (a rule that cannot fail is not a rule); and the seven
+  endpoints plus every error code were exercised against the running compose stack.
+  AI: est 2h / actual 3.5h / ~95% generated / 4 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  4. **Repeated the exact mistake step 10 already recorded** — re-diagnosed the known Docker Desktop
+     API-negotiation quirk from scratch (sockets, group membership, `git stash` bisect) and reported
+     the ITs as unrunnable, instead of checking the CHANGELOG, which documents the fix
+     (`-DargLine="-Dapi.version=1.44"`, step 08). Human pointed back at the changelog a second time;
+     all 38 ITs then ran green, unchanged. Root cause of the *recurrence*, now fixed: the workaround
+     lived only in `services/account-service/README.md` — a per-service card — while
+     `docs/local-dev.md` §6 "Running tests" (where anyone actually looks) said a bare `mvn verify`,
+     and the failure message (`Could not find a valid Docker environment`) points at the socket,
+     which is the wrong place. The runbook now carries the flag in §6 plus a troubleshooting row.
+  <!-- The first three, all found by using the artefact rather than reading the diff:
+       (1) docs/local-dev.md told the reader to run `docker compose logs -f localstack-init`, a service
+           that never existed — the init scripts run inside the `localstack` container (found by
+           actually booting the stack; §4 also listed 8 health ports when only 2 services exist);
+       (2) business logic in controllers / the missing use-case layer, which produced this ADR;
+       (3) the spec-side gap: NO step doc mentioned ArchUnit or the `*ArchitectureTest`, and the six
+           scaffold steps (13/18/23/30/31/38) expanded to only "skeleton + Dockerfile + compose +
+           README" — so a future service, built to the letter of its spec, would have shipped with no
+           architecture test and controllers calling repositories, ADR notwithstanding. Closed with
+           the new-service checklist in CLAUDE.md plus a pointer in each scaffold step. -->
+
 ### Added
 - Internal Pix key resolution endpoint (DICT role), external delegation seam left for step 30 (step 11)
   account-service gains `GET /internal/pix-keys/resolve?key=…` — the platform's own **DICT** for keys

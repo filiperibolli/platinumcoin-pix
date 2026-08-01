@@ -66,11 +66,19 @@ mvn clean package -DskipTests                # build all service jars
 docker compose -f infra/docker-compose.yml up -d --build
 
 # watch LocalStack init (creates tables/queues/topics/buckets + seed data)
-docker compose -f infra/docker-compose.yml logs -f localstack-init
+# NOTE: there is no separate `localstack-init` container — the ready.d scripts run
+# *inside* the `localstack` service, so their output is in that service's logs.
+docker compose -f infra/docker-compose.yml logs -f localstack
 
-# health of everything
-for p in 8081 8082 8083 8084 8085 8086 8087 9090; do
+# just the init lines (every script prefixes its output with `[init]`):
+docker compose -f infra/docker-compose.yml logs localstack | grep '\[init\]'
+
+# health of everything that exists *so far* (vertical delivery — the list grows per
+# sprint; querying a port whose service hasn't been built yet just fails to connect)
+for p in 8081 8082; do
   echo -n "$p: "; curl -s localhost:$p/actuator/health | jq -r .status; done
+# full set, once the whole platform is built:
+#   8081 8082 8083 8084 8085 8086 8087 9090
 ```
 
 Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes LocalStack/Redis data → next `up` reseeds a clean world).
@@ -159,6 +167,10 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
 ```
 
 ## 5. Testing each flow by hand
+
+> This section documents the **target** state — the platform is built vertically (`PLAN.md`),
+> so a subsection only works once its sprint is checked off. Today: **5.1** (Sprint 1) and
+> **5.2** (Sprint 2) run; everything from 5.3 on is written ahead of the code.
 
 ### 5.1 Login
 
@@ -272,10 +284,29 @@ mvn -pl services/ledger-service verify   # one module only
 
 Integration tests do **not** need the compose stack running — Testcontainers manages disposable LocalStack/Redis containers per test run. That separation (compose = manual/E2E playground; Testcontainers = automated tests) keeps tests hermetic and repeatable.
 
+> ### ⚠️ Known environment quirk — read this before debugging a "Docker not found" IT failure
+>
+> On a recent Docker engine (Desktop 29.x, API 1.54, `MinAPIVersion` 1.40), Testcontainers/docker-java
+> negotiates its **default API v1.32**, which the engine rejects — surfacing as `HTTP 400` or the
+> misleading **`Could not find a valid Docker environment`**, even though `docker ps` works fine.
+> There is nothing wrong with your socket, your `DOCKER_HOST` or your group membership. Pin the API
+> version instead:
+>
+> ```bash
+> mvn verify -DargLine="-Dapi.version=1.44"          # all modules
+> mvn -pl services/account-service verify -DargLine="-Dapi.version=1.44"
+> ```
+>
+> Environment quirk only — **no code change, and nothing to fix in the repo**. This is documented
+> here (the runbook), in `services/account-service/README.md` and in the step-08/step-10 CHANGELOG
+> entries, because it has now cost debugging time twice: the failure message points at the socket,
+> which is the wrong place to look.
+
 ## 7. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
+| ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Re-run with `-DargLine="-Dapi.version=1.44"` — see §6 |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |
 | Outbox events not flowing | Polling publisher in payment-service — check its logs and the `outbox.lag` metric; query GSI3 for stuck unpublished items |

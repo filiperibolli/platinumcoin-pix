@@ -12,7 +12,7 @@ The **walking-skeleton** technique: get a real, persisted, JWT-protected request
 Steps 05, 17.
 
 ## Tasks
-1. Scaffold `services/payment-service` (skeleton + Dockerfile + compose + `README.md`, port 8084).
+1. Scaffold `services/payment-service` (skeleton + Dockerfile + compose + `README.md`, port 8084) — expands per the **new-service checklist** in `CLAUDE.md`: the three packages incl. `domain/usecase/` (one `<Verb><Noun>UseCase` per inbound operation, ADR-0011), a `*BeansConfig` composition root, and the `*ArchitectureTest` with **both** ArchUnit rules from day one.
 2. `Transaction` domain record + `TransactionRepository` port; `DynamoTransactionRepository.create(...)`.
 3. `POST /v1/payments/pix`: validate (`pixKey` required, `amount` matches `^\d{1,9}\.\d{2}$` **and is strictly positive** — `"0.00"` ⇒ 400, the bounded pattern keeps the value inside `long` cents, `description` ≤140); parse amount → `long` cents; generate `txId` + `endToEndId`; persist `status=RECEIVED` with `debtorAccountId` from the JWT; respond `202` + `Location: /v1/payments/{txId}` + body `{transactionId, endToEndId, status:"PROCESSING"}`.
 4. Validation failures ⇒ 400 problem+json.

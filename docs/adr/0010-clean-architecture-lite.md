@@ -1,6 +1,14 @@
 # ADR-0010: Clean/hexagonal-lite architecture inside each service
 
-**Status:** Accepted · **Date:** 2026-07-19
+**Status:** Accepted · **Date:** 2026-07-19 · **Amended by:** [ADR-0011](0011-explicit-use-case-layer.md)
+
+> **Amendment notice.** ADR-0011 reverses this ADR on **one** point: the rejection of a use-case ring
+> below. Every inbound operation now gets an explicit `<Verb><Noun>UseCase` class in
+> `domain/usecase/`, `api/` may not depend on an outbound port, and no business policy lives in
+> `api/`. Everything else here — the three packages, the inward dependency rule, ports-only-for-
+> outbound-infra, DTO-only-when-shapes-diverge, ArchUnit enforcement, the `common-lib` exemption —
+> stands as written. Read this ADR for the shape and the reasoning; read ADR-0011 for what changed
+> and why the original trade-off did not hold.
 
 ## Context
 ADR-0006 decides how the system splits **across** services. It says nothing about how a single

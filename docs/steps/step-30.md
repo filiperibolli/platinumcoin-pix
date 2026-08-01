@@ -12,7 +12,7 @@ A **controllable external dependency** is what makes the resilience work (Sprint
 Steps 11 (resolution seam), 26 (messaging), and needed by 31.
 
 ## Tasks
-1. Scaffold `services/mock-bacen-spi` (skeleton + Dockerfile + compose + `README.md`, port 9090); in-memory settlement store.
+1. Scaffold `services/mock-bacen-spi` (skeleton + Dockerfile + compose + `README.md`, port 9090); in-memory settlement store. **Exempt** from the use-case/ArchUnit items of the `CLAUDE.md` new-service checklist — it is a stub, not a domain service (ADR-0010 scope note, restated in ADR-0011); the rest of the checklist still applies.
 2. `POST /spi/settlements` (body incl. `endToEndId`): idempotent (same e2e ⇒ same result); sleep `BACEN_LATENCY_MS`; roll `BACEN_FAILURE_RATE` (⇒ 5xx) and `BACEN_TIMEOUT_RATE` (⇒ hang past client timeout).
 3. `GET /spi/settlements/{endToEndId}` → SETTLED/FAILED/UNKNOWN.
 4. `POST /admin/config` → mutate latency/failureRate/timeoutRate at runtime.

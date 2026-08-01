@@ -13,6 +13,9 @@ Step 10.
 
 ## Tasks
 1. `KeyResolution(internal, accountId, externalBank, keyType)` record; `resolve(key)` in a `KeyResolutionService`.
+   > **Superseded name (ADR-0011):** the class shipped as `KeyResolutionService` and was later renamed
+   > `ResolvePixKeyUseCase` in `domain/usecase/` when the explicit use-case layer was adopted. Same
+   > logic, same external-delegation seam for step 30.
 2. `GET /internal/pix-keys/resolve?key=...`: look up `KEY#<value>` in `pix_keys`; found ⇒ `{internal:true, accountId, keyType}`; not found ⇒ `KEY_NOT_FOUND` (404) — with a `// TODO(step 30): delegate unknown keys to mock-bacen DICT` seam clearly marked.
 3. Keep it internal-only (no `/v1` exposure).
 
