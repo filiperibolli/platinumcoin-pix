@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.UUID;
 import javax.crypto.SecretKey;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * HS256 adapter for {@link TokenIssuer}. Mints exactly the claim set the contract promises —
@@ -21,6 +23,8 @@ import javax.crypto.SecretKey;
  * built once from the shared secret; HS256 mandates ≥ 256 bits, so the secret must be ≥ 32 bytes.
  */
 public class JwtIssuer implements TokenIssuer {
+
+    private static final Logger log = LoggerFactory.getLogger(JwtIssuer.class);
 
     private final SecretKey key;
     private final long ttlSeconds;
@@ -34,16 +38,23 @@ public class JwtIssuer implements TokenIssuer {
     public IssuedToken issue(String userId, String accountId) {
         Instant issuedAt = Instant.now();
         Instant expiresAt = issuedAt.plusSeconds(ttlSeconds);
+        String jti = UUID.randomUUID().toString();
 
         String token = Jwts.builder()
                 .subject(userId)
                 .claim("accountId", accountId)
-                .id(UUID.randomUUID().toString())
+                .id(jti)
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(expiresAt))
                 .signWith(key)
                 .compact();
 
+        // The claim set, never the compact token: a token in a log is a usable credential, and
+        // ADR-0012's "log the values" licence stops at secrets. jti is what ties this issuance to a
+        // later request if token revocation/introspection ever lands.
+        log.debug("Signed an HS256 access token, claims only (the token string is never logged) "
+                        + "| jti={} sub={} accountId={} issuedAt={} expiresAt={} ttlSeconds={}",
+                jti, userId, accountId, issuedAt, expiresAt, ttlSeconds);
         return new IssuedToken(token, ttlSeconds);
     }
 }

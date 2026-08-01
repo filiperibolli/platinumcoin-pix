@@ -664,7 +664,8 @@ JVM) and **Business funnel** (payments per stage RECEIVED→…→SETTLED with R
 conversion %, fraud mix, reconciliation actions, R$ settled). **Silence alerts** detect the *absence* of
 expected events (how async systems fail): e.g. "debits flowing but no settlement in 120s". A
 `scripts/trace.sh <correlationId>` reconstructs one transaction's full path across all services from the
-structured logs — proving the logging contract from CLAUDE.md. Details in §7.7.
+logs — proving the logging contract from CLAUDE.md (ADR-0012: the id is on every record because it is in
+the log *pattern*, so the trace includes framework lines too). Details in §7.7.
 
 ```mermaid
 graph LR
@@ -780,7 +781,7 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 - TLS 1.2+ everywhere in production (LB termination + in-mesh); local compose runs plaintext and says so.
 
 ### 7.7 Observability
-- **Logs**: SLF4J + Logback JSON encoder in every service. Each request gets a `correlationId` at the edge (generated if absent), propagated via header and MDC to every downstream call and every consumer (events carry it in the envelope) — so **the complete path of any transaction is reconstructable across all services** by filtering one id. Stage-named INFO events (`payment.accepted`, `fraud.scored`, `ledger.posted`, `settlement.settled`, …) make the funnel greppable; payloads only at DEBUG and masked.
+- **Logs** (ADR-0012): SLF4J + Logback in every service, configured once in `common-lib` and inherited by depending on it. Each request gets a `correlationId` at the edge (generated if absent), propagated via header and MDC to every downstream call and every consumer (events carry it in the envelope), and printed by the **log pattern itself** (`[cid=… tx=…]` on every record, framework lines included) — so **the complete path of any transaction is reconstructable across all services** with one `grep`. Messages are English sentences followed by `key=value` pairs (*"Pix key resolved to a destination | normalizedValue=… accountId=…"*) rather than dotted event tokens: prose for the reader, pairs for the grep. Human-readable console is the default; the JSON encoder is one profile away (`json-logs`) for a log platform. **This is a sandbox posture: personal-shaped values (Pix keys, CPFs, e-mails) are logged in full and `com.platinumcoin.pix` runs at DEBUG by default — secrets (passwords, hashes, tokens, credentials) never are.** ADR-0012 states the LGPD trade-off and exactly what production reverses (masking/tokenization at the log boundary, INFO by default, JSON with retention + access control).
 - **Metrics**: Micrometer → Prometheus (scrapes every service's `/actuator/prometheus`).
 - **Dashboards (Grafana, provisioned as code)**: (1) *Technical* — latency p50/p99 per endpoint vs SLO lines (2s send, 300ms balance), throughput, error rates, queue depths + DLQ, cache hit rate, JVM basics; (2) *Business funnel* — payments by stage over time (RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED, with REJECTED/REVERSED branches), conversion between stages, fraud decision mix, reconciliation actions, money volume settled. The funnel view is the one a product owner reads — observability that answers business questions, not only "is the CPU ok".
 - **Silence alerts** for async flows: a watchdog metric per stage (e.g., "no settlement completed in 120s while debits are flowing") — detecting the *absence* of expected events, which is how async systems usually fail. DLQ depth > 0 alerts immediately. Reconciliation-age > 5 min alerts (SLO guard).

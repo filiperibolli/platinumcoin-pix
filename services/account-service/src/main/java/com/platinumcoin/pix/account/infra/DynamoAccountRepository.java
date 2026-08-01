@@ -41,29 +41,45 @@ public class DynamoAccountRepository implements AccountRepository {
 
     @Override
     public Optional<Account> findByUser(String userId, String accountId) {
-        log.debug("account.repo.getItem table={} pk=USER#{} sk=ACCOUNT#{} consistentRead=true",
-                TABLE, userId, accountId);
+        log.debug("DynamoDB GetItem on the base table, strongly consistent because both key parts "
+                + "come from the JWT | table={} pk=USER#{} sk=ACCOUNT#{}", TABLE, userId, accountId);
         Map<String, AttributeValue> item = dynamo.getItem(request -> request
                 .tableName(TABLE)
                 .consistentRead(true)
                 .key(Map.of(
                         "pk", AttributeValue.fromS("USER#" + userId),
                         "sk", AttributeValue.fromS("ACCOUNT#" + accountId)))).item();
-        log.debug("account.repo.getItem.result accountId={} found={}", accountId, !item.isEmpty());
-        return item.isEmpty() ? Optional.empty() : Optional.of(toAccount(item));
+        if (item.isEmpty()) {
+            log.debug("DynamoDB GetItem found no such account | pk=USER#{} sk=ACCOUNT#{}",
+                    userId, accountId);
+            return Optional.empty();
+        }
+        Account account = toAccount(item);
+        log.debug("DynamoDB GetItem returned the account | account={}", account);
+        return Optional.of(account);
     }
 
     @Override
     public Optional<Account> findByAccountId(String accountId) {
-        log.debug("account.repo.query table={} index={} gsi1pk=ACCOUNT#{}", TABLE, GSI1, accountId);
+        log.debug("DynamoDB Query on the GSI, eventually consistent (account config changes rarely "
+                + "and this read never moves money) | table={} index={} gsi1pk=ACCOUNT#{} limit=1",
+                TABLE, GSI1, accountId);
         QueryResponse response = dynamo.query(request -> request
                 .tableName(TABLE)
                 .indexName(GSI1)
                 .keyConditionExpression("gsi1pk = :pk")
                 .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS("ACCOUNT#" + accountId)))
                 .limit(1));
-        log.debug("account.repo.query.result accountId={} found={}", accountId, !response.items().isEmpty());
-        return response.items().isEmpty() ? Optional.empty() : Optional.of(toAccount(response.items().get(0)));
+        if (response.items().isEmpty()) {
+            log.debug("DynamoDB Query found no account with this id | index={} gsi1pk=ACCOUNT#{}",
+                    GSI1, accountId);
+            return Optional.empty();
+        }
+        Account account = toAccount(response.items().get(0));
+        // The record's toString prints every field — this is the raw account as read from the table
+        // (ADR-0012: sandbox values in the clear, so a wrong limit or status is visible, not inferred).
+        log.debug("DynamoDB Query returned the account | account={}", account);
+        return Optional.of(account);
     }
 
     /** Map a raw DynamoDB item to the domain record. Money is parsed straight to {@code long} cents. */

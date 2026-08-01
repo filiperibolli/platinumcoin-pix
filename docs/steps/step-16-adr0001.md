@@ -72,18 +72,18 @@ aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger 
 
 ## 3. Where to confirm it in the logs
 
-All ledger stages log at **INFO** as structured JSON with `correlationId` (+ `txId`) in the MDC — the contract from `CLAUDE.md` and the path audit in [Step 44](step-44.md). What to grep for:
+All ledger stages log at **INFO**, prefixed with `[cid=… tx=…]` by the shared log pattern (ADR-0012) — the contract from `CLAUDE.md` and the path audit in [Step 44](step-44.md). What to grep for:
 
-| Signal | Log line (event name) | What it proves for ADR-0001 |
+| Signal | Log line | What it proves for ADR-0001 |
 |---|---|---|
-| A posting committed | `"event":"ledger.posted"` with `txId`, `debitAccount`, `creditAccount`, `amountCents` | The 4-write `TransactWriteItems` succeeded atomically |
+| A posting committed | `Ledger posting committed \| txId=… debitAccount=… creditAccount=… amountCents=…` | The 4-write `TransactWriteItems` succeeded atomically |
 | Insufficient funds | rejection at INFO/WARN → HTTP `422` `code:INSUFFICIENT_FUNDS`, `correlationId` | The `balanceCents >= :amount` **condition fired inside the transaction** (no partial write) |
-| Idempotent replay | `ledger.posted` **not** re-emitted; replay returns the stored result | `attribute_not_exists` on the `txId`-keyed entry blocked the double-post |
+| Idempotent replay | the "posting committed" line **not** re-emitted; replay returns the stored result | `attribute_not_exists` on the `txId`-keyed entry blocked the double-post |
 | Contention | `WARN` retry-with-jitter on `TransactionConflict` (then `503` after max attempts) | Serialization is provided by **DynamoDB itself**, not the `version` field (which is an audit counter, not a lock) |
 
 Reconstruct one transaction's whole path (ledger stage included) by its correlation id:
 ```bash
-docker compose -f infra/docker-compose.yml logs ledger-service | grep '"ledger.posted"'
+docker compose -f infra/docker-compose.yml logs ledger-service | grep 'txId=<TX>'
 bash scripts/trace.sh <correlationId>     # step 44 — full cross-service path
 ```
 

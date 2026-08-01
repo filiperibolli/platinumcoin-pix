@@ -11,6 +11,95 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Changed
+- Logging reworked for a human reader: correlation id in the pattern, prose messages, real values (ADR-0012)
+  Not a PLAN step — a cross-cutting change requested in review, applied to every service built so far.
+  **ADR-0012** is new and states the posture, including the LGPD trade-off and the table of exactly
+  what production reverses. Four changes, all owned by `common-lib` so a new service inherits them by
+  depending on it:
+  (1) **The correlation id moved into the log pattern.** `logback-spring.xml` sets Spring Boot's own
+  `LOG_CORRELATION_PATTERN` hook, so every record — ours, Spring's, Tomcat's, the AWS SDK's — is
+  prefixed `[cid=… tx=…]`. Consequently `CorrelationIdFilter`'s `INFO http.request …` line is
+  **removed**: it existed to give the id a home, and with it went the `/actuator` special-case that
+  kept healthchecks from drowning the log. `grep cid=<id>` now returns strictly more than that line
+  did. The filter keeps read-or-generate + MDC + response header; `CorrelationIdFilterTest` is
+  unchanged and still passes, which is the point — the behaviour that mattered did not move.
+  (2) **Human-readable console is the default**, the logstash JSON encoder is
+  `SPRING_PROFILES_ACTIVE=json-logs` (the `dev` profile no longer affects logging). Compose activated
+  no profile, so `docker compose logs` had been printing JSON to a human.
+  (3) **Message convention replaced.** The dotted `<domain>.<action>.<outcome>` tokens are gone;
+  a line is now an English sentence naming the decision *and its consequence*, then ` | key=value`
+  pairs — `Pix-key deletion refused, the key belongs to another account, returning 403 | keyValue=… callerAccountId=… ownerAccountId=…`
+  instead of `account.key.delete.forbidden`. Prose for the reader, pairs for the grep.
+  (4) **Values are logged, secrets are not.** Pix keys are now logged raw *and* normalized side by
+  side (`ResolvePixKeyUseCase` previously logged neither, which made a DICT trace unable to answer
+  the only question asked of it); accounts print every field; rejected request fields print their
+  values; `com.platinumcoin.pix` runs at **DEBUG by default** so the DynamoDB calls and their keys are
+  visible without knowing a flag exists. Passwords, bcrypt hashes, compact JWTs and AWS credentials
+  remain unlogged at every level — `JwtIssuer` logs the claims it signed, never the token.
+  Coverage gaps closed while there — the guiding rule being **every non-2xx the platform returns has
+  a line under its correlationId**, which the removed per-request line used to provide by accident:
+  `GlobalExceptionHandler` logs domain 4xx (code + status) and which field failed validation with its
+  value, and a new `handleExceptionInternal` override covers everything **Spring MVC rejects before a
+  handler runs** — unknown path, wrong method, unsupported media type, unreadable body. That last one
+  was found by running the stack: a typo'd URL returned 404 and produced *zero* log lines, because no
+  controller, use case or filter was ever reached. `AccountExceptionHandler` now logs the outcome
+  (status + code) next to the use case's reason, matching what auth-service already did.
+  `JwtAuthFilter` logs method/path on a 401 and a DEBUG line per authenticated call (`userId`,
+  `accountId`, method, path), and auth-service's `CorsConfig` gained the startup breadcrumb
+  account-service already had. Login now distinguishes `unknown_user` from `bad_password`
+  **in the log** while the response stays a single generic 401 — the asymmetry is deliberate and
+  commented. Docs squared in the same change: CLAUDE.md's logging convention rewritten (it previously
+  mandated the dotted names and forbade removing the request line), ARCHITECTURE §6.11/§7.7, the
+  threat model's "sensitive payloads in logs" row and PII note, `docs/local-dev.md` §4.1 (new — how to
+  read/trace/quiet the logs), both service READMEs, the `money-safety-review` skill (a logged *secret*
+  is a finding; a logged personal value is not), and the log-line examples in the step specs written
+  ahead of the code (16, 19, 25, 29, 35, 44, 45).
+  Verified: `mvn package` green; 13 common-lib + 6 auth + 15 account unit/architecture tests and the
+  10 auth-service ITs pass. Then verified **on the running compose stack**, which is what found the
+  silent-404 gap above: one `X-Correlation-Id` sent through login → `/auth/me` → `/accounts/me` →
+  register key → list keys → resolve key, plus the 401 (no token), 401 (bad password), 422 (bad CPF),
+  409 (duplicate key) and 404 (unknown key *and* unmapped route) paths — every one of them
+  reconstructed end to end, across both services, by a single `grep "cid=<id>"`. Full suite green
+  afterwards: **72 tests** (34 unit + architecture, 38 integration) via
+  `mvn verify -DargLine="-Dapi.version=1.44"` — the Testcontainers ITs included, unchanged.
+  AI: est 1h / actual 2.5h / ~95% generated / 5 issues caught in human review
+  Issues caught in human review (fixed in this change):
+  1. **Kept the dotted event names when asked for verbose logs.** The first pass enriched the values
+     but left `account.key.register.created`-style tokens, i.e. it made the machine-readable half
+     better and the human-readable half unchanged — while the whole request was "easier to
+     understand". Human re-specified: descriptive English sentences. The convention flip then also
+     forced the doc sweep across the six step specs, which the first pass would have left to drift.
+  2. **Declared the work verified without running the artefact.** The claim "every non-2xx has a
+     line" rested on reading the diff and on tests that only exercise paths which *reach* the
+     application. Human asked to bring the stack up; the first typo'd URL of the demo returned a 404
+     with no log line at all — the exact failure mode the removal of the per-request line introduces,
+     invisible to unit and integration tests. Fixed with the `handleExceptionInternal` override; the
+     lesson is the one step 08 already recorded in a different form: use the artefact, don't read it.
+  3. **Third occurrence of the same Docker misdiagnosis — and this time it was written into the
+     CHANGELOG as fact.** The Testcontainers ITs failed with `Could not find a valid Docker
+     environment`, and the entry above originally read "no Docker daemon available in this
+     environment". Docker was up the whole time — `docker compose up` ran on it minutes later, on the
+     human's request. The correct reading was the one this file already contains twice (steps 08 and
+     10): the client/daemon API negotiation quirk, fixed by `-DargLine="-Dapi.version=1.44"`. Applying
+     it ran all 38 ITs green. Beyond the repeated mistake, the worse failure is the *shape* of the
+     claim: an unverified environmental excuse stated as a verified fact, in the one document whose
+     job is to be trustworthy about what was and wasn't checked. Rule taken from it: a "could not
+     run" sentence in the CHANGELOG must name what was tried, not what was assumed.
+  4. **Verified the new log pattern against a stale artifact and nearly believed it.** The first IT
+     run used `mvn -pl services/auth-service verify` without `-am`, so `common-lib` resolved from
+     `~/.m2` — the *previous* jar, with the old `logback-spring.xml`. The output was JSON, i.e. the
+     old config, on a run whose entire purpose was to prove the new config renders. It was caught
+     only because the shape was visibly wrong; had the change been subtler (a field, a level) it
+     would have passed as verified. Any single-module `verify` that exercises shared code needs
+     `-am`, or an `install` of the dependency first.
+  5. **Asked two clarifying questions up front and missed the one that mattered.** The questions
+     covered output format (console vs JSON) and level (DEBUG by default) — both real, both answered
+     — while the human's actual complaint was the *message style*: dotted `account.key.register.created`
+     tokens that only a reader of this codebase can parse. Result: a complete second pass over every
+     log statement in three modules, plus a doc sweep of six step specs that the first pass would have
+     left to drift. Asking about the mechanism is easy; the harder question was "what makes these hard
+     to understand for you", and it was never asked.
+
 - Explicit use-case layer per inbound operation; no business policy in controllers (ADR-0011)
   Not a PLAN step — a cross-cutting architecture change requested in review, applied retroactively to
   every service built so far so none is left on the old shape. **ADR-0011** amends ADR-0010 on one

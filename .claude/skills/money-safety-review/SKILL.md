@@ -35,7 +35,7 @@ For every rule, state **PASS** or **FAIL** with `file:line` evidence; on FAIL, g
 - **Cache correctness:** the Redis balance cache serves *display* reads only; no money decision reads the cache (ADR-0008).
 - **Guarded transitions:** status changes on `pix_transactions` use guarded `ConditionExpression` (`status = :expectedFrom`), not blind writes (ADR-0003/0006).
 - **Error contract:** every non-2xx is RFC 7807 `problem+json` with `code` + `correlationId`; no stack traces leaked.
-- **Logging:** SLF4J only (never `System.out`, never a concrete logger); `correlationId` (+ `txId`) in MDC on each meaningful stage; payloads only at DEBUG and masked.
+- **Logging (ADR-0012):** SLF4J only (never `System.out`, never a concrete logger); `correlationId` (+ `txId`) put on the MDC (the *pattern* prints them — no filter or line should exist just to surface the id, and no service ships its own `logback-spring.xml`); every meaningful business stage logged at INFO as an English sentence plus `key=value` pairs, values in the clear. **A finding here is a logged secret** — password, bcrypt hash, JWT/compact token, AWS credential — not a logged personal value (deliberate sandbox posture, ADR-0012).
 - **Hexagonal-lite:** domain code never imports AWS SDK types.
 - **Use-case layer (ADR-0011):** every inbound operation goes through a `<Verb><Noun>UseCase` in
   `domain/usecase/`; no business policy in `api/` (no ownership/limit/eligibility check, no value

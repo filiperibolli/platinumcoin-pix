@@ -109,7 +109,7 @@ are marked ⚠️.
 
 | Threat | Control | Residual |
 |--------|---------|----------|
-| User denies initiating a payment | `correlationId` + `txId` traced through every service via structured JSON logs; immutable S3 audit record per settlement ✅ | Log integrity not cryptographically signed ⚠️ |
+| User denies initiating a payment | `correlationId` + `txId` on every log record (in the pattern, ADR-0012) across every service; immutable S3 audit record per settlement ✅ | Log integrity not cryptographically signed ⚠️ |
 | Consumer denies processing an event | `pix_processed_events` records every consumed `eventId` ✅ | TTL 7 days |
 
 ### I — Information disclosure
@@ -118,7 +118,7 @@ are marked ⚠️.
 |--------|---------|----------|
 | Pix-key enumeration via the resolution endpoint | Authenticated endpoint; **prod: rate limiting + BACEN DICT anti-scraping** ⚠️ | Local: no rate limit ⚠️ |
 | Stack traces / internals leaked in errors | RFC 7807 `problem+json` with a stable `code` and `correlationId`; **never leak stack traces** (CLAUDE.md) ✅ | — |
-| Sensitive payloads in logs | DEBUG payloads are **masked**; PII minimised in logs ✅ | Review-enforced |
+| Sensitive payloads in logs | **Secrets are never logged** — no password, bcrypt hash, JWT or AWS credential, at any level ✅ (review-enforced) | **Personal-shaped values (Pix keys, CPFs, e-mails) ARE logged in full — a deliberate sandbox choice over seeded fixtures ([ADR-0012](adr/0012-verbose-logs-with-real-values.md)), which production reverses with masking/tokenization at the log boundary** ⚠️ |
 | Secret leaking into git | `.env`, `*.pem`, `*.key` git-ignored; no real secrets in repo ✅ | — |
 | One user reads another's statement/balance | Queries scoped by `accountId` from the token ✅ | — |
 
@@ -154,7 +154,9 @@ are marked ⚠️.
    trade-off (ADR-0005). Residual exposure is bounded by daily limits and delayed (not
    skipped) async scoring, and the seam for a value-thresholded hybrid policy exists.
 4. **Pix-key enumeration / PII (A5).** LGPD-relevant. Local build authenticates the
-   endpoint; production needs rate limiting and DICT anti-scraping.
+   endpoint; production needs rate limiting and DICT anti-scraping. The same asset is
+   also exposed *in the logs* by choice — see [ADR-0012](adr/0012-verbose-logs-with-real-values.md)
+   for why that is acceptable over seeded fixtures and exactly what changes with real data.
 
 ---
 

@@ -27,7 +27,7 @@ Steps 33, 34.
 ## Verify locally
 ```bash
 # BACEN down then restored; watch reconciliation resolve/reverse within 5 min and the alert clear:
-docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'reconciliation.resolved|"ALERT"'
+docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'Reconciliation resolved|ALERT'
 ```
 
 ## Definition of Done

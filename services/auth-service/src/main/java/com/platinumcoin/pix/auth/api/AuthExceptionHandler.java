@@ -24,7 +24,10 @@ public class AuthExceptionHandler {
 
     @ExceptionHandler(InvalidCredentialsException.class)
     public ResponseEntity<ProblemDetail> handleInvalidCredentials(InvalidCredentialsException ex) {
-        log.warn("auth.login.denied reason=invalid_credentials");
+        // The *why* was already logged by LoginUseCase (unknown_user vs bad_password); this line is
+        // the HTTP outcome, so the trace shows both what the domain decided and what the client got.
+        log.warn("Returning 401 INVALID_CREDENTIALS for a failed login "
+                + "(LoginUseCase already logged which check failed) | status=401");
         ProblemDetail body = ProblemDetailFactory.of(
                 HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", ex.getMessage());
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)

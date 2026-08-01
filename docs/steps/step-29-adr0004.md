@@ -60,13 +60,13 @@ aws --endpoint-url=http://localhost:4566 dynamodb scan --table-name pix_processe
 
 | Signal | Log line | What it proves |
 |---|---|---|
-| Publish | `"event":"outbox.published"` with `eventId`, `eventType`, `correlationId` | The publisher drained the sparse index to SNS |
+| Publish | `Outbox item published to SNS \| eventId=… eventType=…` (with `[cid=…]` from the pattern) | The publisher drained the sparse index to SNS |
 | Publisher liveness | `outbox.lag` gauge (age of oldest unpublished) | If it climbs, the publisher is stuck — the silence alert (Step 44) fires |
 | Dedup | consumer logs "duplicate eventId ignored" (no second side effect) | `ProcessedEventStore` made delivery effectively-once |
 | Republish after crash | same `eventId` published twice across ticks, consumed once | Publish-then-mark ⇒ at-least-once, handled downstream |
 
 ```bash
-docker compose -f infra/docker-compose.yml logs -f payment-service | grep outbox.published
+docker compose -f infra/docker-compose.yml logs -f payment-service | grep 'Outbox item published'
 ```
 The `correlationId` on the envelope is what lets `scripts/trace.sh` follow one payment across the publish/consume boundary (Step 44).
 

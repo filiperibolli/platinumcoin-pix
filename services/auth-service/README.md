@@ -171,3 +171,9 @@ from Keycloak.
   HS256 locally (RS256 + JWKS is the documented production posture), MFA deferred.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
 - [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.
+- [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited
+  from `common-lib`: `[cid=… tx=…]` on every record, English sentences plus `key=value`, usernames and
+  ids in the clear, `com.platinumcoin.pix` at DEBUG. Here the line that matters is the one **not**
+  crossed: the password, the bcrypt hash and the minted token are never logged — `JwtIssuer` logs the
+  claims (`jti`, `sub`, `accountId`, `iat`, `exp`) only. Follow one login with
+  `docker compose logs auth-service | grep "cid=<id>"`.

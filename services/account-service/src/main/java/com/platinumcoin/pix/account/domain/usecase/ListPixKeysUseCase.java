@@ -3,6 +3,7 @@ package com.platinumcoin.pix.account.domain.usecase;
 import com.platinumcoin.pix.account.domain.PixKey;
 import com.platinumcoin.pix.account.domain.PixKeyRepository;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,9 +23,15 @@ public class ListPixKeysUseCase {
     }
 
     public List<PixKey> execute(String accountId) {
-        log.info("account.key.list.lookup accountId={}", accountId);
+        log.info("Listing the Pix keys of the caller's account | accountId={}", accountId);
         List<PixKey> found = keys.listByAccount(accountId);
-        log.info("account.key.list.resolved accountId={} count={}", accountId, found.size());
+        // The INFO line answers "did the list work and how big is it"; the keys themselves go to
+        // DEBUG — same information, one level down, so a busy trace stays readable (ADR-0012).
+        log.info("Listed the Pix keys of the caller's account | accountId={} count={}",
+                accountId, found.size());
+        log.debug("Pix keys returned to the caller | accountId={} keys=[{}]", accountId, found.stream()
+                .map(k -> k.keyType() + ":" + k.keyValue())
+                .collect(Collectors.joining(", ")));
         return found;
     }
 }

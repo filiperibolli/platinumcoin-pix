@@ -26,7 +26,8 @@ public class DynamoConfig {
     DynamoDbClient dynamoDbClient(AwsProperties aws) {
         // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets
         // (e.g. http://localstack:4566). Credentials are never logged.
-        log.info("dynamodb.client.init endpoint={} region={}", aws.endpointUrl(), aws.region());
+        log.info("Built the DynamoDB client, credentials are never logged | endpoint={} region={}",
+                aws.endpointUrl(), aws.region());
         return DynamoDbClient.builder()
                 .endpointOverride(URI.create(aws.endpointUrl()))
                 .region(Region.of(aws.region()))

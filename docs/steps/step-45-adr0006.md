@@ -70,13 +70,13 @@ mvn -q verify                          # includes the guarded illegal-transition
 
 | Signal | Log line | What it proves |
 |---|---|---|
-| Cross-service path | the same `correlationId` in `payment.accepted`, `ledger.posted`, `settlement.settled`, `notification.pushed` | The seams are traceable — one id, many services |
+| Cross-service path | the same `[cid=…]` prefix on the "payment accepted", "ledger posting committed", "settlement settled" and "notification pushed" lines | The seams are traceable — one id, many services |
 | Guarded shared-table write | settlement-service writing `pix_transactions` only via guarded transitions | Exception #1 stays constrained, not free-form |
 | Shared dedup | `pix_processed_events` rows keyed `CONSUMER#<name>#EVT#<id>` | Exception #2 — one table, consumer-scoped |
 | Blast-radius containment | fraud down → WARN "fraud skipped" but no error cascade in payment/ledger | The boundary + fail-open isolate failure |
 
 ```bash
-docker compose -f infra/docker-compose.yml logs | grep '"correlationId":"'<CID>'"'
+docker compose -f infra/docker-compose.yml logs | grep "cid=<CID>"
 ```
 
 ---

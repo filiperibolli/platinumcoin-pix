@@ -69,15 +69,15 @@ aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_idem
 
 | Signal | Log line | What it proves |
 |---|---|---|
-| First accept | `"event":"payment.accepted"` with a fresh `txId`, `correlationId` | The claim won — this is the *only* time the work runs |
-| Replay | **no** new `payment.accepted`; a served-from-idempotency line, same `txId` | The conditional put lost ⇒ stored response replayed, no second debit |
+| First accept | `Payment accepted \| txId=… idempotencyKey=…` (with `[cid=…]` from the pattern) | The claim won — this is the *only* time the work runs |
+| Replay | **no** new "payment accepted" line; a served-from-idempotency line instead, same `txId` | The conditional put lost ⇒ stored response replayed, no second debit |
 | Key reuse | rejection → `409 IDEMPOTENCY_KEY_REUSED`, `correlationId` | Same key, different `requestHash` |
 | Orphan reclaim | WARN "stale IN_PROGRESS reclaimed" after 60s | The crash-between-claim-and-response window handled without waiting for the 24h TTL |
 
 ```bash
-docker compose -f infra/docker-compose.yml logs payment-service | grep -E 'payment.accepted|IDEMPOTENCY_KEY'
+docker compose -f infra/docker-compose.yml logs payment-service | grep -E 'Payment accepted|IDEMPOTENCY_KEY'
 ```
-Two retries under the *same* `correlationId` (or two correlationIds pointing at one `txId`) that yield a single `payment.accepted` is the visual proof the layer holds.
+Two retries under the *same* `correlationId` (or two correlationIds pointing at one `txId`) that yield a single "payment accepted" line is the visual proof the layer holds.
 
 ---
 
