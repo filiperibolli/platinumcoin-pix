@@ -38,7 +38,9 @@ public class CorsConfig {
             @Value("${web.cors.allowed-origin-patterns:*}") List<String> allowedOriginPatterns) {
         // Startup breadcrumb: confirms the CORS filter is wired and its order relative to the auth
         // filter, so a container operator can see pre-flights are handled before auth runs.
-        log.info("cors.filter.registered order={} allowedOriginPatterns={} allowCredentials=false",
+        log.info("Registered the local-dev CORS filter ahead of the JWT filter, so browser "
+                        + "pre-flights are answered before authentication runs "
+                        + "| order={} allowedOriginPatterns={} allowCredentials=false",
                 ORDER, allowedOriginPatterns);
         CorsConfiguration config = new CorsConfiguration();
         config.setAllowedOriginPatterns(allowedOriginPatterns);

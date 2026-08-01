@@ -161,3 +161,8 @@ curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorizatio
   owns its tables, so cross-service reads go through an API (the internal lookup), not a shared table.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
 - [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.
+- [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited
+  from `common-lib`: `[cid=… tx=…]` on every record, English sentences plus `key=value`, and **Pix keys
+  logged in full** (raw *and* normalized side by side, so a casing or format miss is visible) — a
+  deliberate LGPD trade-off for seeded data that production reverses with masking. `com.platinumcoin.pix`
+  runs at DEBUG, so the DynamoDB `GetItem`/`Query`/`PutItem` and their keys are in the log too.

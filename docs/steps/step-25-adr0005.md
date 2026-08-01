@@ -62,14 +62,14 @@ docker compose -f infra/docker-compose.yml start fraud-service
 
 | Signal | Log line | What it proves |
 |---|---|---|
-| Scored | `"event":"fraud.scored"` with `decision`, `score`, `correlationId` | The synchronous check ran inside budget |
+| Scored | `Fraud check scored the payment \| decision=… score=… elapsedMs=…` (with `[cid=…]` from the pattern) | The synchronous check ran inside budget |
 | Deny | `422 FRAUD_DENIED` + a limit-release line | DENY blocks and the reservation is returned |
 | **Fail-open** | **WARN** "fraud skipped (timeout/error), proceeding" + `fraudSkipped=true` | The core ADR behavior — availability chosen at this layer |
 | Async seam | a `FraudCheckSkipped` marker (event once the outbox exists, Sprint 6) | The skip is not forgotten — it feeds async re-scoring |
 | Transition | `RECEIVED → FRAUD_CHECKED` recorded | The stage advanced even on skip |
 
 ```bash
-docker compose -f infra/docker-compose.yml logs payment-service | grep -E 'fraud.scored|fraud skipped|FRAUD_DENIED'
+docker compose -f infra/docker-compose.yml logs payment-service | grep -E 'Fraud check scored|fraud skipped|FRAUD_DENIED'
 ```
 The fail-open **rate** is a KPI (README §OKRs & KPIs) — a spike means the budget is being blown often and fraud-service needs attention.
 

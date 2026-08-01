@@ -21,7 +21,8 @@ public class MeController {
 
     @GetMapping("/me")
     public MeResponse me(AuthenticatedUser user) {
-        log.info("auth.me userId={} accountId={}", user.userId(), user.accountId());
+        log.info("Returning the caller identity carried by the JWT | userId={} accountId={}",
+                user.userId(), user.accountId());
         return MeResponse.from(user);
     }
 }

@@ -42,7 +42,7 @@ watch -n1 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOK
 ```bash
 curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
 # send an external pix; it goes DEBITED and gets stuck. Then restore BACEN or let reconciliation reverse it:
-docker compose -f infra/docker-compose.yml logs -f settlement-service | grep -E 'reconciliation.resolved|"ALERT"'
+docker compose -f infra/docker-compose.yml logs -f settlement-service | grep -E 'Reconciliation resolved|ALERT'
 ```
 
 **(d) Query-before-retry safety — a timeout that actually settled must not double-settle** (inspect the SPI store by `endToEndId`):
@@ -56,14 +56,14 @@ curl -s localhost:9090/spi/settlements/<endToEndId> | jq   # SETTLED at BACEN ev
 
 | Signal | Log line | What it proves |
 |---|---|---|
-| Async accept | `payment.accepted` (fast) then later `settlement.sent` / `settlement.settled` | The `202` is decoupled from the SPI call |
+| Async accept | "payment accepted" (fast) then later "settlement sent to the SPI" / "settlement confirmed" | The `202` is decoupled from the SPI call |
 | Query-before-retry | WARN retry with a preceding `GET /spi/settlements/{e2e}` | A timeout isn't treated as failure — no blind re-POST |
 | DLQ redrive | `settlement.dlq.depth` gauge > 0 + a firing DLQ alert | Message flagged, not lost |
-| Reconciliation | `"event":"reconciliation.resolved"` with `action=settled|reversed` | The loop forced convergence |
-| SLO guard | `"ALERT"` when `reconciliation.oldest.seconds > 300`, then RESOLVED | The 5-min bound is watched, not hoped for |
+| Reconciliation | `Reconciliation resolved a stuck transaction \| action=settled\|reversed txId=…` | The loop forced convergence |
+| SLO guard | an `ALERT` line when `reconciliation.oldest.seconds > 300`, then RESOLVED | The 5-min bound is watched, not hoped for |
 
 ```bash
-docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'reconciliation.resolved|settlement.settled|"ALERT"'
+docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'Reconciliation resolved|Settlement confirmed|ALERT'
 bash scripts/trace.sh <correlationId>   # accept → settle/reverse across services (step 44)
 ```
 

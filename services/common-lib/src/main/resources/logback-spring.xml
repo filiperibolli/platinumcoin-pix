@@ -1,32 +1,67 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Shared logging configuration for EVERY PlatinumCoin service.
+  Shared logging configuration for EVERY PlatinumCoin service (ADR-0012).
 
   This file is named `logback-spring.xml` and ships at the root of common-lib.jar, so
   Spring Boot's logback support auto-discovers it on the classpath of any service that
   depends on common-lib — no per-service logging file, no opt-in, no "I forgot the
-  include and now this service silently logs plain text" failure mode. Add common-lib
-  and you inherit structured JSON logging.
+  include and now this service logs differently" failure mode. Add common-lib and you
+  inherit the platform's log shape.
 
-  It defines a JSON appender (logstash-logback-encoder) whose lines carry timestamp, level,
-  logger, message and every MDC entry — crucially correlationId and txId — so one id
-  reconstructs a request's full path via `jq 'select(.correlationId=="…")'`.
+  Three decisions live here; all three are ADR-0012:
 
-  The `dev` Spring profile swaps in a human-readable console pattern; anything else logs JSON.
+  1. THE CORRELATION ID IS IN THE PATTERN, NOT IN A LOG LINE.
+     `LOG_CORRELATION_PATTERN` is the hook Spring Boot's own console/file patterns expose
+     (`logging.pattern.correlation`); setting it means EVERY record — ours, Spring's, Tomcat's,
+     the AWS SDK's — is prefixed with `[cid=… tx=…]`. No filter has to log "a request happened"
+     just to surface the id, and `grep <cid>` over the container logs reconstructs the whole
+     request. Non-request threads (startup, schedulers) print `n/a`, which is information too.
 
-  Per-service tuning: adjust levels via `logging.level.*` in the service's application.yml
-  (Spring applies them over this config) — that covers the common case without a competing
-  logback file. A service must NOT ship its own logback-spring.xml: two of them on the
-  classpath resolve non-deterministically. Structural log shape is deliberately uniform
-  across services (that uniformity is what makes correlationId tracing work), so it is owned
-  here, not overridable per service.
+  2. HUMAN-READABLE CONSOLE IS THE DEFAULT; JSON IS OPT-IN (profile `json-logs`).
+     This build is a local sandbox read by a human in `docker compose logs`, so the default is
+     Spring Boot's console pattern. The JSON encoder (logstash) is what a real deployment would
+     ship to a log platform, so it stays one profile away and is exercised on demand:
+     `SPRING_PROFILES_ACTIVE=json-logs`, then `jq 'select(.correlationId=="…")'`.
 
-  Named logback-spring.xml (not logback.xml) because <springProfile> below is a Spring Boot
-  logback extension — plain logback would not resolve those tags.
+  3. `com.platinumcoin.pix` LOGS AT DEBUG BY DEFAULT.
+     Adapter detail (the DynamoDB keys actually read/written, resolved values) is visible without
+     anyone having to know a flag exists. The contract stays: the INFO layer alone must already
+     tell the full story of a call — DEBUG only adds the "how". Everything else stays at INFO,
+     so the framework does not drown the domain.
+
+  Per-service tuning: `logging.level.*` (and `logging.pattern.correlation`) in the service's
+  application.yml are applied by Spring AFTER this file and win over it — that covers the common
+  case without a competing logback file. A service must NOT ship its own logback-spring.xml: two
+  of them on the classpath resolve non-deterministically, and the uniform shape is what makes
+  cross-service correlation work.
+
+  Named logback-spring.xml (not logback.xml) because <springProperty>/<springProfile> below are
+  Spring Boot logback extensions — plain logback would not resolve those tags.
 -->
 <configuration>
 
-    <!-- Structured JSON for real environments (and for local greppability). -->
+    <!-- MUST come before the include: Spring Boot's defaults.xml bakes ${LOG_CORRELATION_PATTERN}
+         into CONSOLE_LOG_PATTERN/FILE_LOG_PATTERN at parse time, so a value defined afterwards
+         would arrive too late. Read from `logging.pattern.correlation` so a service can still
+         override it in application.yml; the defaultValue is the platform standard. -->
+    <springProperty scope="context" name="LOG_CORRELATION_PATTERN"
+                    source="logging.pattern.correlation"
+                    defaultValue="[cid=%X{correlationId:-n/a} tx=%X{txId:-n/a}] "/>
+
+    <!-- Brings in Spring Boot's CONSOLE_LOG_PATTERN (timestamp, level, pid, app name, thread,
+         correlation, logger, message) plus the %clr/%wEx conversion rules and the framework
+         logger levels Boot ships. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Default: the human-readable Spring pattern, now correlation-prefixed. -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <charset>${CONSOLE_LOG_CHARSET}</charset>
+        </encoder>
+    </appender>
+
+    <!-- Opt-in: structured JSON, the shape a log platform would ingest. -->
     <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="net.logstash.logback.encoder.LogstashEncoder">
             <fieldNames>
@@ -40,22 +75,18 @@
         </encoder>
     </appender>
 
-    <!-- Human-readable console for local `dev` work. -->
-    <appender name="PLAIN" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>%d{HH:mm:ss.SSS} %-5level [%X{correlationId}] %logger{36} - %msg%n</pattern>
-        </encoder>
-    </appender>
+    <!-- Our own code is verbose by default (ADR-0012); the framework is not. -->
+    <logger name="com.platinumcoin.pix" level="DEBUG"/>
 
-    <springProfile name="dev">
+    <springProfile name="json-logs">
         <root level="INFO">
-            <appender-ref ref="PLAIN"/>
+            <appender-ref ref="JSON"/>
         </root>
     </springProfile>
 
-    <springProfile name="!dev">
+    <springProfile name="!json-logs">
         <root level="INFO">
-            <appender-ref ref="JSON"/>
+            <appender-ref ref="CONSOLE"/>
         </root>
     </springProfile>
 

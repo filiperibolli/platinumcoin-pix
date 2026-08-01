@@ -49,8 +49,9 @@ public class DynamoPixKeyRepository implements PixKeyRepository {
 
     @Override
     public boolean register(PixKey key) {
-        log.debug("account.key.repo.putItem table={} pk=KEY#{} gsi1pk=ACCOUNT#{} cond=attribute_not_exists(pk)",
-                TABLE, key.keyValue(), key.accountId());
+        log.debug("DynamoDB PutItem, guarded by attribute_not_exists(pk) so global key uniqueness "
+                        + "is decided by the write itself | table={} pk=KEY#{} sk={} gsi1pk=ACCOUNT#{}",
+                TABLE, key.keyValue(), META, key.accountId());
         try {
             dynamo.putItem(request -> request
                     .tableName(TABLE)
@@ -64,42 +65,54 @@ public class DynamoPixKeyRepository implements PixKeyRepository {
                             "userId", AttributeValue.fromS(key.userId()),
                             "createdAt", AttributeValue.fromS(key.createdAt().toString())))
                     .conditionExpression("attribute_not_exists(pk)"));
+            log.debug("DynamoDB PutItem succeeded, the key value was still free "
+                            + "| table={} pk=KEY#{} keyType={} accountId={} userId={} createdAt={}",
+                    TABLE, key.keyValue(), key.keyType(), key.accountId(), key.userId(), key.createdAt());
             return true;
         } catch (ConditionalCheckFailedException e) {
             // The value is already registered (by any account). Not an error — the caller turns this
             // single bit into a 409; the existing item is left exactly as it was.
-            log.debug("account.key.repo.putItem.conflict keyValue={}", key.keyValue());
+            log.debug("DynamoDB PutItem failed its condition, this key value is already registered "
+                            + "| table={} pk=KEY#{} losingAccountId={}",
+                    TABLE, key.keyValue(), key.accountId());
             return false;
         }
     }
 
     @Override
     public List<PixKey> listByAccount(String accountId) {
-        log.debug("account.key.repo.query table={} index={} gsi1pk=ACCOUNT#{}", TABLE, GSI1, accountId);
+        log.debug("DynamoDB Query for every key of one account | table={} index={} gsi1pk=ACCOUNT#{}",
+                TABLE, GSI1, accountId);
         QueryResponse response = dynamo.query(request -> request
                 .tableName(TABLE)
                 .indexName(GSI1)
                 .keyConditionExpression("gsi1pk = :pk")
                 .expressionAttributeValues(Map.of(":pk", AttributeValue.fromS("ACCOUNT#" + accountId))));
-        log.debug("account.key.repo.query.result accountId={} count={}", accountId, response.items().size());
+        log.debug("DynamoDB Query returned the account's keys | accountId={} count={} scannedCount={}",
+                accountId, response.items().size(), response.scannedCount());
         return response.items().stream().map(DynamoPixKeyRepository::toPixKey).toList();
     }
 
     @Override
     public Optional<PixKey> findByValue(String keyValue) {
-        log.debug("account.key.repo.getItem table={} pk=KEY#{} consistentRead=true", TABLE, keyValue);
+        log.debug("DynamoDB GetItem on the base table, strongly consistent so a just-created key "
+                + "is never missed | table={} pk=KEY#{} sk={}", TABLE, keyValue, META);
         Map<String, AttributeValue> item = dynamo.getItem(request -> request
                 .tableName(TABLE)
                 .consistentRead(true)
                 .key(Map.of(
                         "pk", AttributeValue.fromS("KEY#" + keyValue),
                         "sk", AttributeValue.fromS(META)))).item();
+        log.debug("DynamoDB GetItem result | pk=KEY#{} found={} ownerAccountId={}",
+                keyValue, !item.isEmpty(),
+                item.isEmpty() ? null : item.get("accountId").s());
         return item.isEmpty() ? Optional.empty() : Optional.of(toPixKey(item));
     }
 
     @Override
     public void delete(String keyValue) {
-        log.debug("account.key.repo.deleteItem table={} pk=KEY#{}", TABLE, keyValue);
+        log.debug("DynamoDB DeleteItem, ownership was already checked by the use case "
+                + "| table={} pk=KEY#{} sk={}", TABLE, keyValue, META);
         dynamo.deleteItem(request -> request
                 .tableName(TABLE)
                 .key(Map.of(

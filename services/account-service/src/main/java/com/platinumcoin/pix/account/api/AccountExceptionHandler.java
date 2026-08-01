@@ -6,6 +6,8 @@ import com.platinumcoin.pix.account.domain.PixKeyAlreadyExistsException;
 import com.platinumcoin.pix.account.domain.PixKeyNotFoundException;
 import com.platinumcoin.pix.account.domain.PixKeyNotOwnedException;
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -31,11 +33,15 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       a 404: Pix keys are globally resolvable, so their existence is not secret.</li>
  * </ul>
  *
- * <p>Logging stays in the use cases (where the business stage happens); this class only translates,
- * so it does not duplicate a WARN that {@code domain/} already emitted.
+ * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case, where the business stage
+ * happens; this class adds one line for the <i>outcome</i> — the status and {@code code} the client
+ * actually received. Both matter and neither is the other: grepping one correlationId then shows the
+ * decision and its HTTP consequence, in order, for every 4xx the service returns.
  */
 @RestControllerAdvice
 public class AccountExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(AccountExceptionHandler.class);
 
     @ExceptionHandler(AccountNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleAccountNotFound(AccountNotFoundException ex) {
@@ -63,6 +69,8 @@ public class AccountExceptionHandler {
     }
 
     private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code, String detail) {
+        log.warn("Mapped a domain failure to the client response | status={} code={} detail={}",
+                status.value(), code, detail);
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .body(ProblemDetailFactory.of(status, code, detail));

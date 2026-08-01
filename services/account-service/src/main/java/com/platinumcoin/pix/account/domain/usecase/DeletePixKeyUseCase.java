@@ -24,21 +24,25 @@ public class DeletePixKeyUseCase {
     }
 
     public void execute(String keyValue, String callerAccountId) {
-        log.info("account.key.delete.request accountId={}", callerAccountId);
+        log.info("Pix-key deletion requested | keyValue={} callerAccountId={}",
+                keyValue, callerAccountId);
 
         PixKey key = keys.findByValue(keyValue)
                 .orElseThrow(() -> {
-                    log.info("account.key.delete.miss accountId={}", callerAccountId);
+                    log.info("No Pix key with this value exists, nothing to delete, returning 404 "
+                            + "| keyValue={} callerAccountId={}", keyValue, callerAccountId);
                     return new PixKeyNotFoundException("No Pix key found for the given value.");
                 });
 
         if (!key.accountId().equals(callerAccountId)) {
-            log.warn("account.key.delete.forbidden accountId={} ownerAccountId={}",
-                    callerAccountId, key.accountId());
+            log.warn("Pix-key deletion refused, the key belongs to another account, returning 403 "
+                            + "| keyValue={} keyType={} callerAccountId={} ownerAccountId={}",
+                    keyValue, key.keyType(), callerAccountId, key.accountId());
             throw new PixKeyNotOwnedException();
         }
 
         keys.delete(keyValue);
-        log.info("account.key.delete.done accountId={}", callerAccountId);
+        log.info("Pix key deleted | keyValue={} keyType={} accountId={}",
+                keyValue, key.keyType(), callerAccountId);
     }
 }

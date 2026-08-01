@@ -27,16 +27,20 @@ public class GetMyAccountUseCase {
     }
 
     public Account execute(String userId, String accountId) {
-        log.info("account.me.lookup userId={} accountId={}", userId, accountId);
+        log.info("Looking up the caller's own account, both ids taken from the JWT "
+                + "| userId={} accountId={}", userId, accountId);
         Account account = accounts.findByUser(userId, accountId)
                 .orElseThrow(() -> {
                     // Valid token but no matching account row — a genuine degradation, not a client
                     // error: the JWT claimed an account this service can't find. WARN so it surfaces.
-                    log.warn("account.me.missing userId={} accountId={}", userId, accountId);
+                    log.warn("Valid token but no matching account row, returning 404 "
+                            + "| userId={} accountId={}", userId, accountId);
                     return new AccountNotFoundException("No account found for the authenticated user.");
                 });
-        log.info("account.me.resolved accountId={} status={} dailyLimitCents={}",
-                account.accountId(), account.status(), account.dailyLimitCents());
+        log.info("Resolved the caller's own account "
+                        + "| accountId={} userId={} status={} dailyLimitCents={} createdAt={}",
+                account.accountId(), account.userId(), account.status(), account.dailyLimitCents(),
+                account.createdAt());
         return account;
     }
 }

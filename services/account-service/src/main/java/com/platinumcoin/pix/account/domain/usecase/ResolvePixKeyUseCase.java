@@ -21,6 +21,13 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Order: try the local {@code pix_keys} table first (internal keys); on a miss, fall through to
  * the external branch, which is a stub until step 30.
+ *
+ * <p><b>Logging (ADR-0012).</b> The key itself is logged, in both its raw and normalized form. A Pix
+ * key is the most personal datum this service handles (a CPF, a phone, an e-mail) and in a production
+ * system it would be tokenized or hashed here; in this sandbox the values are seeded fixtures, and a
+ * resolution trace that hides the key it resolved cannot answer the only question anyone asks of it —
+ * "why did <i>this</i> key not resolve?". Logging raw + normalized side by side is what makes a
+ * casing/format miss self-evident instead of a debugging session.
  */
 public class ResolvePixKeyUseCase {
 
@@ -33,8 +40,9 @@ public class ResolvePixKeyUseCase {
     }
 
     public KeyResolution execute(String key) {
-        log.info("account.key.resolve.request");
         String normalized = key == null ? "" : key.trim().toLowerCase(Locale.ROOT);
+        log.info("Resolving a Pix key to its destination account (DICT lookup) "
+                + "| keyValue={} normalizedValue={}", key, normalized);
 
         KeyResolution resolution = keys.findByValue(normalized)
                 .map(k -> KeyResolution.internal(k.accountId(), k.keyType()))
@@ -42,12 +50,16 @@ public class ResolvePixKeyUseCase {
                 .orElseThrow(() -> {
                     // No local key and (until step 30) no external DICT — an ordinary lookup miss, so
                     // INFO keeps the correlationId trace complete rather than ERROR.
-                    log.info("account.key.resolve.miss");
+                    log.info("Pix key did not resolve, unknown in the local table and there is no "
+                                    + "external DICT until step 30, returning 404 | normalizedValue={}",
+                            normalized);
                     return new PixKeyNotFoundException("No account found for the given Pix key.");
                 });
 
-        log.info("account.key.resolve.internal internal={} accountId={} keyType={}",
-                resolution.internal(), resolution.accountId(), resolution.keyType());
+        log.info("Pix key resolved to a destination "
+                        + "| normalizedValue={} internal={} accountId={} keyType={} externalBank={}",
+                normalized, resolution.internal(), resolution.accountId(), resolution.keyType(),
+                resolution.externalBank());
         return resolution;
     }
 

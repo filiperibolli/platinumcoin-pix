@@ -166,6 +166,53 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
   --billing-mode PAY_PER_REQUEST
 ```
 
+## 4.1 Reading the logs (ADR-0012)
+
+Every service inherits one logging config from `common-lib` — there is nothing to enable per service.
+
+**The shape of a line.** The correlation id is in the log *pattern*, so **every** record carries it
+(ours, Spring's, the AWS SDK's):
+
+```
+2026-08-01T10:39:28.962-03:00  INFO 1 --- [auth-service] [nio-8081-exec-1] \
+  [cid=abbb4c1c-81aa-4aaa-808c-b508ba11fec2 tx=n/a] c.p.p.auth.domain.usecase.LoginUseCase \
+  : Login succeeded, access token issued | username=alice userId=u-alice accountId=acc-001 expiresInSeconds=900
+```
+
+Message = an English sentence saying what happened, then ` | key=value` pairs. `tx=n/a` until a
+transaction id exists (money flows, Sprint 4+); `cid=n/a` means "no request" (startup, schedulers).
+
+**Follow one request across every service** — send a correlation id in and grep it back out:
+
+```bash
+CID=$(uuidgen)
+curl -s -X POST localhost:8081/v1/auth/login -H "X-Correlation-Id: $CID" \
+  -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' > /dev/null
+docker compose -f infra/docker-compose.yml logs | grep "cid=$CID"
+# (the id is also echoed back on the X-Correlation-Id response header, and generated if you omit it)
+```
+
+**Levels.** `com.platinumcoin.pix` runs at **DEBUG by default** in this sandbox — you see the
+DynamoDB calls and their keys, not only the business stages. To quiet a service down (or to run load
+tests without log I/O in the way), override per service without touching the shared config:
+
+```bash
+# in infra/docker-compose.yml, under the service's `environment:`
+LOGGING_LEVEL_COM_PLATINUMCOIN_PIX: INFO
+```
+
+**JSON instead of text.** The logstash encoder is one profile away — this is the shape a real
+deployment ships to a log platform:
+
+```bash
+# environment: SPRING_PROFILES_ACTIVE: json-logs
+docker compose -f infra/docker-compose.yml logs auth-service | jq -c 'select(.correlationId=="'$CID'")'
+```
+
+**Values are printed in the clear** — Pix keys, CPFs, e-mails, account ids, amounts — because this is
+a sandbox with seeded fixtures; secrets (passwords, hashes, JWTs, credentials) never are. Read
+[ADR-0012](adr/0012-verbose-logs-with-real-values.md) before pointing this stack at anything real.
+
 ## 5. Testing each flow by hand
 
 > This section documents the **target** state — the platform is built vertically (`PLAN.md`),

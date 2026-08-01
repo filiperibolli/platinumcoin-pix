@@ -50,24 +50,36 @@ public class RegisterPixKeyUseCase {
     }
 
     public PixKey execute(PixKeyType type, String rawValue, String accountId, String userId) {
-        log.info("account.key.register.request keyType={} accountId={}", type, accountId);
+        log.info("Pix-key registration requested | keyType={} rawValue={} accountId={} userId={}",
+                type, rawValue, accountId, userId);
 
         String value = type.isServerGenerated()
                 ? evpValueGenerator.get()
                 : type.normalize(rawValue);
 
+        // Both values, side by side: this is the line that shows an EVP ignoring what the client sent
+        // and an EMAIL being lowercased — the two normalization rules, visible instead of asserted.
+        log.debug("Normalized the key value before validating and storing it "
+                        + "(an EVP ignores what the client sent, an e-mail is lowercased) "
+                        + "| keyType={} rawValue={} storedValue={} serverGenerated={}",
+                type, rawValue, value, type.isServerGenerated());
+
         if (!type.matches(value)) {
-            log.warn("account.key.register.invalid keyType={} accountId={}", type, accountId);
+            log.warn("Pix key rejected, the value does not match the format required by its type "
+                    + "| keyType={} keyValue={} accountId={}", type, value, accountId);
             throw new InvalidPixKeyException(type);
         }
 
         PixKey key = new PixKey(type, value, accountId, userId, Instant.now(clock));
         if (!keys.register(key)) {
-            log.warn("account.key.register.duplicate keyType={} accountId={}", type, accountId);
+            log.warn("Pix key rejected, this value is already registered on the platform "
+                    + "(the conditional put lost the race) | keyType={} keyValue={} accountId={}",
+                    type, value, accountId);
             throw new PixKeyAlreadyExistsException();
         }
 
-        log.info("account.key.register.created keyType={} accountId={}", type, accountId);
+        log.info("Pix key registered | keyType={} keyValue={} accountId={} userId={} createdAt={}",
+                type, value, accountId, userId, key.createdAt());
         return key;
     }
 }

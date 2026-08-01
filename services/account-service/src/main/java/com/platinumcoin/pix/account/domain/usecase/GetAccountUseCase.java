@@ -23,16 +23,19 @@ public class GetAccountUseCase {
     }
 
     public Account execute(String accountId) {
-        log.info("account.internal.lookup accountId={}", accountId);
+        log.info("Internal service-to-service lookup of an account by id | accountId={}", accountId);
         Account account = accounts.findByAccountId(accountId)
                 .orElseThrow(() -> {
                     // A caller asked for an id that doesn't exist — an ordinary lookup miss, not an
                     // actionable failure of this service, so INFO keeps the trace complete.
-                    log.info("account.internal.miss accountId={}", accountId);
+                    log.info("Internal lookup found no account with this id, returning 404 "
+                            + "| accountId={}", accountId);
                     return new AccountNotFoundException("No account found for id " + accountId + ".");
                 });
-        log.info("account.internal.resolved accountId={} status={} dailyLimitCents={}",
-                account.accountId(), account.status(), account.dailyLimitCents());
+        log.info("Internal lookup resolved the account "
+                        + "| accountId={} userId={} status={} dailyLimitCents={} createdAt={}",
+                account.accountId(), account.userId(), account.status(), account.dailyLimitCents(),
+                account.createdAt());
         return account;
     }
 }

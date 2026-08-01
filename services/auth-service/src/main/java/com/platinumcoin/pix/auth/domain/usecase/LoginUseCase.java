@@ -18,9 +18,14 @@ import org.slf4j.LoggerFactory;
  * collapse "unknown user" and "wrong password" into one {@link InvalidCredentialsException} so the
  * API cannot be used to enumerate usernames.
  *
- * <p>Nothing secret is logged — never the password, never the token, never the hash. The success
- * line carries the username only because a failed login is already logged at the api edge by
- * {@code AuthExceptionHandler} and the pair is what makes the trace readable.
+ * <p><b>Logging (ADR-0012).</b> Identity <i>values</i> are logged in full — username, userId,
+ * accountId — because this is a sandbox with seeded demo users and a trace you cannot read is worth
+ * nothing. <b>Secrets never are:</b> not the password, not the bcrypt hash, not the minted token.
+ * The distinction is deliberate — "log the data, never the credential".
+ *
+ * <p>Note the asymmetry between log and response: the log distinguishes {@code unknown_user} from
+ * {@code bad_password} (that is what makes a failed login diagnosable), while both raise the same
+ * {@link InvalidCredentialsException} so the API cannot be used to enumerate usernames.
  */
 public class LoginUseCase {
 
@@ -38,15 +43,25 @@ public class LoginUseCase {
     }
 
     public IssuedToken execute(String username, String rawPassword) {
+        log.info("Login attempt received | username={}", username);
+
         User user = users.findByUsername(username)
-                .orElseThrow(InvalidCredentialsException::new);
+                .orElseThrow(() -> {
+                    log.warn("Login denied, no user with this username "
+                            + "(the client is only told 'invalid credentials') | username={}", username);
+                    return new InvalidCredentialsException();
+                });
 
         if (!passwordVerifier.matches(rawPassword, user.passwordHash())) {
+            log.warn("Login denied, the password does not match the stored bcrypt hash "
+                    + "| username={} userId={}", username, user.userId());
             throw new InvalidCredentialsException();
         }
 
         IssuedToken token = tokenIssuer.issue(user.userId(), user.accountId());
-        log.info("auth.login.success username={}", username);
+        log.info("Login succeeded, access token issued "
+                        + "| username={} userId={} accountId={} expiresInSeconds={}",
+                username, user.userId(), user.accountId(), token.expiresInSeconds());
         return token;
     }
 }

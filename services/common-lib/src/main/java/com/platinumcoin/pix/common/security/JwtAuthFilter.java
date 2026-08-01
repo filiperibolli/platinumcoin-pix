@@ -64,13 +64,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
         if (isPublic(request)) {
+            log.debug("Public path, skipping JWT validation | method={} path={}",
+                    request.getMethod(), request.getRequestURI());
             filterChain.doFilter(request, response);
             return;
         }
 
         String header = request.getHeader(HttpHeaders.AUTHORIZATION);
         if (!StringUtils.hasText(header) || !header.startsWith(BEARER_PREFIX)) {
-            reject(response, "missing_bearer_token");
+            reject(request, response, "missing_bearer_token");
             return;
         }
 
@@ -81,10 +83,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         } catch (JwtException | IllegalArgumentException ex) {
             // Covers bad signature, expiry, malformed token, and blank/empty claims. One 401 for all —
             // never tell an attacker which check failed. The token itself is never logged.
-            reject(response, ex.getClass().getSimpleName());
+            reject(request, response, ex.getClass().getSimpleName());
             return;
         }
 
+        // Who is acting, on what — at DEBUG, because it fires on every authenticated call. The
+        // sandbox runs com.platinumcoin.pix at DEBUG (ADR-0012), so this is the "a call arrived"
+        // line in practice, while a real deployment can turn it off without losing the WARN above.
+        log.debug("JWT accepted, request is authenticated | userId={} accountId={} method={} path={}",
+                user.userId(), user.accountId(), request.getMethod(), request.getRequestURI());
         request.setAttribute(AuthenticatedUser.REQUEST_ATTRIBUTE, user);
         filterChain.doFilter(request, response);
     }
@@ -117,8 +124,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         return new AuthenticatedUser(userId, accountId);
     }
 
-    private void reject(HttpServletResponse response, String reason) throws IOException {
-        log.warn("auth.rejected reason={}", reason);
+    private void reject(HttpServletRequest request, HttpServletResponse response, String reason)
+            throws IOException {
+        // The reason is logged (which check failed) but never returned — the 401 body stays generic
+        // so the endpoint cannot be used as an oracle. method/path are here because they are what
+        // makes a 401 debuggable now that no filter logs a per-request line.
+        log.warn("JWT rejected, responding 401 UNAUTHORIZED | reason={} method={} path={}",
+                reason, request.getMethod(), request.getRequestURI());
         ProblemDetail problem = ProblemDetailFactory.of(
                 HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", "Authentication is required.");
         response.setStatus(HttpStatus.UNAUTHORIZED.value());

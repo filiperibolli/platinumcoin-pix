@@ -22,7 +22,7 @@ Steps 26, 28.
 
 ## Verify locally
 ```bash
-docker compose -f infra/docker-compose.yml logs -f payment-service | grep outbox.published
+docker compose -f infra/docker-compose.yml logs -f payment-service | grep 'Outbox item published'
 aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
   $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue --query QueueUrl --output text) | jq
 ```

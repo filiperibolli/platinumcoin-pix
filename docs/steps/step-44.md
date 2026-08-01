@@ -18,12 +18,12 @@ Steps 32, 35, 40 and the flows whose metrics feed the funnel (payments, fraud, s
 2. `infra/observability/`: `prometheus.yml`, Grafana provisioning (datasource + dashboard provider) + two dashboard JSONs; compose services `prometheus` (host 9091) and `grafana` (3000, anonymous viewer, admin/admin) — always-on, not an optional profile.
 3. Business Funnel + Technical dashboards as described.
 4. `AlertRule` records + `AlertEvaluator` (settlement-service): settlement silence (debits flowing, no settlements 120s), DLQ depth > 0, `reconciliation.oldest.seconds > 300`, `outbox.lag > 60s`, fraud-skipped rate, cache hit-rate floor — FIRING/RESOLVED lifecycle, structured `ALERT` logs, runbook links.
-5. **SLF4J path audit**: checklist every stage logs a named INFO event with correlationId/txId (payment.accepted, fraud.scored, ledger.posted, outbox.published, settlement.sent, settlement.settled, notification.pushed, reconciliation.resolved); fix gaps; add `scripts/trace.sh <correlationId>` that greps all service logs and prints the ordered path.
+5. **SLF4J path audit** (ADR-0012 conventions): checklist that every stage of a payment logs an INFO line — payment accepted, fraud scored, ledger posted, outbox published, settlement sent, settlement settled, notification pushed, reconciliation resolved — each an English sentence plus `key=value` pairs, with `[cid=… tx=…]` supplied by the shared log pattern; fix gaps; add `scripts/trace.sh <correlationId>` that greps all service logs and prints the ordered path. Stable machine-readable stage names live in the Micrometer counters (task 1), not in log strings.
 
 ## Tests (TDD)
 - Evaluator unit tests — silence rule fires when the debit counter advances and the settle counter stalls; resolves on catch-up; no re-fire spam; DLQ/reconciliation rules against seeded gauges.
 - Metrics IT — a full send increments every funnel stage counter exactly once with correct tags.
-- Path audit test — run one payment in the Testcontainers wiring, capture logs, assert all stage events present for its correlationId, in order.
+- Path audit test — run one payment in the Testcontainers wiring, capture logs, assert every stage appears for its correlationId, in order (assert on the funnel counters + the `key=value` pairs, never on message prose).
 
 ## Verify locally
 ```bash
