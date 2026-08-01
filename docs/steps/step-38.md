@@ -12,7 +12,7 @@
 Steps 05 (JWT/SSE allow-list hook), 36 (notification-queue).
 
 ## Tasks
-1. Scaffold `services/notification-service` (skeleton + Dockerfile + compose + `README.md`, port 8087).
+1. Scaffold `services/notification-service` (skeleton + Dockerfile + compose + `README.md`, port 8087) — expands per the **new-service checklist** in `CLAUDE.md`: the three packages incl. `domain/usecase/` (one `<Verb><Noun>UseCase` per inbound operation, ADR-0011), a `*BeansConfig` composition root, and the `*ArchitectureTest` with **both** ArchUnit rules from day one.
 2. `GET /v1/notifications/stream` (JWT): register an `SseEmitter` under the user's account; heartbeat pings; remove on completion/timeout/error.
 3. Consume `notification-queue`; dedupe by `eventId`; route each event to the affected user's emitter(s) if connected (drop if not — state remains queryable).
 4. Resolve the SSE auth handshake per the step-05 allow-list hook.

@@ -39,16 +39,26 @@ Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml)
 | `jwt.ttl` | `PT15M` | Token lifetime (→ `expiresIn=900`) |
 | `auth.users[*]` | alice → `acc-001`, bob → `acc-002` | Seeded demo users; passwords stored as **bcrypt** hashes (username == password for the demo) |
 
-## Architecture (ADR-0010, hexagonal-lite)
+## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-api/    AuthController, LoginRequest/Response, AuthExceptionHandler   (inbound adapter)
-domain/ AuthenticationService + ports: UserRepository, PasswordVerifier, TokenIssuer   (plain Java)
+api/            AuthController, MeController, LoginRequest/Response, MeResponse,
+                AuthExceptionHandler                                              (inbound adapter)
+domain/         User, IssuedToken (records), InvalidCredentialsException,
+                ports: UserRepository, PasswordVerifier, TokenIssuer                  (plain Java)
+domain/usecase/ LoginUseCase                                                          (plain Java)
 infra/  JwtIssuer (jjwt), BCryptPasswordVerifier, InMemoryUserRepository, AuthBeansConfig   (outbound adapters + wiring)
 ```
 
-`domain/` imports nothing outward (no Spring / jjwt / AWS / servlet / Jackson) — enforced by
-`AuthArchitectureTest` (ArchUnit), which fails the build on a violation.
+`LoginUseCase` (renamed from `AuthenticationService` by ADR-0011) owns the whole operation, including
+collapsing "unknown user" and "wrong password" into one `InvalidCredentialsException` so the API
+cannot enumerate usernames. `MeController` is the documented exception to the one-use-case-per-endpoint
+rule: it touches no port and applies no policy, only reshaping the JWT principal common-lib already
+validated.
+
+Two ArchUnit rules in `AuthArchitectureTest` fail the build on a violation: `domain/` imports nothing
+outward (no Spring / jjwt / AWS / servlet / Jackson), and `api/` never depends on an interface in
+`domain/` — so a controller cannot verify a password or mint a token itself.
 
 ## Run
 
@@ -160,3 +170,4 @@ from Keycloak.
 - [ADR-0007](../../docs/adr/0007-auth-service-jwt-no-mfa.md) — dedicated auth-service, JWT only,
   HS256 locally (RS256 + JWKS is the documented production posture), MFA deferred.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
+- [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.

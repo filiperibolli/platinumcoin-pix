@@ -12,7 +12,7 @@ The first **queue-driven consumer**: scaling is driven by queue depth, not user 
 Steps 29 (publisher + dedup), 30 (SPI).
 
 ## Tasks
-1. Scaffold `services/settlement-service` (skeleton + Dockerfile + compose + `README.md`, port 8086).
+1. Scaffold `services/settlement-service` (skeleton + Dockerfile + compose + `README.md`, port 8086) — expands per the **new-service checklist** in `CLAUDE.md`: the three packages incl. `domain/usecase/` (one `<Verb><Noun>UseCase` per inbound operation, ADR-0011), a `*BeansConfig` composition root, and the `*ArchitectureTest` with **both** ArchUnit rules from day one.
 2. SQS long-poll consumer on `settlement-queue`; `ProcessedEventStore` dedup by `eventId`.
 3. Guarded DEBITED→SENT_TO_SPI; call SPI (`POST /spi/settlements`, timeout 12s); on 2xx guarded SENT_TO_SPI→SETTLED + `PixSettled` outbox event (settlement-service runs its own outbox publisher or reuses the shared component).
 4. Happy path only: on failure/timeout, for now just leave the message (Sprint 7 makes this robust) — note the seam.

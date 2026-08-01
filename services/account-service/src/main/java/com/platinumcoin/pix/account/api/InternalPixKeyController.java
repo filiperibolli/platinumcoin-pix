@@ -1,11 +1,7 @@
 package com.platinumcoin.pix.account.api;
 
 import com.platinumcoin.pix.account.domain.KeyResolution;
-import com.platinumcoin.pix.account.domain.KeyResolutionService;
-import com.platinumcoin.pix.common.error.DomainException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
+import com.platinumcoin.pix.account.domain.usecase.ResolvePixKeyUseCase;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -20,34 +16,22 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Returns the {@link KeyResolution} record directly — the wire shape
  * {@code {internal, accountId?, externalBank?, keyType}} is identical to the domain result, so no
- * mirror DTO (ADR-0010). Unknown keys are {@code 404 KEY_NOT_FOUND}; the external-delegation branch is
- * a stub until step 30 (see {@code KeyResolutionService#resolveExternal}).
+ * mirror DTO (ADR-0010). An unresolvable key becomes {@code 404 KEY_NOT_FOUND} via
+ * {@link AccountExceptionHandler}; the external-delegation branch is a stub until step 30 (see
+ * {@code ResolvePixKeyUseCase#resolveExternal}).
  */
 @RestController
 @RequestMapping("/internal/pix-keys")
 public class InternalPixKeyController {
 
-    private static final Logger log = LoggerFactory.getLogger(InternalPixKeyController.class);
+    private final ResolvePixKeyUseCase resolvePixKey;
 
-    private final KeyResolutionService resolver;
-
-    public InternalPixKeyController(KeyResolutionService resolver) {
-        this.resolver = resolver;
+    public InternalPixKeyController(ResolvePixKeyUseCase resolvePixKey) {
+        this.resolvePixKey = resolvePixKey;
     }
 
     @GetMapping("/resolve")
     public KeyResolution resolve(@RequestParam("key") String key) {
-        log.info("account.key.resolve.request");
-        KeyResolution resolution = resolver.resolve(key)
-                .orElseThrow(() -> {
-                    // No local key and (until step 30) no external DICT — an ordinary lookup miss, so
-                    // INFO keeps the correlationId trace complete rather than ERROR.
-                    log.info("account.key.resolve.miss");
-                    return new DomainException("KEY_NOT_FOUND", HttpStatus.NOT_FOUND,
-                            "No account found for the given Pix key.");
-                });
-        log.info("account.key.resolve.internal internal={} accountId={} keyType={}",
-                resolution.internal(), resolution.accountId(), resolution.keyType());
-        return resolution;
+        return resolvePixKey.execute(key);
     }
 }

@@ -31,7 +31,7 @@ Do not start coding until the human says go.
 
 5. **TDD**: write the step's listed tests first (red) → the minimum code to pass (green) → refactor. Colocate unit tests (`*Test`); integration tests (`*IT`) use Testcontainers, never the compose stack. **Every money invariant gets an explicit test.**
 6. Implement **only** what the step's tasks describe. Resist scope creep. If something adjacent is broken, **note it — do not fix it silently**. If reality diverges from the docs (API/schema/ADR), **STOP and update the doc in the same change** — docs and code must not drift.
-7. Honor the conventions: Java 21, records for DTOs/value objects; **money is integer cents (`long`)**, never float/double, decimal only at the API edge; hexagonal-lite (domain never imports AWS SDK types); RFC 7807 `problem+json` with `code` + `correlationId`; **SLF4J only**, structured JSON, `correlationId` (+ `txId`) in MDC on every meaningful stage.
+7. Honor the conventions: Java 21, records for DTOs/value objects; **money is integer cents (`long`)**, never float/double, decimal only at the API edge; hexagonal-lite (domain never imports AWS SDK types); **one `<Verb><Noun>UseCase` in `domain/usecase/` per inbound operation, no business policy in `api/`, `Clock` injected not `Instant.now()` (ADR-0011)**; RFC 7807 `problem+json` with `code` + `correlationId`; **SLF4J only**, structured JSON, `correlationId` (+ `txId`) in MDC on every meaningful stage.
 
 ## Phase 3 — Verify & close out
 

@@ -1,9 +1,9 @@
 package com.platinumcoin.pix.auth.infra;
 
-import com.platinumcoin.pix.auth.domain.AuthenticationService;
 import com.platinumcoin.pix.auth.domain.PasswordVerifier;
 import com.platinumcoin.pix.auth.domain.TokenIssuer;
 import com.platinumcoin.pix.auth.domain.UserRepository;
+import com.platinumcoin.pix.auth.domain.usecase.LoginUseCase;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,7 +12,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 /**
  * Composition root for auth-service: the {@code infra/} layer wires the plain-Java domain to its
- * adapters, so {@link AuthenticationService} stays free of any Spring annotation (ADR-0010).
+ * adapters, so {@link LoginUseCase} stays free of any Spring annotation (ADR-0010 + ADR-0011).
  * Binds the two config records here rather than scanning, keeping the property surface explicit.
  */
 @Configuration
@@ -40,8 +40,8 @@ public class AuthBeansConfig {
     }
 
     @Bean
-    AuthenticationService authenticationService(UserRepository users, PasswordVerifier passwordVerifier,
+    LoginUseCase loginUseCase(UserRepository users, PasswordVerifier passwordVerifier,
             TokenIssuer tokenIssuer) {
-        return new AuthenticationService(users, passwordVerifier, tokenIssuer);
+        return new LoginUseCase(users, passwordVerifier, tokenIssuer);
     }
 }

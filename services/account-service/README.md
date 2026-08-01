@@ -13,7 +13,8 @@
 account-service owns the `pix_accounts` table and is the **first AWS-SDK adapter** in the platform.
 It demonstrates the ADR-0010 hexagonal-lite split in practice: an `AccountRepository` **port** in
 `domain/`, a `DynamoAccountRepository` **adapter** in `infra/` (the only place `software.amazon.awssdk.*`
-appears), controllers in `api/`. `GET /accounts/me` derives the account **from the JWT** (`accountId`
+appears), **use cases** in `domain/usecase/` (ADR-0011) and thin controllers in `api/` that hold no
+business policy. `GET /accounts/me` derives the account **from the JWT** (`accountId`
 claim), never from a path or body — the same principle that protects the debited account in the send
 flow (Domain Safety Rule #1).
 
@@ -52,7 +53,7 @@ step 21). The answer uses the **final** shape now, even though the external bran
 
 - **internal key found** ⇒ `200 {internal:true, accountId, keyType}` (`externalBank` omitted/null).
 - **unknown key** ⇒ `404 KEY_NOT_FOUND`. External-PSP delegation is deferred to **step 30**, when
-  mock-bacen exists — a `// TODO(step 30)` seam in `KeyResolutionService.resolveExternal` marks it.
+  mock-bacen exists — a `// TODO(step 30)` seam in `ResolvePixKeyUseCase.resolveExternal` marks it.
   Designing `{internal, accountId?, externalBank?, keyType}` up front lets the send orchestration code
   against the final contract; the external path slots in later without a reshape.
 
@@ -73,20 +74,32 @@ gate it with a service credential/scope or mTLS rather than an end-user token (s
 Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/accounts/me`. The
 internal seam is intentionally left out of the *public* OpenAPI contract and documented here instead.
 
-## Architecture (ADR-0010, hexagonal-lite)
+## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
 api/    AccountController (/v1/accounts/me), InternalAccountController (/internal/accounts/{id}),
         PixKeyController (/v1/pix-keys), InternalPixKeyController (/internal/pix-keys/resolve),
-        AccountResponse, InternalAccountResponse, RegisterPixKeyRequest, PixKeyResponse (inbound adapters)
-domain/ Account, PixKey, KeyResolution (records), PixKeyType (enum), KeyResolutionService,
-        AccountRepository, PixKeyRepository (ports)                                  (plain Java)
+        AccountResponse, InternalAccountResponse, RegisterPixKeyRequest, PixKeyResponse,
+        AccountExceptionHandler (domain exception → problem+json)                  (inbound adapters)
+domain/         Account, PixKey, KeyResolution (records), PixKeyType (enum),
+                AccountRepository, PixKeyRepository (ports),
+                AccountNotFound / InvalidPixKey / PixKeyAlreadyExists /
+                PixKeyNotFound / PixKeyNotOwned exceptions                              (plain Java)
+domain/usecase/ GetMyAccountUseCase, GetAccountUseCase, RegisterPixKeyUseCase,
+                ListPixKeysUseCase, DeletePixKeyUseCase, ResolvePixKeyUseCase           (plain Java)
 infra/  DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK), DynamoConfig,
-        AccountBeansConfig, AwsProperties                                          (outbound adapter + wiring)
+        AccountBeansConfig (composition root + Clock), AwsProperties        (outbound adapter + wiring)
 ```
 
-`domain/` imports nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson) — enforced by
-`AccountArchitectureTest` (ArchUnit), which fails the build on a violation.
+**`domain/usecase/` is the capability list** — one class per inbound operation, single `execute(...)`,
+named for the business intent (ADR-0011). Controllers hold no policy: EVP server-generation, e-mail
+normalization, format validation, the global-uniqueness outcome and the delete ownership guard all
+live in use cases, unit-tested as plain Java with a fake port and a fixed `Clock` — no MockMvc, no
+LocalStack.
+
+Two ArchUnit rules in `AccountArchitectureTest` fail the build on a violation: `domain/` imports
+nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson), and `api/` never depends on an
+interface in `domain/` — which is what makes "a controller may not reach a repository" mechanical.
 
 ## Configuration
 
@@ -147,3 +160,4 @@ curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorizatio
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition; each service
   owns its tables, so cross-service reads go through an API (the internal lookup), not a shared table.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
+- [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.

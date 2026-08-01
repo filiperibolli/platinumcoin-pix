@@ -14,9 +14,10 @@ import java.util.Optional;
  *       ({@code ACCOUNT#<accountId>}) for services that only know the account id.</li>
  * </ul>
  *
- * <p>Both return {@link Optional}: "unknown account" is an ordinary empty result here, and the
- * {@code api/} layer decides that empty maps to a {@code 404 ACCOUNT_NOT_FOUND}. Keeping the port
- * free of HTTP concerns is what lets the domain stay framework-free.
+ * <p>Both return {@link Optional}: "unknown account" is an ordinary empty result here. The use case
+ * decides that empty means {@link AccountNotFoundException} (ADR-0011), and only then does
+ * {@code api/} map that exception to {@code 404 ACCOUNT_NOT_FOUND}. Keeping the port free of both
+ * decisions is what lets the domain stay framework-free.
  */
 public interface AccountRepository {
 
