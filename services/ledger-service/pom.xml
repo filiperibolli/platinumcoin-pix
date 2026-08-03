@@ -37,10 +37,16 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Bean Validation for the posting request body (step 14). Same reason as account-service:
+             common-lib ships validation only in test scope, so a service that validates its own
+             request bodies declares the starter itself. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
         <!-- DynamoDB SDK v2. Confined to infra/ (DynamoLedgerRepository, DynamoConfig); the ArchUnit
-             test fails the build if a domain type imports software.amazon.awssdk.*. Deliberately NO
-             spring-boot-starter-validation here: this step exposes no request body to validate — it
-             arrives with the posting endpoint (step 14). -->
+             test fails the build if a domain type imports software.amazon.awssdk.*. -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>dynamodb</artifactId>

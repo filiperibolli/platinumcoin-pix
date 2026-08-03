@@ -376,7 +376,7 @@ sequenceDiagram
 ### 6.3 Flow — Ledger posting (never debit without credit)   · Sprint 3 · infra: DynamoDB `pix_ledger`
 
 **The heart of the system** and the direct answer to *Question 2*. A posting is **one**
-`TransactWriteItems` — DynamoDB transactions are ACID across up to 100 items, so either all four writes
+`TransactWriteItems` — DynamoDB transactions are ACID across up to 100 items, so either all five writes
 commit or none do. No intermediate state can exist where a debit lands without its credit.
 
 ```mermaid
@@ -387,15 +387,25 @@ sequenceDiagram
     participant DDB as DynamoDB
     Caller->>LED: POST /internal/ledger/postings {txId, debit, credit, amount}
     LED->>DDB: TransactWriteItems (all-or-nothing)
-    Note right of DDB: 1) debit BALANCE  cond balanceCents >= amount<br/>2) credit BALANCE cond exists<br/>3) put DEBIT entry  cond attribute_not_exists (txId)<br/>4) put CREDIT entry cond attribute_not_exists (txId)
+    Note right of DDB: 1) debit BALANCE  cond exists AND balanceCents >= amount<br/>2) credit BALANCE cond exists<br/>3) put DEBIT entry  cond attribute_not_exists<br/>4) put CREDIT entry cond attribute_not_exists<br/>5) put TX#txId/POSTING cond attribute_not_exists ← idempotency guard
     alt all conditions hold
         DDB-->>LED: committed
-        LED-->>Caller: 200 posting result
+        LED-->>Caller: 200 posting result (replayed=false)
     else insufficient funds / replayed txId / conflict
         DDB--xLED: TransactionCanceled(reasons)
-        LED-->>Caller: 422 INSUFFICIENT_FUNDS · or idempotent replay · or 503 (retry conflict)
+        LED-->>Caller: 200 replayed=true · or 409 POSTING_TXID_MISMATCH · or 422 INSUFFICIENT_FUNDS · or 404 · or 503 LEDGER_CONFLICT
     end
 ```
+
+**Why the 5th write** (step 14, `docs/data-model.md` §3): conditioning the *entry* puts on
+`attribute_not_exists` guards only the same key, and an entry's key carries its timestamp
+(`ENTRY#<ts>#<txId>`). A caller retrying after a timeout sends the same `txId` at a **new instant**,
+so the keys differ, the condition passes and the payer is debited twice. The `TX#<txId>/POSTING` item
+keys the guard on the `txId` alone, removing the clock from the identity of a posting; with
+`ReturnValuesOnConditionCheckFailure=ALL_OLD` it also returns the committed command inside the
+cancellation, so a replay is recognized strongly-consistently and with no extra read — and the same
+`txId` used for *different* money is a `409` rather than a silently swallowed payment. The
+cancellation reasons are read guard-first: idempotency outranks every other verdict.
 
 - **Internal transfer (PlatinumCoin → PlatinumCoin):** debit payer / credit payee directly. One atomic transaction, done — this is exactly what Sprint 4 uses.
 - **External transfer (Sprint 6):** you cannot span a distributed transaction across two banks, so the credit leg goes to an **internal SPI clearing account** (`debit payer / credit ACCOUNT#SPI_CLEARING`). On SPI confirmation the money has left the bank (a `CLEARING_RELEASE` entry); on definitive failure a **compensating posting** (`debit clearing / credit payer`) returns it. At every instant `Σ balances` is invariant: **money moves, it is never created or destroyed.**

@@ -2,6 +2,7 @@ package com.platinumcoin.pix.ledger.infra;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.platinumcoin.pix.ledger.domain.AccountPolicy;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,8 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 class DynamoLedgerRepositoryTest {
 
     private final CapturingDynamoDbClient dynamo = new CapturingDynamoDbClient();
-    private final DynamoLedgerRepository repository = new DynamoLedgerRepository(dynamo);
+    private final DynamoLedgerRepository repository =
+            new DynamoLedgerRepository(dynamo, new AccountPolicy());
 
     @Test
     void balanceReadIsAStronglyConsistentGetItemOnTheBalanceItem() {
