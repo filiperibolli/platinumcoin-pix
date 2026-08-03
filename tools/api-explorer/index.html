@@ -366,7 +366,7 @@
       },
       {
         id: 'ledger', name: 'ledger-service', port: 8085, baseUrl: 'http://localhost:8085',
-        blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 ships the read half \u2014 a strongly consistent balance read, because the ledger must read its own writes. No /v1 surface at all: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
+        blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 shipped the read half (a strongly consistent balance read, because the ledger must read its own writes); step 14 adds the write half \u2014 the atomic double-entry posting, one TransactWriteItems in which every guard is a condition, so a refusal writes nothing at all. No /v1 surface: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
         endpoints: [
           {
             method: 'GET', path: '/internal/ledger/accounts/acc-001/balance', title: 'Balance (alice)', auth: true, capturesToken: false,
@@ -382,6 +382,24 @@
             method: 'GET', path: '/internal/ledger/accounts/acc-999/balance', title: 'Balance \u2014 unknown account (404)', auth: true, capturesToken: false,
             desc: 'An account with no BALANCE item \u21d2 404 problem+json (code: LEDGER_ACCOUNT_NOT_FOUND), never a balance of zero: in a ledger "no such account" and "no money" are opposite facts and must not look alike on the wire. Log out and re-send to see the other failure mode \u2014 401 UNAUTHORIZED, because /internal/** is not public here either.',
             headers: {}, body: null,
+          },
+          {
+            method: 'POST', path: '/internal/ledger/postings', title: 'Posting \u2014 alice \u2192 bob (and press Send twice)', auth: true, capturesToken: false,
+            desc: 'The atomic double-entry posting: ONE TransactWriteItems of five items \u2014 debit balance (condition balanceCents >= :amount), credit balance, the two immutable ENTRY legs, and the TX#&lt;txId&gt;/POSTING idempotency guard. All or nothing, so no state can exist where the debit landed without its credit. Send it once: 200 with "replayed": false, alice 10000.00 \u2192 9874.50 and bob +125.50 (check with the balance cards above \u2014 the sum over all accounts is unchanged, because a posting MOVES money). <b>Now press Send again without changing anything</b>: 200 with "replayed": true, the original postedAt, and the balance does NOT move a second time. That is the whole idempotency contract in two clicks \u2014 and it works because the guard is keyed on the txId ALONE: keying it on the entry (ENTRY#&lt;timestamp&gt;#&lt;txId&gt;) would let a retry at a new instant write a second pair of legs. Edit txId for a fresh posting; money on the wire is integer cents, and the response echoes both representations.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ txId: 'tx-explorer-1', debitAccount: 'acc-001', creditAccount: 'acc-002', amountCents: 12550, entryType: 'PIX_INTERNAL', description: 'explorer manual test' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/internal/ledger/postings', title: 'Posting \u2014 same txId, different money (409)', auth: true, capturesToken: false,
+            desc: 'Run the card above first, then this one: the same txId for a different amount \u21d2 409 problem+json (code: POSTING_TXID_MISMATCH). The ledger refuses instead of guessing \u2014 answering "already done" would silently swallow this payment, and posting it would double-spend the first. Mint a new txId for a new intent. Note that description is deliberately NOT part of that comparison: a label is not money, so a retry that regenerated its text still replays.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ txId: 'tx-explorer-1', debitAccount: 'acc-001', creditAccount: 'acc-002', amountCents: 99, entryType: 'PIX_INTERNAL', description: 'same identity, different amount' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/internal/ledger/postings', title: 'Posting \u2014 insufficient funds (422)', auth: true, capturesToken: false,
+            desc: 'R$ 999,999.99 out of an account holding R$ 10,000.00 \u21d2 422 (code: INSUFFICIENT_FUNDS) \u2014 and, the part that matters, NOTHING is written: no balance moved, no entry appended, no guard item left behind (verify with the balance cards). That is guaranteed by where the check lives: balanceCents >= :amount is a condition INSIDE the transaction, evaluated by DynamoDB as part of the debit; reading the balance first and deciding in code would be the same thing with a race in it. Try the other refusals by editing the body: both legs on one account \u21d2 422 INVALID_POSTING; an unknown creditAccount \u21d2 404 LEDGER_ACCOUNT_NOT_FOUND (an upsert would otherwise have CREATED the account); amountCents 0 \u21d2 400 VALIDATION_ERROR.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ txId: 'tx-explorer-overdraft', debitAccount: 'acc-001', creditAccount: 'acc-002', amountCents: 99999999, entryType: 'PIX_INTERNAL', description: 'more than alice has' }, null, 2),
           },
           {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,

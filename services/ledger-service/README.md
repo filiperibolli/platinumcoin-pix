@@ -1,9 +1,9 @@
 # ledger-service
 
 > The **ledger** of the PlatinumCoin Pix platform — the single owner and the only writer of the
-> `pix_ledger` table. Step 13 delivers the read half: the data model plus a **strongly consistent**
-> balance read. The atomic double-entry posting lands in step 14, the invariant suite in step 15 and
-> the paginated statement in step 16.
+> `pix_ledger` table. Step 13 delivered the read half (the data model plus a **strongly consistent**
+> balance read); step 14 adds the write half: the **atomic double-entry posting**. The invariant suite
+> lands in step 15 and the paginated statement in step 16.
 
 - **Port:** `8085`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation)
@@ -26,12 +26,22 @@ table proves the model against real items while nothing is at stake, so step 14'
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
 | `GET` | `/internal/ledger/accounts/{accountId}/balance` | Bearer | Balance of one ledger account → `{accountId, balance, balanceCents, version}`. Strongly consistent read. |
+| `POST` | `/internal/ledger/postings` | Bearer | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
-Unknown account ⇒ `404 application/problem+json` with `code: LEDGER_ACCOUNT_NOT_FOUND`. No token ⇒
-`401` (`code: UNAUTHORIZED`) — this service has **no public surface at all**: `/internal/**` is
-deliberately absent from `jwt.public-paths`, and there is no `/v1` API because no end user talks to
-the ledger; payment-service does, on their behalf.
+| Outcome | Status | `code` |
+| ------- | ------ | ------ |
+| posted, or replayed under the same `txId` | `200` | — (`replayed` says which) |
+| debtor short of funds | `422` | `INSUFFICIENT_FUNDS` |
+| not a posting (amount ≤ 0, blank id, both legs on one account) | `422` | `INVALID_POSTING` |
+| `txId` already used for different money | `409` | `POSTING_TXID_MISMATCH` |
+| either account has no BALANCE item | `404` | `LEDGER_ACCOUNT_NOT_FOUND` |
+| lost to concurrent writers past the retry budget | `503` | `LEDGER_CONFLICT` |
+| body fails bean validation | `400` | `VALIDATION_ERROR` |
+
+No token ⇒ `401` (`code: UNAUTHORIZED`) — this service has **no public surface at all**:
+`/internal/**` is deliberately absent from `jwt.public-paths`, and there is no `/v1` API because no
+end user talks to the ledger; payment-service does, on their behalf.
 
 ### The balance read (step 13)
 
@@ -57,6 +67,39 @@ the ledger; payment-service does, on their behalf.
   account does not exist" would be indistinguishable from "this account has no money" — opposite
   facts in a ledger.
 
+### The double-entry posting (step 14)
+
+One `TransactWriteItems`, five items, all-or-nothing (`docs/data-model.md` §3, ARCHITECTURE §6.3):
+
+| # | Write | Condition |
+| - | ----- | --------- |
+| 1 | debit `BALANCE` (`- :amount`, `version + 1`) | `attribute_exists(pk) AND balanceCents >= :amount` |
+| 2 | credit `BALANCE` (`+ :amount`, `version + 1`) | `attribute_exists(pk)` |
+| 3 | `ENTRY#<ts>#<txId>` on the debtor (amount **negative**) | `attribute_not_exists(pk)` |
+| 4 | `ENTRY#<ts>#<txId>` on the payee (amount **positive**) | `attribute_not_exists(pk)` |
+| 5 | `TX#<txId> / POSTING` — the idempotency guard | `attribute_not_exists(pk)` |
+
+- **The guards are conditions of the write, never a prior read.** `balanceCents >= :amount` is
+  evaluated by DynamoDB as part of the debit, so no concurrent posting can slip between the check and
+  the subtraction. A read-then-check would be the same code with a race in it.
+- **Idempotency is keyed on the `txId` alone** (write 5), and that is not a detail: an entry's key
+  carries its timestamp, so a caller retrying after a timeout would write a *different* key, pass
+  `attribute_not_exists`, and be debited twice. Same money under the same `txId` ⇒ `200` with
+  `replayed: true` and the **original** `postedAt`; different money ⇒ `409`. `description` is excluded
+  from that comparison — a label is not money.
+- **`ReturnValuesOnConditionCheckFailure=ALL_OLD`** on writes 1, 2 and 5 is what makes the failures
+  distinguishable: the cancelled debit comes back with the balance item (⇒ 422, and by how much it
+  fell short) or without one (⇒ 404), and the cancelled guard comes back with the committed posting,
+  so the replay verdict costs no extra read and is strongly consistent.
+- **Reasons are read guard-first.** A replay that would *also* now be short of funds is still a
+  replay — the money it names moved when it first committed.
+- **`TransactionConflict` is contention, not a rule violation:** retried 3× with jittered backoff,
+  then `503`. Nothing was written, and the caller may safely re-send the same `txId` — which is
+  exactly what idempotency buys.
+- **Both accounts are explicit inputs.** The ledger never infers a side. That is the seam step 52
+  needs to shard `SPI_CLEARING` without touching a caller, and the reason the "debited account comes
+  from the JWT" rule binds payment-service, not this service.
+
 ### System accounts
 
 `ACCOUNT#SEED` (the funding source, negative by construction) and `ACCOUNT#SPI_CLEARING` (money in
@@ -69,18 +112,22 @@ asserts under a concurrent debit storm, and which `DynamoLedgerRepositoryIT` pin
 
 ```
 api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance),
-        BalanceResponse (the only cents → decimal-string conversion),
+        InternalPostingController (POST /internal/ledger/postings),
+        PostingRequest / PostingResponse, BalanceResponse (cents → decimal string),
         LedgerExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Balance, LedgerEntry (records), Direction (enum),
-                LedgerRepository (port), LedgerAccountNotFoundException               (plain Java)
-domain/usecase/ GetBalanceUseCase                                                     (plain Java)
-infra/  DynamoLedgerRepository (AWS SDK — the only ConsistentRead in the module),
-        DynamoConfig, LedgerBeansConfig (composition root), AwsProperties,
-        CorsConfig                                                        (outbound adapter + wiring)
+domain/         Balance, LedgerEntry (records), Direction (enum), AccountPolicy,
+                PostingCommand, PostingResult, LedgerRepository (port),
+                LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
+                PostingConflict / LedgerBusy exceptions                               (plain Java)
+domain/usecase/ GetBalanceUseCase, PostDoubleEntryUseCase                             (plain Java)
+infra/  DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
+        reading of cancellationReasons live here and nowhere else),
+        DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
+        AwsProperties, CorsConfig                                         (outbound adapter + wiring)
 ```
 
-`LedgerEntry` and `Direction` are written for the first time in step 14; they exist now because the
-model is what this step validates against the seeded table.
+`Clock` is injected rather than read as `Instant.now()`: the posting's instant becomes part of both
+ENTRY sort keys, so it is a value the ledger decides — and a key a test can assert.
 
 Two ArchUnit rules in `LedgerArchitectureTest` fail the build on a violation: `domain/` imports
 nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson), and `api/` never depends on an
@@ -133,6 +180,30 @@ curl -s localhost:8085/internal/ledger/accounts/acc-999/balance -H "Authorizatio
 
 # no token ⇒ 401 UNAUTHORIZED, even on /internal/**
 curl -si localhost:8085/internal/ledger/accounts/acc-001/balance | head -1
+
+# ── the posting (step 14) ────────────────────────────────────────────────────
+POSTING='{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002",
+          "amountCents":12550,"entryType":"PIX_INTERNAL","description":"manual test"}'
+
+# alice → bob, R$ 125.50 ⇒ 200 with "replayed": false
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$POSTING" | jq
+
+# the very same call again ⇒ 200 with "replayed": true, and the balance does NOT move twice
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$POSTING" | jq
+curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorization: Bearer $TOKEN" | jq
+# → 9874.50, once — not 9749.00
+
+# same txId, different amount ⇒ 409 POSTING_TXID_MISMATCH (the ledger refuses to guess)
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99,"entryType":"PIX_INTERNAL"}' | jq
+
+# more than the balance ⇒ 422 INSUFFICIENT_FUNDS, and nothing is written
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-manual-2","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99999999,"entryType":"PIX_INTERNAL"}' | jq
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the

@@ -64,9 +64,9 @@ Access patterns: read balance (hottest read); post debit+credit atomically; stat
 
 | | Value |
 |---|---|
-| PK | `ACCOUNT#<accountId>` |
-| SK | `BALANCE` (one item) or `ENTRY#<isoTimestamp>#<txId>` (immutable postings) |
-| GSI1 | PK `TX#<txId>` → both legs of a posting |
+| PK | `ACCOUNT#<accountId>` — or `TX#<txId>` for the posting guard below |
+| SK | `BALANCE` (one item) or `ENTRY#<isoTimestamp>#<txId>` (immutable postings); `POSTING` under a `TX#` partition |
+| GSI1 | PK `TX#<txId>` → both legs of a posting (sparse: only ENTRY items carry `gsi1pk`) |
 
 **Balance item:**
 ```json
@@ -90,30 +90,58 @@ Access patterns: read balance (hottest read); post debit+credit atomically; stat
   "amountCents": -12550,
   "counterpartAccountId": "SPI_CLEARING",
   "description": "PIX to bob@otherbank.com",
-  "entryType": "PIX_OUT"
+  "entryType": "PIX_OUT",
+  "createdAt": "2026-07-02T12:34:56.123Z"
 }
 ```
 
 ### The double-entry posting — one `TransactWriteItems`
 
-A posting `debit A, credit B, amount X, txId T` is exactly four writes in **one** DynamoDB transaction:
+A posting `debit A, credit B, amount X, txId T` is exactly five writes in **one** DynamoDB transaction:
 
 | # | Operation | Item | Condition |
 |---|---|---|---|
-| 1 | Update | `A / BALANCE` — `SET balanceCents = balanceCents - :x, version = version + :one` | `balanceCents >= :x` ← **no negative balance** |
-| 2 | Update | `B / BALANCE` — `SET balanceCents = balanceCents + :x, version = version + :one` | item exists |
-| 3 | Put | `A / ENTRY#ts#T` (DEBIT) | `attribute_not_exists(pk)` ← **no double-post of T** |
+| 1 | Update | `A / BALANCE` — `SET balanceCents = balanceCents - :x, version = version + :one, updatedAt = :now` | `attribute_exists(pk) AND balanceCents >= :x` ← **no negative balance** |
+| 2 | Update | `B / BALANCE` — `SET balanceCents = balanceCents + :x, version = version + :one, updatedAt = :now` | `attribute_exists(pk)` |
+| 3 | Put | `A / ENTRY#ts#T` (DEBIT) | `attribute_not_exists(pk)` ← **append-only** |
 | 4 | Put | `B / ENTRY#ts#T` (CREDIT) | `attribute_not_exists(pk)` |
+| 5 | Put | `TX#T / POSTING` (the posting record) | `attribute_not_exists(pk)` ← **no double-post of T** |
 
-DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (insufficient funds, replayed txId, concurrent conflict), all four writes are cancelled. This is the mechanical answer to *"how do you guarantee money is never debited without being credited?"* — the debit and the credit are literally the same atomic operation; there is no intermediate state where one exists without the other.
+DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (insufficient funds, replayed txId, concurrent conflict), all five writes are cancelled. This is the mechanical answer to *"how do you guarantee money is never debited without being credited?"* — the debit and the credit are literally the same atomic operation; there is no intermediate state where one exists without the other.
+
+**Why write 1 also checks `attribute_exists`, and why write 2 has a condition at all:** `UpdateItem` is an *upsert*. Without it, crediting a typo'd account id would silently **create** a ledger account and park the money in it, and a debit of an unknown account would fail with an opaque expression error instead of a 404. The existence check is also what makes the two failures distinguishable: the two `Update`s carry `ReturnValuesOnConditionCheckFailure=ALL_OLD`, so a cancelled debit comes back **with the balance item** when the account exists (⇒ `422 INSUFFICIENT_FUNDS`, and by how much it fell short) and **without one** when it does not (⇒ `404 LEDGER_ACCOUNT_NOT_FOUND`). Without ALL_OLD, "you have no money" and "that account does not exist" arrive as the same anonymous `ConditionalCheckFailed`.
+
+**The `TX#T / POSTING` item (write 5) is the idempotency guard**, and the reason it exists is worth stating plainly, because the obvious design is wrong. Conditioning the *entry* puts on `attribute_not_exists` protects only against re-writing the **same key**, and an entry's key is `ENTRY#<timestamp>#<txId>`. A caller that retries after an ambiguous outcome — a timeout, a lost response — sends the same `txId` but arrives at a **new instant**, so the keys differ, the condition passes, and the payer is debited twice. Keying the guard on `txId` *alone* removes the clock from the identity of a posting; it is what makes "idempotent by txId" true rather than nearly true (step 14).
+
+```json
+{
+  "pk": "TX#tx-9f1c",
+  "sk": "POSTING",
+  "txId": "tx-9f1c",
+  "debitAccount": "acc-001",
+  "creditAccount": "acc-002",
+  "amountCents": 12550,
+  "entryType": "PIX_INTERNAL",
+  "description": "PIX to bob@platinum.com",
+  "postedAt": "2026-07-02T12:34:56.123Z"
+}
+```
+
+It doubles as the **stored posting record**: with `ReturnValuesOnConditionCheckFailure=ALL_OLD`, a cancelled guard hands back the committed command inside the cancellation itself, so "is this the same posting?" is answered **strongly consistently and with no extra read** — same money ⇒ idempotent replay (`200`, `replayed: true`, the *original* `postedAt`); different money under the same `txId` ⇒ `409 POSTING_TXID_MISMATCH`, because answering "already done" would swallow a payment and posting it would double-spend the first. `description` is excluded from that comparison: a label is not money, and refusing a retry that regenerated its text would push the caller towards a *new* txId — the one reaction that actually double-spends. The guard item deliberately carries **no `gsi1pk`**, so GSI1 keeps meaning exactly "the two legs of this transaction".
+
+> **Learning note — why not `ClientRequestToken`?** DynamoDB offers transaction-level idempotency through that parameter, but only for ~10 minutes and only for a byte-identical request. Our request carries a fresh timestamp on every retry, so it would raise `IdempotentParameterMismatchException` in exactly the case it is meant to cover. Idempotency that must outlive a client SDK window belongs in the data.
+
+**Reading a cancellation.** `TransactionCanceledException.cancellationReasons()` is a positional list, one reason per item above, and the order of interpretation is a business decision: **the guard is read first**. A replayed posting that would *also* now be short of funds is still a replay — the money it names moved when it first committed, and answering 422 would report as failed a payment that succeeded. Then the balance conditions (422 / 404), then a stale-entry conflict (409), and only then `TransactionConflict`, which is contention rather than a rule violation: retried up to 3 times with jittered backoff, and after that `503 LEDGER_CONFLICT` — nothing was written, and the caller may safely re-send the same `txId`.
 
 **Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 15) asserts this under a concurrent debit storm.
 
-**`entryType` vocabulary** (grown one step at a time, as each flow lands): `SEED_FUNDING` — the initial funding postings written by `05-seed-ledger.sh` (step 12); `PIX_OUT` / `PIX_IN`, `CLEARING_RELEASE` and the reversal type arrive with the flows that produce them (steps 21, 27, 33, 37).
+**`entryType` vocabulary** (grown one step at a time, as each flow lands): `SEED_FUNDING` — the initial funding postings written by `05-seed-ledger.sh` (step 12); `PIX_OUT` / `PIX_IN`, `CLEARING_RELEASE` and the reversal type arrive with the flows that produce them (steps 21, 27, 33, 37). The ledger **stores it and does not validate it** (it only refuses a blank): an entry written by a newer service must never fail to load in an older one, which is why it is an open string rather than an enum. Step 14 therefore adds no term — the `PIX_INTERNAL` in its runbook curl is an example value, not a vocabulary entry.
 
 **System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users — **also exempt**: its balance is negative by construction, the double-entry counterpart of the seeded user balances, so Σ over all accounts nets to **zero**). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
 
 **Statement pagination:** `Query pk = ACCOUNT#id AND begins_with(sk, "ENTRY#")`, `ScanIndexForward=false` (newest first), `Limit=n`; the API cursor is the base64 of `LastEvaluatedKey`. Timestamp-prefixed sort keys give chronological ordering for free — a core DynamoDB idiom.
+
+> **The timestamp is written with fixed-width milliseconds** (`uuuu-MM-dd'T'HH:mm:ss.SSS'Z'`), never `Instant.toString()`. That method omits trailing zeros, so an entry at exactly `10:15:30` renders `10:15:30Z` while one 500 ms later renders `10:15:30.500Z` — and `'Z'` (0x5A) sorts **after** `'.'` (0x2E). "Chronological ordering for free" is *lexicographic* ordering, so a variable-width timestamp silently returns the wrong page for every entry that lands on a round second.
 
 ---
 

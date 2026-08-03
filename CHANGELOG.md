@@ -10,6 +10,88 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Added
+- Atomic double-entry ledger posting via TransactWriteItems with conditional no-negative-balance and txId idempotency (step 14)
+  `POST /internal/ledger/postings` — the operation the whole platform is built around, and the direct
+  answer to *"how do you guarantee money is never debited without being credited?"*: the debit and the
+  credit are literally the same DynamoDB transaction, so no code path can write one leg. Both accounts
+  are **explicit inputs** (the seam step 52 needs to shard `SPI_CLEARING` without touching a caller);
+  the "debited account comes from the JWT" rule binds payment-service, which is the endpoint a client
+  can actually reach.
+  **The spec was amended during implementation, and the reason is the interesting part.** The step file
+  and `docs/data-model.md` §3 specified **four** writes, with double-post protection resting on
+  `attribute_not_exists(pk)` on the two ENTRY puts. That does not make the posting idempotent: an
+  entry's key is `ENTRY#<timestamp>#<txId>` and the timestamp comes from the clock, so a caller
+  retrying after a timeout sends the same `txId`, lands at a **new instant**, writes a **different**
+  key, passes the condition — and the payer is debited twice, in exactly the scenario idempotency
+  exists for. The transaction is now **five** items: the fifth is a `TX#<txId> / POSTING` guard keyed
+  on the `txId` **alone**, which removes the clock from the identity of a posting. It doubles as the
+  stored posting record: with `ReturnValuesOnConditionCheckFailure=ALL_OLD`, a cancelled guard hands
+  the committed command back **inside the cancellation**, so the replay/mismatch verdict is strongly
+  consistent and costs **no extra read** — retiring the eventually-consistent GSI1 re-read the step
+  originally described and leaving GSI1 a pure audit index (the guard carries no `gsi1pk`, so "both
+  legs of TX#t" still returns exactly two items). `docs/data-model.md` §3, `ARCHITECTURE.md` §6.3 and
+  `docs/steps/step-14.md` were updated in this same commit, the step file carrying an explicit
+  amendment note so the trail of *why the first design did not hold* survives.
+  **The five items and their conditions.** (1) debit BALANCE — `attribute_exists(pk) AND balanceCents
+  >= :amount`; (2) credit BALANCE — `attribute_exists(pk)`; (3)(4) the two ENTRY legs —
+  `attribute_not_exists(pk)`, DEBIT negative / CREDIT positive so Σ of a posting is zero; (5) the
+  guard. Two conditions were **added** to the data model and are worth the words: `UpdateItem` is an
+  *upsert*, so without `attribute_exists` a typo'd payee would silently **create** a ledger account and
+  park the money there. And `ALL_OLD` on the two balance updates is what makes the failures
+  distinguishable — a cancelled debit that comes back **with** the item is `422 INSUFFICIENT_FUNDS`
+  (and by how much it fell short), **without** one is `404`. Without it, "you have no money" and "that
+  account does not exist" arrive as the same anonymous `ConditionalCheckFailed`.
+  **Reading `cancellationReasons()` is a business decision, not a mapping.** Guard first: a replay
+  that would *also* now be short of funds is still a replay, because the money it names moved when it
+  first committed and a 422 would report as failed a payment that succeeded. Then funds/existence,
+  then a stale entry without a guard (`409` — the shape the step-12 seed postings have), then
+  `TransactionConflict`, which is contention rather than a rule violation: 3 attempts with jittered
+  backoff (the jitter matters as much as the delay — without it everything that collided once retries
+  in the same millisecond), then `503 LEDGER_CONFLICT`, on which the caller may safely re-send the
+  same `txId`. The request object is built **once** and re-sent unchanged on retry, so the entry keys
+  never move.
+  **Wire contract.** `200` for both a fresh posting and a replay, distinguished by `replayed` and
+  always carrying the *original* `postedAt`. Answering differently would train callers to treat a
+  retry as a failure and mint a new `txId` — the one reaction that actually double-spends. Errors:
+  `422 INSUFFICIENT_FUNDS`, `422 INVALID_POSTING` (amount ≤ 0, blank identity, both legs on one
+  account — which DynamoDB would otherwise reject as two operations on one item, i.e. a 500 for a
+  business rule), `409 POSTING_TXID_MISMATCH`, `404 LEDGER_ACCOUNT_NOT_FOUND`, `503 LEDGER_CONFLICT`,
+  `400 VALIDATION_ERROR`. No `Idempotency-Key` header: the ledger's idempotency key is the `txId` in
+  the body — the identity of the posting itself, not an HTTP de-duplication of one client's request
+  (that is payment-service's layer, ADR-0002).
+  **Domain.** `PostingCommand` / `PostingResult`, `AccountPolicy` (the single switch exempting `SEED`
+  and `SPI_CLEARING*` from the funds guard — a **prefix** rule, so step 52's clearing shards do not
+  silently become balance-guarded user accounts), `PostDoubleEntryUseCase` (validity, the injected
+  `Clock`, description normalization — never the guards, which are conditions inside the transaction),
+  and four plain-Java exceptions. The instant is **truncated to milliseconds** and formatted
+  fixed-width (`…ss.SSS'Z'`), because `Instant.toString()` omits trailing zeros and `'Z'` (0x5A) sorts
+  after `'.'` (0x2E): a round-second entry would sort *after* one 500 ms later, and step 16's
+  newest-first statement — which relies on nothing but lexicographic order — would return the wrong
+  page.
+  **Tests.** 43 new (26 unit + 17 integration): `DynamoLedgerPostingTest` (17) pins the shape of the transaction against a
+  hand-written SDK stub — every condition, `ALL_OLD`, the system-account exemption, the sort-key
+  format, the retry budget — and drives every cancellation branch from constructed
+  `TransactionCanceledException`s, which is the only way to cover them without racing an emulator;
+  `LedgerPostingIT` (9) and `InternalLedgerPostingIT` (8) run against real LocalStack, asserting on
+  every failure path both the exception **and zero writes** (no balance moved, no leg appended, no
+  guard left behind), plus the retry-at-a-later-instant that would double-post without the guard.
+  `AccountPolicyTest` and `PostDoubleEntryUseCaseTest` cover the policy and the refusals. Concurrency
+  is deliberately absent: the debit storm and Σ-conservation under contention are step 15's
+  hand-written suite. The posting ITs open their **own fixture accounts** rather than spending alice's
+  seeded money — the step-13 ITs assert the seeded supply in absolute terms and all `*IT` classes share
+  one container, so moving that money would have made the suite order-dependent (it did, once, and
+  that is how the fixture was found).
+  Verified on the **running compose stack**, not only in tests: the step's curl returns `"replayed":
+  false` and moves alice 10000.00 → 9874.50 with bob up the same, Σ over the four accounts still **0**;
+  the identical request again returns `"replayed": true` with the first `postedAt` and alice still at
+  9874.50; `409/422/422/404/400/401` all answer as specified and **left no guard item, no leg and no
+  `ACCOUNT#acc-404`** behind (checked with raw `get-item`/`query`), and GSI1 returns exactly the two
+  legs. LocalStack does return the `ALL_OLD` payload, so the defensive re-read never fired. Suite:
+  **138 tests** (71 unit + architecture, 67 integration), all green on a plain `mvn verify` — counted
+  from the surefire/failsafe reports of that run, not extrapolated from the previous step's entry.
+  AI: est 3h / actual 1.5h / ~95% generated / 0 issues caught in human review
+
 ### Changed
 - Logging reworked for a human reader: correlation id in the pattern, prose messages, real values (ADR-0012)
   Not a PLAN step — a cross-cutting change requested in review, applied to every service built so far.

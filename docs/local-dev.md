@@ -227,6 +227,57 @@ curl -s localhost:8085/internal/ledger/accounts/acc-999/balance \
 curl -si localhost:8085/internal/ledger/accounts/acc-001/balance | head -1   # 401 without a token
 ```
 
+**Step 14 — moving money: the atomic double-entry posting.** One `TransactWriteItems` of five items
+(`docs/data-model.md` §3); every guard is a condition *inside* it, so a refusal writes nothing at all.
+
+```bash
+POSTING='{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002",
+          "amountCents":12550,"entryType":"PIX_INTERNAL","description":"manual test"}'
+
+# 200 — {"txId":"tx-manual-1",…,"amount":"125.50","amountCents":12550,"replayed":false,…}
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$POSTING" | jq
+
+# alice 10000.00 → 9874.50, bob 10000.00 → 10125.50, and Σ over the four accounts is still 0
+for a in acc-001 acc-002 SPI_CLEARING SEED; do
+  curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
+    -H "Authorization: Bearer $TOKEN" | jq -r .balanceCents
+done | paste -sd+ | bc                                          # 0 — money moved, none created
+
+# IDEMPOTENCY: send the identical request again ⇒ 200 "replayed": true, balance unchanged.
+# Note the *postedAt* it returns is the first posting's instant, not now.
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$POSTING" | jq '{replayed, postedAt}'
+curl -s localhost:8085/internal/ledger/accounts/acc-001/balance \
+  -H "Authorization: Bearer $TOKEN" | jq -r .balance          # 9874.50 — once, not twice
+
+# the guard item behind that: keyed by txId alone, so the clock is not part of a posting's identity
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+  --key '{"pk":{"S":"TX#tx-manual-1"},"sk":{"S":"POSTING"}}'
+# …and GSI1 still returns exactly the two legs (the guard carries no gsi1pk)
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger \
+  --index-name gsi1 --key-condition-expression 'gsi1pk = :t' \
+  --expression-attribute-values '{":t":{"S":"TX#tx-manual-1"}}' | jq '.Count'   # 2
+
+# the refusals — each returns problem+json and writes NOTHING
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99,"entryType":"PIX_INTERNAL"}' \
+  | jq .code    # POSTING_TXID_MISMATCH (409) — same identity, different money
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-manual-2","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99999999,"entryType":"PIX_INTERNAL"}' \
+  | jq .code    # INSUFFICIENT_FUNDS (422) — the condition failed inside the transaction
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-manual-3","debitAccount":"acc-001","creditAccount":"acc-001","amountCents":100,"entryType":"PIX_INTERNAL"}' \
+  | jq .code    # INVALID_POSTING (422) — both legs on one account moves no money
+```
+
+> A posting changes the seeded money supply, so re-running the §4 "Σ = 0" checks after this section
+> gives the *moved* balances (the sum stays 0). `docker compose -f infra/docker-compose.yml down -v`
+> resets everything and reseeds deterministically.
+
 ## 4.1 Reading the logs (ADR-0012)
 
 Every service inherits one logging config from `common-lib` — there is nothing to enable per service.

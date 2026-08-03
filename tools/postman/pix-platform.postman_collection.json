@@ -365,7 +365,7 @@
     },
     {
       "name": "ledger-service",
-      "description": "The ledger — port 8085, the ONLY writer of `pix_ledger` (ADR-0006). Step 13 ships the read half: a **strongly consistent** balance read (`ConsistentRead=true`, because the ledger must read its own writes — a stale balance would show money that is already spent). Every request here needs a token: `/internal/**` is deliberately not public, and this service has no `/v1` surface at all, because no end user talks to the ledger. See services/ledger-service/README.md.",
+      "description": "The ledger — port 8085, the ONLY writer of `pix_ledger` (ADR-0006). Steps 13-14 ship both halves: a **strongly consistent** balance read (`ConsistentRead=true`, because the ledger must read its own writes — a stale balance would show money that is already spent). Every request here needs a token: `/internal/**` is deliberately not public, and this service has no `/v1` surface at all, because no end user talks to the ledger. See services/ledger-service/README.md.",
       "item": [
         {
           "name": "Balance (alice)",
@@ -462,6 +462,172 @@
               "path": ["internal", "ledger", "accounts", "acc-999", "balance"]
             },
             "description": "An account with no BALANCE item ⇒ 404 problem+json (`code: LEDGER_ACCOUNT_NOT_FOUND`), never a balance of zero — the two are opposite facts in a ledger and must not look alike on the wire. Drop the `Authorization` header to see the other failure mode: 401 (`code: UNAUTHORIZED`), because `/internal/**` is not public here either."
+          }
+        },
+        {
+          "name": "Posting — alice → bob (200)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The ledger's idempotency key is the txId in the BODY, not an Idempotency-Key",
+                  "// header: it is the identity of the posting itself, shared by every caller that",
+                  "// retries it. Generated once here and kept in a collection variable so the next two",
+                  "// requests can replay and conflict with THIS posting.",
+                  "pm.collectionVariables.set('ledgerTxId', 'tx-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('this call committed the posting', () => pm.expect(body.replayed).to.eql(false));",
+                  "pm.test('both money representations agree', () => pm.expect(Math.round(parseFloat(body.amount) * 100)).to.eql(body.amountCents));",
+                  "// postedAt is the instant embedded in both ENTRY sort keys — keep it to compare",
+                  "// against the replay below, which must return THIS instant, not its own.",
+                  "pm.collectionVariables.set('ledgerPostedAt', body.postedAt);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 12550,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"postman manual test\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "postings"]
+            },
+            "description": "The atomic double-entry posting: **one** `TransactWriteItems` of five items — debit balance (condition `balanceCents >= :amount`), credit balance, the two immutable ENTRY legs, and the `TX#<txId>/POSTING` idempotency guard. All or nothing: no state exists in which the debit landed without its credit.\n\nMoney on the wire is **integer cents** (`amountCents`); the response echoes both `amount` (\"125.50\", for you) and `amountCents` (for the services that do arithmetic). Run \"Balance (alice)\" afterwards: 10000.00 → 9874.50, while bob gains exactly the same — Σ over every account is unchanged, because a posting *moves* money."
+          }
+        },
+        {
+          "name": "Posting — replay the same txId (200, replayed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK — a replay is a success, not an error', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('recognized as a replay', () => pm.expect(body.replayed).to.eql(true));",
+                  "// The answer describes when the money MOVED, not when this retry arrived.",
+                  "pm.test('returns the original postedAt', () => pm.expect(body.postedAt).to.eql(pm.collectionVariables.get('ledgerPostedAt')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 12550,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"postman manual test\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "postings"]
+            },
+            "description": "Byte-identical to the previous request — the retry a caller makes when a response is lost. Answer: **200 with `replayed: true`**, and alice's balance does *not* move a second time (check it).\n\nThis works because the guard item is keyed on the `txId` **alone**. Keying it on the entry (`ENTRY#<timestamp>#<txId>`) would not: the retry arrives at a new instant, so the key would differ, `attribute_not_exists` would pass, and the payer would be debited twice.\n\nBoth outcomes are 200 on purpose. An API that answered differently would train callers to treat a retry as a failure and mint a *new* txId — the one reaction that actually double-spends."
+          }
+        },
+        {
+          "name": "Posting — same txId, different money (409)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
+                  "const body = pm.response.json();",
+                  "pm.test('stable error code', () => pm.expect(body.code).to.eql('POSTING_TXID_MISMATCH'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 99,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"same identity, different amount\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "postings"]
+            },
+            "description": "The same `txId` for a different amount. The ledger refuses instead of guessing: answering \"already done\" would silently swallow this payment, and posting it would double-spend the first one. 409 is the only answer that loses nothing — mint a new `txId` for a new intent.\n\n(`description` is deliberately *not* part of that comparison: a label is not money, so a retry that regenerated its text still replays.)"
+          }
+        },
+        {
+          "name": "Posting — insufficient funds (422)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('ledgerOverdraftTxId', 'tx-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "const body = pm.response.json();",
+                  "pm.test('stable error code', () => pm.expect(body.code).to.eql('INSUFFICIENT_FUNDS'));",
+                  "pm.test('carries the correlation id', () => pm.expect(body.correlationId).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"txId\": \"{{ledgerOverdraftTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 99999999,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"more than alice has\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "postings"]
+            },
+            "description": "R$ 999,999.99 out of an account holding R$ 10,000.00 ⇒ **422 INSUFFICIENT_FUNDS**, and — the part that matters — **nothing at all is written**: no balance moved, no entry appended, no guard item left behind. Run \"Balance (alice)\" to confirm.\n\nThat is guaranteed by *where* the check lives: `balanceCents >= :amount` is a condition **inside** the transaction, evaluated by DynamoDB as part of the debit. Reading the balance first and deciding in Java would be the same code with a race in it.\n\nOther refusals worth trying by hand: both legs on one account ⇒ 422 `INVALID_POSTING`; an unknown `creditAccount` ⇒ 404 `LEDGER_ACCOUNT_NOT_FOUND` (an upsert would otherwise have *created* the account); `\"amountCents\": 0` ⇒ 400 `VALIDATION_ERROR`; no `Authorization` header ⇒ 401."
           }
         },
         {
