@@ -109,6 +109,8 @@ DynamoDB transactions are **ACID and all-or-nothing**: if any condition fails (i
 
 **Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 15) asserts this under a concurrent debit storm.
 
+**`entryType` vocabulary** (grown one step at a time, as each flow lands): `SEED_FUNDING` — the initial funding postings written by `05-seed-ledger.sh` (step 12); `PIX_OUT` / `PIX_IN`, `CLEARING_RELEASE` and the reversal type arrive with the flows that produce them (steps 21, 27, 33, 37).
+
 **System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users — **also exempt**: its balance is negative by construction, the double-entry counterpart of the seeded user balances, so Σ over all accounts nets to **zero**). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
 
 **Statement pagination:** `Query pk = ACCOUNT#id AND begins_with(sk, "ENTRY#")`, `ScanIndexForward=false` (newest first), `Limit=n`; the API cursor is the base64 of `LastEvaluatedKey`. Timestamp-prefixed sort keys give chronological ordering for free — a core DynamoDB idiom.

@@ -128,7 +128,7 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **S3** — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive` (step 42); `pix-statement-exports` (step 53).
 
-**Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED`, plus system account `SPI_CLEARING` (step 12). Pix keys are registered via the API, not seeded.
+**Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` at 0 — so Σ over every account is **zero** (step 12). Pix keys are registered via the API, not seeded.
 
 The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6) → `+s3` (Sprint 10).
 
@@ -164,6 +164,44 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
   --global-secondary-indexes \
       '[{"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
   --billing-mode PAY_PER_REQUEST
+```
+
+**Step 12 — `pix_ledger`** (PAY_PER_REQUEST; `gsi1` on `gsi1pk` = `TX#<txId>`, sparse because only
+`ENTRY#…` items carry it — it answers "both legs of transaction T", which the base table can't since
+the legs sit in two different account partitions):
+
+```bash
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_ledger \
+  --attribute-definitions \
+      AttributeName=pk,AttributeType=S \
+      AttributeName=sk,AttributeType=S \
+      AttributeName=gsi1pk,AttributeType=S \
+  --key-schema \
+      AttributeName=pk,KeyType=HASH \
+      AttributeName=sk,KeyType=RANGE \
+  --global-secondary-indexes \
+      '[{"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
+  --billing-mode PAY_PER_REQUEST
+```
+
+Reading the seeded money supply (`05-seed-ledger.sh`) — alice at R$ 10,000.00, and the four balances
+that must sum to **zero**:
+
+```bash
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+  --key '{"pk":{"S":"ACCOUNT#acc-001"},"sk":{"S":"BALANCE"}}'   # balanceCents 1000000, version 0
+
+for a in acc-001 acc-002 SPI_CLEARING SEED; do
+  aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+    --key "{\"pk\":{\"S\":\"ACCOUNT#$a\"},\"sk\":{\"S\":\"BALANCE\"}}" \
+    --query 'Item.balanceCents.N' --output text
+done | paste -sd+ | bc                                          # 0 — conservation baseline
+
+# both legs of a seed funding transaction, via GSI1
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger \
+  --index-name gsi1 --key-condition-expression 'gsi1pk = :t' \
+  --expression-attribute-values '{":t":{"S":"TX#tx-seed-alice"}}'
 ```
 
 ## 4.1 Reading the logs (ADR-0012)
@@ -331,29 +369,24 @@ mvn -pl services/ledger-service verify   # one module only
 
 Integration tests do **not** need the compose stack running — Testcontainers manages disposable LocalStack/Redis containers per test run. That separation (compose = manual/E2E playground; Testcontainers = automated tests) keeps tests hermetic and repeatable.
 
-> ### ⚠️ Known environment quirk — read this before debugging a "Docker not found" IT failure
+> ### Docker Engine API version — pinned in the build, nothing to pass (step 12)
 >
-> On a recent Docker engine (Desktop 29.x, API 1.54, `MinAPIVersion` 1.40), Testcontainers/docker-java
-> negotiates its **default API v1.32**, which the engine rejects — surfacing as `HTTP 400` or the
-> misleading **`Could not find a valid Docker environment`**, even though `docker ps` works fine.
-> There is nothing wrong with your socket, your `DOCKER_HOST` or your group membership. Pin the API
-> version instead:
+> On a recent Docker engine (Desktop 25+/29.x, API 1.54, `MinAPIVersion` 1.40), Testcontainers/
+> docker-java negotiates its **default API v1.32**, which the engine rejects — surfacing as `HTTP 400`
+> or the misleading **`Could not find a valid Docker environment`**, even though `docker ps` works
+> fine. It points at the socket and it is never the socket.
 >
-> ```bash
-> mvn verify -DargLine="-Dapi.version=1.44"          # all modules
-> mvn -pl services/account-service verify -DargLine="-Dapi.version=1.44"
-> ```
->
-> Environment quirk only — **no code change, and nothing to fix in the repo**. This is documented
-> here (the runbook), in `services/account-service/README.md` and in the step-08/step-10 CHANGELOG
-> entries, because it has now cost debugging time twice: the failure message points at the socket,
-> which is the wrong place to look.
+> This used to require `-DargLine="-Dapi.version=1.44"` on every command, which cost debugging time
+> three separate times because nobody remembers a flag. It is now **pinned in the build**: the parent
+> POM's `<docker.api.version>` property (default `1.44`) is passed to the failsafe-forked JVM as the
+> `api.version` system property, so a plain `mvn verify` just works. On an engine older than API
+> 1.44, override it: `mvn verify -Ddocker.api.version=1.41`.
 
 ## 7. Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
-| ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Re-run with `-DargLine="-Dapi.version=1.44"` — see §6 |
+| ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Pinned in the parent POM (`docker.api.version`, default 1.44); on an older engine run `mvn verify -Ddocker.api.version=1.41` — see §6 |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |
 | Outbox events not flowing | Polling publisher in payment-service — check its logs and the `outbox.lag` metric; query GSI3 for stuck unpublished items |

@@ -13,9 +13,22 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
   Idempotent (`describe-table || create-table`). Neither table uses TTL — TTL is
   only on `pix_idempotency` / `pix_processed_events` (arriving in later sprints);
   see `docs/data-model.md`.
+- **`02-dynamodb-ledger.sh`** (step 12) — creates `pix_ledger` (PK `ACCOUNT#<id>`,
+  SK `BALANCE` | `ENTRY#<ts>#<txId>`) with the sparse `gsi1` on `TX#<txId>` that
+  returns both legs of a posting. Idempotent, on-demand, no TTL.
 - **`04-seed-accounts.sh`** (step 07) — seeds demo accounts alice (`acc-001`) and
   bob (`acc-002`) with `dailyLimitCents=500000`, `status=ACTIVE`. No Pix keys are
   seeded — they're registered via the account-service API in step 10.
+- **`05-seed-ledger.sh`** (step 12) — seeds the money supply as a double-entry
+  funding operation: alice and bob at 1,000,000 cents each, `ACCOUNT#SEED` at
+  −2,000,000 (the counterpart legs), `ACCOUNT#SPI_CLEARING` at 0 → **Σ = 0**, the
+  baseline of the conservation invariant (step 15). Unlike the account seed,
+  every put is conditional on `attribute_not_exists(pk)`: re-running it against a
+  table that already holds moved money must never reset a balance while its
+  `ENTRY` items survive. Its final log line
+  (`[seed] ledger ready: …`) is the readiness marker the Testcontainers harness
+  (`LocalStackTestBase`) waits on — **if you append a script that sorts after
+  this one, move that marker.**
 
 Each later sprint that flips on a new AWS service adds its own resource script in
 the same directory, matching the vertical-delivery discipline (one flow's infra

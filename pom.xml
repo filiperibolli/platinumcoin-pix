@@ -45,6 +45,13 @@
         <compiler.version>3.13.0</compiler.version>
         <surefire.version>3.2.5</surefire.version>
         <failsafe.version>3.2.5</failsafe.version>
+        <!-- Docker Engine API version Testcontainers/docker-java must speak to the local daemon.
+             docker-java defaults to v1.32, which modern engines (Docker Desktop 25+, MinAPIVersion
+             1.40) reject with HTTP 400 — surfacing as the misleading "Could not find a valid Docker
+             environment", which reads like a socket problem and is not one. Pinned here so `mvn
+             verify` just works with no flag; override on an older engine with
+             `-Ddocker.api.version=<v>`. -->
+        <docker.api.version>1.44</docker.api.version>
         <!-- Pinned so common-lib can publish its test-jar (the reusable *IT harness) reproducibly. -->
         <jar.version>3.4.1</jar.version>
     </properties>
@@ -159,6 +166,13 @@
                              @SpringBootApplication (it's not at the scannable root). Pinning the classes
                              dir to target/classes keeps *IT working for every repackaged service. -->
                         <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                        <!-- docker-java reads the target Engine API version from this system
+                             property in the forked test JVM. Setting it here (instead of asking
+                             every developer to remember -DargLine="-Dapi.version=…") makes the ITs
+                             run green on a plain `mvn verify`. -->
+                        <systemPropertyVariables>
+                            <api.version>${docker.api.version}</api.version>
+                        </systemPropertyVariables>
                     </configuration>
                     <executions>
                         <execution>

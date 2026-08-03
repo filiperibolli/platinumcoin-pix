@@ -55,7 +55,9 @@ public abstract class LocalStackTestBase {
                 // Ready only once the *last* init script has finished seeding. LocalStack opens port
                 // 4566 before ready.d runs, so waiting on the port alone would race the seed; we wait
                 // on the seed script's final log line instead, guaranteeing tables + seed are present.
-                .waitingFor(Wait.forLogMessage(".*\\[seed\\] demo accounts ready.*", 1)
+                // This pattern must track whichever script sorts last in ready.d — today
+                // 05-seed-ledger.sh (step 12); a new seed script appended after it moves the marker.
+                .waitingFor(Wait.forLogMessage(".*\\[seed\\] ledger ready.*", 1)
                         .withStartupTimeout(Duration.ofMinutes(2)));
 
         // Mount each real init script into ready.d with the executable bit — LocalStack runs any
