@@ -1,0 +1,44 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: ledger-service
+
+# Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can
+# call this service from the browser. Permissive + credential-free by design (the token is a Bearer
+# header, never a cookie); a deployed posture pins these origins (step-45 hardening). The CorsFilter
+# is ordered ahead of the JWT auth filter so pre-flights aren't 401'd. See infra/CorsConfig.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
+# HS256 validation config (ADR-0007). The secret must match auth-service's JWT_SECRET — this service
+# only VALIDATES tokens, it never mints them. public-paths is the allow-list the shared JwtAuthFilter
+# skips. ledger-service has NO public surface at all: /internal/** is intentionally absent from this
+# list, so every balance read requires a valid token (see InternalLedgerController).
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  public-paths:
+    - /actuator/**
+
+# AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
+# AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK
+# demands. ITs override these via LocalStackTestBase's @DynamicPropertySource (same aws.* keys).
+aws:
+  endpoint-url: ${AWS_ENDPOINT_URL:http://localhost:4566}
+  region: ${AWS_REGION:us-east-1}
+  access-key-id: ${AWS_ACCESS_KEY_ID:test}
+  secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups the compose healthcheck probes.
+      probes:
+        enabled: true

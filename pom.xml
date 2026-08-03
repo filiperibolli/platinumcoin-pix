@@ -60,6 +60,7 @@
         <module>services/common-lib</module>
         <module>services/auth-service</module>
         <module>services/account-service</module>
+        <module>services/ledger-service</module>
     </modules>
 
     <dependencyManagement>

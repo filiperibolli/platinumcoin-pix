@@ -364,6 +364,32 @@
           },
         ],
       },
+      {
+        id: 'ledger', name: 'ledger-service', port: 8085, baseUrl: 'http://localhost:8085',
+        blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 ships the read half \u2014 a strongly consistent balance read, because the ledger must read its own writes. No /v1 surface at all: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
+        endpoints: [
+          {
+            method: 'GET', path: '/internal/ledger/accounts/acc-001/balance', title: 'Balance (alice)', auth: true, capturesToken: false,
+            desc: 'Balance of one ledger account, read with ConsistentRead=true (an eventually-consistent read could show money that is already spent). Returns {accountId, balance, balanceCents, version}: "10000.00" as a decimal string for you, 1000000 as integer cents for the services that do arithmetic on it \u2014 the same number twice, formatted once at the API edge. version is the posting counter (audit aid, never a lock), still 0 because nothing has posted yet. Not account-scoped on purpose: edit the path to acc-002 and alice\'s token still reads bob\'s balance \u2014 this is an internal seam, and nothing here moves money.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/ledger/accounts/SEED/balance', title: 'Balance (SEED \u2014 the money supply)', auth: true, capturesToken: false,
+            desc: 'ACCOUNT#SEED is the double-entry counterpart of every seeded balance, so it is negative by construction (-20000.00). Add it to acc-001 (+10000.00), acc-002 (+10000.00) and SPI_CLEARING (0.00) and you get exactly zero \u2014 money was created the only way this platform allows, as a funding posting, and Σ over all accounts is the conservation invariant step 15 asserts under a concurrent debit storm. Try SPI_CLEARING in the path too: the clearing account at rest.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/ledger/accounts/acc-999/balance', title: 'Balance \u2014 unknown account (404)', auth: true, capturesToken: false,
+            desc: 'An account with no BALANCE item \u21d2 404 problem+json (code: LEDGER_ACCOUNT_NOT_FOUND), never a balance of zero: in a ledger "no such account" and "no money" are opposite facts and must not look alike on the wire. Log out and re-send to see the other failure mode \u2014 401 UNAUTHORIZED, because /internal/** is not public here either.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
     ];
 
     let activeService = SERVICES[0].id;
