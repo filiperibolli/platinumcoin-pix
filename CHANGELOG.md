@@ -158,6 +158,48 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
            the new-service checklist in CLAUDE.md plus a pointer in each scaffold step. -->
 
 ### Added
+- LocalStack init: pix_ledger table (GSI1) + seed balances and system accounts SPI_CLEARING/SEED (step 12)
+  `02-dynamodb-ledger.sh` creates `pix_ledger` exactly per `docs/data-model.md` §3 — PK
+  `ACCOUNT#<accountId>`, SK `BALANCE` | `ENTRY#<isoTs>#<txId>`, on-demand, plus `gsi1` on
+  `TX#<txId>`, which is **naturally sparse** (only `ENTRY` items carry `gsi1pk`) and exists for the
+  one pattern the base table cannot serve: both legs of a posting live in two different account
+  partitions. One partition per account holding both shapes is what lets step 14 update the balance
+  and append its entry in a single `TransactWriteItems`, and what makes the statement a plain
+  `begins_with(sk, "ENTRY#")` query ordered for free by the timestamp prefix.
+  `05-seed-ledger.sh` seeds the money supply the only way money is ever allowed to appear here — as
+  a **double-entry funding operation**: alice/bob at `1000000` cents each (credit legs of
+  `tx-seed-alice`/`tx-seed-bob`), `ACCOUNT#SEED` at `-2000000` (the two debit legs),
+  `ACCOUNT#SPI_CLEARING` at `0`, `version=0`, plus the four matching `SEED_FUNDING` `ENTRY` items.
+  **Σ balanceCents = 0** is therefore the baseline the conservation invariant starts from: seeding
+  users without the counterpart would still have been a constant, but a magic one — this way the
+  invariant is a plain sum over every account, which is what step 15 asserts under a debit storm.
+  Every put is **conditional on `attribute_not_exists(pk)`** (stricter than the account seed's
+  unconditional `put-item`): re-running the seed against a table whose balances real postings have
+  already moved must not reset them while their `ENTRY` items survive — verified by hand (moved
+  alice to `987650/v3`, re-ran the script, balance untouched). Fixed timestamps, no clock read, so
+  `down -v && up` reseeds byte-identically. `entryType=SEED_FUNDING` and the system-account
+  exemption are now written into `docs/data-model.md` §3, the DDL + the balance/GSI1 read commands
+  mirrored in `docs/local-dev.md` §4, both scripts described in the init README.
+  Harness: `LocalStackTestBase`'s readiness wait moved to the *new* last script's final line —
+  waiting on the accounts seed would have let every future ledger IT race the seeding — and
+  `LocalStackHarnessIT` grew two ITs pinning the seed: alice at `1000000`/`version=0`, and Σ over the
+  four accounts `== 0`. Suite: **74 tests** (34 unit + architecture, 40 integration), all green.
+  AI: est 0.75h / actual 1.25h / ~90% generated / 1 issue caught in human review
+  Issues caught in human review (fixed in this change):
+  1. **Fourth occurrence of the same Docker misdiagnosis — now fixed at the root instead of
+     re-documented.** The ITs failed with `Could not find a valid Docker environment` and the
+     assistant again started probing the socket/`docker context` rather than reading the CHANGELOG,
+     which has recorded the real cause and its workaround since step 08 (docker-java's default API
+     v1.32 vs a modern engine's `MinAPIVersion`). The human pointed at the changelog and, correctly,
+     refused another round of "document the flag": a fix that lives in a command someone must
+     remember is not a fix. The API version is now **pinned in the build** — parent-POM property
+     `<docker.api.version>` (default `1.44`) handed to the failsafe-forked JVM as the `api.version`
+     system property — so `mvn verify` runs green with no flag on any module, overridable with
+     `-Ddocker.api.version=<v>` for an older engine. `-DargLine="-Dapi.version=1.44"` is gone from
+     `docs/local-dev.md` §6/§7 and the account-service README, and CLAUDE.md now states the rule the
+     episode taught: **a known environment quirk is fixed in the build, never in a remembered
+     flag**, and check `CHANGELOG.md` / `docs/local-dev.md` for the symptom before diagnosing any
+     environment failure.
 - Internal Pix key resolution endpoint (DICT role), external delegation seam left for step 30 (step 11)
   account-service gains `GET /internal/pix-keys/resolve?key=…` — the platform's own **DICT** for keys
   living inside PlatinumCoin, the hot lookup on the send path (step 21 resolves the destination key

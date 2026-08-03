@@ -43,7 +43,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** atomic double-entry posting + balance read + statement, invariants proven.
 **Infra que sobe:** DynamoDB `pix_ledger` table. · **Diagram:** ARCHITECTURE §6.3
 
-- [ ] [Step 12](docs/steps/step-12.md) — LocalStack init: `pix_ledger` table + seed postings
+- [x] [Step 12](docs/steps/step-12.md) — LocalStack init: `pix_ledger` table + seed postings
 - [ ] [Step 13](docs/steps/step-13.md) — ledger-service: data model + balance read (strongly consistent)
 - [ ] [Step 14](docs/steps/step-14.md) — atomic double-entry posting via TransactWriteItems (debit+credit+2 entries)
 - [ ] [Step 15](docs/steps/step-15.md) — invariant test suite: concurrency storm, no-negative-balance, no-double-post, conservation of money **✍️ hand-written zone**

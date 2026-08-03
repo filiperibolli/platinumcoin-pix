@@ -150,10 +150,10 @@ curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" -H
 curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorization: Bearer $TOKEN" -i
 ```
 
-> **Local Docker note:** if `mvn verify` fails with a Testcontainers `Could not find a valid Docker
-> environment` / HTTP `400` (Docker Desktop's minimum API version rejects docker-java's default
-> v1.32), run the ITs with `-DargLine="-Dapi.version=1.44"` (environment quirk, no code change — see
-> CHANGELOG step 08).
+> **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the
+> parent POM** (`docker.api.version`, default `1.44`) — a plain `mvn verify` works, no flag. If you
+> are on an engine older than API 1.44, override it: `mvn verify -Ddocker.api.version=1.41`
+> (see `docs/local-dev.md` §6).
 
 ## Related decisions
 
