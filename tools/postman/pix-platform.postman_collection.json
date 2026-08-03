@@ -362,6 +362,122 @@
           }
         }
       ]
+    },
+    {
+      "name": "ledger-service",
+      "description": "The ledger — port 8085, the ONLY writer of `pix_ledger` (ADR-0006). Step 13 ships the read half: a **strongly consistent** balance read (`ConsistentRead=true`, because the ledger must read its own writes — a stale balance would show money that is already spent). Every request here needs a token: `/internal/**` is deliberately not public, and this service has no `/v1` surface at all, because no end user talks to the ledger. See services/ledger-service/README.md.",
+      "item": [
+        {
+          "name": "Balance (alice)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('accountId echoes the path', () => pm.expect(body.accountId).to.eql('acc-001'));",
+                  "// Two representations of ONE number: decimal string for humans, integer cents for",
+                  "// the services that do arithmetic on it. They must never disagree.",
+                  "pm.test('balance is the seeded R$ 10,000.00', () => pm.expect(body.balance).to.eql('10000.00'));",
+                  "pm.test('balanceCents is an integer', () => pm.expect(Number.isInteger(body.balanceCents)).to.be.true);",
+                  "pm.test('both agree', () => pm.expect(Math.round(parseFloat(body.balance) * 100)).to.eql(body.balanceCents));",
+                  "// version is the posting counter — an audit aid, never a lock (ARCHITECTURE §6.3).",
+                  "pm.test('untouched account is at version 0', () => pm.expect(body.version).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/balance",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "accounts", "acc-001", "balance"]
+            },
+            "description": "Balance of one ledger account, read with `ConsistentRead=true`. Returns `{accountId, balance, balanceCents, version}` — `balance` is a decimal BRL string for the human, `balanceCents` the same amount as an integer for internal callers (payment-service, step 21). Seeded by step 12 at R$ 10,000.00. Not account-scoped on purpose: this is an internal seam, so alice's token may read bob's balance (`acc-002`) — the \"debited account comes from the JWT\" rule binds the money-moving endpoint in payment-service, and nothing here moves money."
+          }
+        },
+        {
+          "name": "Balance (SEED — the money supply)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "// Negative by construction: it is the debit counterpart of every seeded balance.",
+                  "pm.test('the funding source is negative', () => pm.expect(body.balanceCents).to.eql(-2000000));",
+                  "pm.test('formatted with its sign', () => pm.expect(body.balance).to.eql('-20000.00'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/SEED/balance",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "accounts", "SEED", "balance"]
+            },
+            "description": "`ACCOUNT#SEED` is the double-entry counterpart of the whole money supply, so its balance is **negative by construction** (-R$ 20,000.00). With acc-001, acc-002 and `SPI_CLEARING` (at 0), Σ over every account is **zero** — the conservation invariant step 15 asserts under a concurrent debit storm. System accounts are exempt from the no-negative-balance guard on WRITES, never from being read. Swap `SEED` for `SPI_CLEARING` in the path to see the clearing account at rest."
+          }
+        },
+        {
+          "name": "Balance — unknown account (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
+                  "const body = pm.response.json();",
+                  "pm.test('stable error code', () => pm.expect(body.code).to.eql('LEDGER_ACCOUNT_NOT_FOUND'));",
+                  "pm.test('carries the correlation id', () => pm.expect(body.correlationId).to.be.a('string'));",
+                  "// NOT a balance of zero: in a ledger 'no such account' and 'no money' are opposite facts.",
+                  "pm.test('no balance is returned at all', () => pm.expect(body.balanceCents).to.be.undefined);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-999/balance",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "accounts", "acc-999", "balance"]
+            },
+            "description": "An account with no BALANCE item ⇒ 404 problem+json (`code: LEDGER_ACCOUNT_NOT_FOUND`), never a balance of zero — the two are opposite facts in a ledger and must not look alike on the wire. Drop the `Authorization` header to see the other failure mode: 401 (`code: UNAUTHORIZED`), because `/internal/**` is not public here either."
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/actuator/health",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
     }
   ]
 }

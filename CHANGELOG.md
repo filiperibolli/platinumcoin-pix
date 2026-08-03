@@ -158,6 +158,60 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
            the new-service checklist in CLAUDE.md plus a pointer in each scaffold step. -->
 
 ### Added
+- ledger-service balance reads with strongly consistent GetItem on the single-table ledger (step 13)
+  The platform's fourth service (port 8085) and the **only writer of `pix_ledger`** (ADR-0006) —
+  though it writes nothing yet: this step deliberately ships the *read* half, so the domain model is
+  validated against the money supply seeded in step 12 while nothing is at stake. Step 14's first
+  `TransactWriteItems` is then not also the first time an item shape is exercised.
+  **The endpoint.** `GET /internal/ledger/accounts/{accountId}/balance` →
+  `{accountId, balance, balanceCents, version}`; unknown account ⇒ `404 LEDGER_ACCOUNT_NOT_FOUND` in
+  problem+json. The service has **no `/v1` surface at all** and `/internal/**` is deliberately absent
+  from `jwt.public-paths`, so every call needs a token: no end user talks to the ledger,
+  payment-service does on their behalf.
+  **Three decisions worth the words.** (1) `ConsistentRead=true`, always — DynamoDB reads are
+  eventually consistent by default (they cost half as much), but the ledger must read its own writes;
+  a stale balance shows money that is already spent. LocalStack is a single node and would return the
+  right value either way, so the flag can only be proven on the *request*: `DynamoLedgerRepositoryTest`
+  asserts it there, with a hand-written `DynamoDbClient` stub. It is also why the balance lives at a
+  base-table key — a GSI is always eventually consistent. (2) The wire carries **both money
+  representations**: `balance` as a decimal string for the human running the runbook curl,
+  `balanceCents` as an integer for the services that do arithmetic on it (step 21, the step-40 cache)
+  — one `long` in the domain, formatted in exactly one place (`BalanceResponse`), the same reasoning
+  that keeps account-service's internal view on integer `dailyLimitCents`. (3) An absent BALANCE item
+  is a **404, never a zero**: in a ledger "no such account" and "no money" are opposite facts and must
+  not look alike on the wire.
+  **Domain.** `Balance(accountId, balanceCents, version)`, `LedgerEntry(txId, direction, amountCents,
+  counterpartAccountId, timestamp, entryType)` and `Direction` (enum — a closed two-valued vocabulary
+  that carries the sign convention; `entryType` stays a string because it grows with every flow), the
+  `LedgerRepository` port and `LedgerAccountNotFoundException`. `LedgerEntry` is written for the first
+  time in step 14 and exists now because the model is what this step validates. The `version` field is
+  documented at length as a **change counter, not a lock** — nothing reads it, decides and writes back
+  conditioned on it; conflicting writers are serialized by DynamoDB transactions themselves
+  (ARCHITECTURE §6.3), and the version-as-optimistic-lock strategy is the *lab's* job (ADR-0009).
+  Full new-service checklist per CLAUDE.md: module + POM, `Application`, `application.yml`, Dockerfile,
+  compose block (gated on `localstack: service_healthy`, which is also what guarantees the seed ran),
+  `README.md`, the three packages with one `GetBalanceUseCase` and a `LedgerBeansConfig` composition
+  root, `LedgerArchitectureTest` with **both** ArchUnit rules from day one, CORS ahead of the JWT
+  filter, and the endpoint added to **both** the Postman collection and the API explorer in this same
+  step (three cards each: alice's balance, `SEED` as the negative money supply, and the 404).
+  `docs/local-dev.md` §4 gained the service-level twin of the raw `get-item` loop — the same Σ = 0,
+  now read through the API. No `docs/api/openapi.yaml` change: `/internal/**` is by contract not part
+  of the public surface, as that file already states for account-service's internal lookup.
+  Verified on the **running compose stack**, not only in tests: the step's curl returns
+  `{"balance":"10000.00","balanceCents":1000000,"version":0}`, the four balances still sum to zero
+  through the API, alice's token reads bob's balance (the internal seam is authenticated but not
+  account-scoped, on purpose), and the 404/401/unmapped-route paths all answer as specified — a single
+  `grep "cid=<id>"` across `auth-service` + `ledger-service` reconstructs login → JWT accepted → use
+  case → `GetItem` (with the exact key) → outcome, for every one of them. Suite: **96 tests**
+  (46 unit + architecture, 50 integration), all green on a plain `mvn verify`.
+  Correction made during the step, recorded because the CHANGELOG's job is to be trustworthy about
+  what was checked: the adapter test's javadoc first claimed `mock(DynamoDbClient.class)` cost ~170s
+  and justified the hand-written stub with that number. The 167s was a **clock jump on this WSL2 box**
+  (an older account-service report shows the same magnitude as a *negative* duration); measured
+  directly, the Mockito mock costs 740ms. The stub stayed — for the real reason, which is that
+  `getItem` is overloaded on request and builder-consumer, so mocking it needs a type-witnessed
+  matcher and an unchecked cast — and the false performance claim was removed from the code.
+  AI: est 2.5h / actual 1h / ~95% generated / 0 issues caught in human review
 - LocalStack init: pix_ledger table (GSI1) + seed balances and system accounts SPI_CLEARING/SEED (step 12)
   `02-dynamodb-ledger.sh` creates `pix_ledger` exactly per `docs/data-model.md` §3 — PK
   `ACCOUNT#<accountId>`, SK `BALANCE` | `ENTRY#<isoTs>#<txId>`, on-demand, plus `gsi1` on

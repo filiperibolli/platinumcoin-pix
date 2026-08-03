@@ -204,6 +204,29 @@ aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger 
   --expression-attribute-values '{":t":{"S":"TX#tx-seed-alice"}}'
 ```
 
+**Step 13 — the same money supply through ledger-service** (`:8085`), which is how every other
+service is allowed to read it (ADR-0006: the ledger owns the table). The read is strongly consistent
+(`ConsistentRead=true`) because the ledger must read its own writes; `/internal/**` is not public, so
+a token is required:
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+
+# {"accountId":"acc-001","balance":"10000.00","balanceCents":1000000,"version":0}
+curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorization: Bearer $TOKEN" | jq
+
+# the same Σ = 0 as the raw get-item loop above, now through the service
+for a in acc-001 acc-002 SPI_CLEARING SEED; do
+  curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
+    -H "Authorization: Bearer $TOKEN" | jq -r .balanceCents
+done | paste -sd+ | bc                                          # 0 — conservation baseline
+
+curl -s localhost:8085/internal/ledger/accounts/acc-999/balance \
+  -H "Authorization: Bearer $TOKEN" | jq   # 404 LEDGER_ACCOUNT_NOT_FOUND — never a zero balance
+curl -si localhost:8085/internal/ledger/accounts/acc-001/balance | head -1   # 401 without a token
+```
+
 ## 4.1 Reading the logs (ADR-0012)
 
 Every service inherits one logging config from `common-lib` — there is nothing to enable per service.
