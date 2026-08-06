@@ -1,8 +1,6 @@
-# Step 19 — Idempotency layer  ✍️ hand-written zone (tests)
+# Step 19 — Idempotency layer
 
 > **Sprint 4 — Send Pix (internal)** · **Flow:** internal Pix moves real money · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.4
-
-> **Hand-written zone:** the test set of this step (`IdempotencyIT` + hashing unit tests) is written by the human, by hand, first (AI may review afterwards and may still generate the production code from the spec as usual). See CLAUDE.md → "Hand-written zones".
 
 ## Objective
 Implement ADR-0002 on the send endpoint: conditional claim of `IDEM#account#key`, request-hash comparison, stored-response replay, `409` on hash mismatch, `IN_PROGRESS` handling, TTL 24h.

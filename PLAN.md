@@ -55,7 +55,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 17](docs/steps/step-17.md) — LocalStack init: `pix_transactions` (+GSIs) + `pix_idempotency` tables
 - [x] [Step 18](docs/steps/step-18.md) — payment-service: `POST /payments/pix` walking skeleton (validation, txId/endToEndId, 202)
-- [ ] [Step 19](docs/steps/step-19.md) — idempotency layer: conditional claim, response replay, 409 on hash mismatch **✍️ hand-written zone (tests)**
+- [ ] [Step 19](docs/steps/step-19.md) — idempotency layer: conditional claim, response replay, 409 on hash mismatch
 - [ ] [Step 20](docs/steps/step-20.md) — daily limit enforcement (calendar-day reservation counter, decision-object seam for future MFA)
 - [ ] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status SETTLED (internal settles instantly)
 - [ ] [Step 22](docs/steps/step-22.md) — `GET /payments/{id}` status endpoint
@@ -141,3 +141,19 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB **✍️ hand-written zone (findings doc + psql session)**
 - [ ] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
 - [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
+
+## Sprint 15 — Concept mastery & design defense (✍️ hand-written)
+> Each step here is gated on the implementation step that **builds** the concept it examines — you validate a decision only after living the code that proves it. Take each one as its prerequisite is checked; the sprint is not sequential.
+**Flow delivered:** a written, defensible account of every core design decision — the interview answer, in *your own words*. For each concept you locate it in the code/docs, explain it in `docs/concepts/concept-NN-*.md`, name the trade-off it accepts and the failure mode it prevents; **Claude then reviews the finished write-up, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question** (it never drafts the explanation — hand-written zone, CLAUDE.md).
+**Infra que sobe:** none (docs only — no build, no tests, no `mvn`). · **Deliverables:** `docs/concepts/`
+
+- [ ] [Step 54](docs/steps/step-54.md) — Concept: **atomic double-entry ledger** — never debit without credit; one `TransactWriteItems`; no-negative-balance *inside* the transaction; append-only corrections **✍️** (prereq: step 15)
+- [ ] [Step 55](docs/steps/step-55.md) — Concept: **idempotency, the three layers** — API claim/replay/409, ledger `txId` guard, SPI `endToEndId`; the claim-crash window **✍️** (prereq: step 19)
+- [ ] [Step 56](docs/steps/step-56.md) — Concept: **debited account from the JWT, never the payload** — authority from the token; the field made inexpressible in the API shape **✍️** (prereq: step 18)
+- [ ] [Step 57](docs/steps/step-57.md) — Concept: **DynamoDB-for-ledger storage trade-off** — why not Postgres here; what is given up and how it's compensated (Question 3) **✍️** (prereq: step 14)
+- [ ] [Step 58](docs/steps/step-58.md) — Concept: **clean/hexagonal-lite + explicit use cases** — dependency rule inward, ports only for outbound infra, one `UseCase` per inbound op, ArchUnit as the guard **✍️** (prereq: step 09)
+- [ ] [Step 59](docs/steps/step-59.md) — Concept: **fraud fail-open under a 200ms budget** — fail-open vs fail-closed, the hard client timeout, bounded risk (Question 5) **✍️** (prereq: step 25)
+- [ ] [Step 60](docs/steps/step-60.md) — Concept: **transactional outbox + polling publisher** — the dual-write problem, same-partition atomic write, sparse GSI, at-least-once + consumer dedup **✍️** (prereq: step 29)
+- [ ] [Step 61](docs/steps/step-61.md) — Concept: **async settlement + bounded reconciliation** — `202` not `200`, query-before-retry, DLQ, "eventual" made *< 5 min* (Questions 4 & 7) **✍️** (prereq: step 35)
+- [ ] [Step 62](docs/steps/step-62.md) — Concept: **correlation-id observability** — the id in the log *pattern*, one `grep` reconstructs a transaction across services; silence alerts (ADR-0012) **✍️** (prereq: step 44)
+- [ ] [Step 63](docs/steps/step-63.md) — Concept: **99.99% availability & the ledger-down-30s behavior** — fail-fast `503`, nothing debited, retry-safe; the error-budget math (Question 7) **✍️** (prereq: step 45)

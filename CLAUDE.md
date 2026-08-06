@@ -83,7 +83,7 @@ tools/api-explorer/    single-file HTML API explorer with valid sample requests 
 
 ## Hand-written zones (✍️ in PLAN.md)
 
-Some deliverables are marked **✍️ hand-written zone**: the human writes them personally, without AI code/text generation and without autocomplete on the first pass; Claude's role there is limited to reviewing the finished work and pointing out defects. Current zones: the step-15 invariant suite, the step-19 test set, and the step-51 findings doc + psql session. Purpose: these artifacts double as deliberate practice of language mechanics under realistic conditions. Do not generate code for a hand-written deliverable even if asked casually — instead remind the human it is a marked zone.
+Some deliverables are marked **✍️ hand-written zone**: the human writes them personally, without AI code/text generation and without autocomplete on the first pass; Claude's role there is limited to reviewing the finished work and pointing out defects. Current zones: the step-15 invariant suite, the step-51 findings doc + psql session, and the **Sprint 15 concept-mastery docs (steps 54–63)** — the human writes each `docs/concepts/concept-NN-*.md` explanation in their own words; Claude then reviews it, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question (it never drafts the explanation). Purpose: these artifacts double as deliberate practice of language mechanics and design articulation under realistic conditions. Do not generate code or prose for a hand-written deliverable even if asked casually — instead remind the human it is a marked zone.
 
 ## Per-step AI metrics (mandatory)
 
