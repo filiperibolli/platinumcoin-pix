@@ -11,6 +11,39 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- LocalStack init: pix_transactions (GSI1/GSI2/sparse GSI3) and pix_idempotency (TTL) tables (step 17)
+  `03-dynamodb-payment.sh` creates the two payment-service tables the internal-send flow (steps 18–21)
+  needs — infra only, no seed rows (transactions are born from the flow, not seeded). Numbered **03**
+  so it sorts before the `04`/`05` seeds: these tables carry nothing to seed, so the harness's
+  readiness marker (the last line of `05-seed-ledger.sh`) stays put — no marker to move.
+  **`pix_transactions`** (PK `TX#<txId>`, SK `META` | `OUTBOX#<eventId>`) is created with **all three**
+  GSIs now, even though only some are used this sprint — the interesting design call of the step. GSI1
+  (`E2E#<endToEndId>`) is the reconciliation / inbound-dedup lookup; GSI2 (`STATUS#<status>` +
+  `updatedAt`) is the stuck-transaction scan; GSI3 (`OUTBOX#UNPUBLISHED` + `occurredAt`) is the outbox
+  publisher's work queue and is **sparse** — only unpublished outbox items carry `gsi3pk` (it is
+  `REMOVE`d after the SNS publish), so the index stays O(in-flight), never O(history). Creating all
+  three up front is a *choice, not a constraint*: unlike LSIs, **GSIs can be added to a live table
+  later** (`UpdateTable` + backfill), but backfilling a fat table is slow and costly and the key schema
+  is already fully designed — so we pay the cost now while the table is empty. The single-table design
+  (tx `META` and its `OUTBOX#` items in the same `TX#` partition) is what lets step 28 write the
+  transaction and its outbox event in one `TransactWriteItems`. All GSIs `Projection: ALL` (consistent
+  with `pix_ledger`'s `gsi1`).
+  **`pix_idempotency`** (PK `IDEM#<accountId>#<idempotencyKey>`, SK `META`) gets **TTL on `expiresAt`**
+  — a separate `update-time-to-live` call, not part of `create-table`; the replay window is 24h and
+  DynamoDB's deletion is **lazy**, so step 19's reads must still treat an expired-but-present record as
+  absent (ADR-0002). The TTL enable is guarded by `describe-time-to-live` so re-running the script is a
+  no-op once enabled, matching the `describe-table || create-table` idiom of the sibling scripts.
+  `infra/localstack/init/README.md` gains the `03-…` entry; `docs/local-dev.md` §4 mirrors both
+  `create-table` commands, the `update-time-to-live`, and the two verify commands. `docs/data-model.md`
+  §4/§5 already specified this exact schema (written ahead), so no doc drift to correct.
+  Verified on the **running LocalStack container**, not only by reading the script: `down -v` + a fresh
+  `up` created the tables in lexical order (`03` before the `04`/`05` seeds, seed readiness marker
+  firing last); `describe-table` shows `gsi1`/`gsi2`/`gsi3` with the right key schemas and
+  `describe-time-to-live` shows `ENABLED` on `expiresAt`; and re-running `03-dynamodb-payment.sh`
+  in-container skipped every resource including the TTL guard (idempotent). No tests added — the step
+  defers verification to the payment-service ITs (steps 18–21) and the runbook check, and the DoD asks
+  for none.
+  AI: est 0.75h / actual 0.5h / ~90% generated / 0 issues caught in human review
 - Ledger statement query: newest-first entries with opaque DynamoDB cursor pagination (step 16)
   `GET /internal/ledger/accounts/{id}/entries?cursor=&limit=` → `{entries:[...], nextCursor}`, the
   internal seam the public statement API (step 41) will proxy. The statement is **free from the key

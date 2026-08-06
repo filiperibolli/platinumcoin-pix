@@ -16,6 +16,17 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
 - **`02-dynamodb-ledger.sh`** (step 12) — creates `pix_ledger` (PK `ACCOUNT#<id>`,
   SK `BALANCE` | `ENTRY#<ts>#<txId>`) with the sparse `gsi1` on `TX#<txId>` that
   returns both legs of a posting. Idempotent, on-demand, no TTL.
+- **`03-dynamodb-payment.sh`** (step 17) — creates the payment-service tables:
+  `pix_transactions` (PK `TX#<txId>`, SK `META` | `OUTBOX#<eventId>`) with three
+  GSIs — `gsi1` on `E2E#<endToEndId>`, `gsi2` on `STATUS#<status>`+`updatedAt`, and
+  the **sparse** `gsi3` on `OUTBOX#UNPUBLISHED`+`occurredAt` (the outbox publisher's
+  work queue) — and `pix_idempotency` (PK `IDEM#<accountId>#<key>`, SK `META`) with
+  **TTL on `expiresAt`**. All three GSIs are created now even though only some are
+  used this sprint: GSIs (unlike LSIs) *can* be added later, but backfilling a fat
+  table is slow, and the key schema is already fully designed. No seed rows —
+  transactions are created by the flow (steps 18–21) — so numbering it `03-` keeps
+  it before the seeds and leaves the harness's readiness marker on `05`. Idempotent,
+  on-demand.
 - **`04-seed-accounts.sh`** (step 07) — seeds demo accounts alice (`acc-001`) and
   bob (`acc-002`) with `dailyLimitCents=500000`, `status=ACTIVE`. No Pix keys are
   seeded — they're registered via the account-service API in step 10.
