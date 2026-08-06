@@ -102,6 +102,41 @@ services:
       retries: 5
       start_period: 30s
 
+  # payment-service — the send-Pix entry point (Sprint 4). The one endpoint an end user reaches to
+  # move money. Step 18 ships the walking skeleton of POST /v1/payments/pix (persist RECEIVED, 202).
+  # Same block as account-service: it reads/writes DynamoDB (pix_transactions), so it gates startup on
+  # LocalStack being healthy — service_healthy guarantees step 17's payment tables exist first.
+  payment-service:
+    build:
+      context: ..
+      dockerfile: services/payment-service/Dockerfile
+    image: platinumcoin/payment-service
+    container_name: payment-service
+    ports:
+      - "8084:8084"
+    environment:
+      # Must match auth-service's JWT_SECRET — payment-service only validates tokens. The debtor
+      # account is read from the token's accountId claim (Domain Safety Rule #1), never the body.
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # PlatinumCoin's Pix participant id, baked into every endToEndId (E<ISPB><ts><random>).
+      PIX_ISPB: "12345678"
+      # Reach LocalStack by service name on the shared network.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      localstack:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8084/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: this flow (Sprint 2,
   # Pix keys) needs DynamoDB and nothing else, so SERVICES pins DynamoDB ONLY. Each later
   # sprint flips on the next service (sns,sqs,s3) by extending this list — not before.

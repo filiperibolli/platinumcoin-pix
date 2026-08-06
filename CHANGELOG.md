@@ -11,6 +11,69 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- payment-service POST /payments/pix walking skeleton: validation, txId/endToEndId, 202 + Location (step 18)
+  The platform's fifth service (port 8084) and the **client-facing send-Pix entry point** — the one
+  endpoint an end user reaches to move money. This step ships the *walking skeleton*: a real,
+  persisted, JWT-protected request with the correct **shape** (status codes, headers, ids, the
+  debtor-from-JWT rule) before any behaviour thickens it. No idempotency claim (step 19), no daily
+  limit (step 20), no key resolution or ledger debit (step 21) — deliberately.
+  **The endpoint.** `POST /v1/payments/pix` validates the body, mints a `txId` (`tx-<uuid>`) and a
+  Pix-standard `endToEndId`, persists the transaction as `RECEIVED` in `pix_transactions`, and returns
+  `202 Accepted` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`.
+  The wire status is `PROCESSING` (the external vocabulary) even though the item is stored as
+  `RECEIVED` (the internal state machine): `202` means "accepted for processing, not settled", and
+  step 22 will map the full internal→external vocabulary.
+  **Domain Safety Rule #1, made inexpressible.** `SendPixRequest` carries `pixKey`, `amount`,
+  `description` and **no source-account field**; the debtor is `AuthenticatedUser.accountId()` from the
+  validated JWT. An extra JSON key (`debtorAccountId`) is silently dropped, never bound — proven by a
+  dedicated IT that sends `acc-999` in the body and asserts the stored debtor is still the token's
+  `acc-001`. The safest enforcement of "never from the payload" is to make the wrong thing
+  unsendable.
+  **Money is integer cents, and the parse never touches a `double`.** `amount` arrives as a decimal
+  string; the wire `@Pattern` (`^\d{1,9}\.\d{2}$`) bounds its shape (≤ 9 integer digits, comfortably
+  inside a `long`), and `Money.toCents` converts it with `BigDecimal.movePointRight(2).longValueExact()`,
+  enforcing the two rules the pattern cannot: **strictly positive** (`"0.00"` ⇒ `400 INVALID_AMOUNT`,
+  a distinct code from the shape-level `400 VALIDATION_ERROR`) and **no sub-cent** (`"1.005"` ⇒
+  refused rather than rounded). `MoneyTest` pins these plus the exactness of the pattern's ceiling
+  (`999999999.99` → `99999999999` cents, a value a `double` could not hold).
+  **The `endToEndId` is a contract.** Format `E<ISPB(8)><yyyyMMddHHmm-UTC(12)><random(11)>` — a fixed
+  32 chars, minted now because it is stable for the transaction's whole life and later becomes the
+  idempotency key toward BACEN (ADR-0002's third layer). The timestamp is UTC from an injected
+  `Clock` (deterministic, pinnable — it is an opaque id, never shown to a user); the ISPB is
+  configuration (`pix.ispb`, default `12345678`), and `EndToEndIdGenerator` fails fast at wiring if it
+  is not 8 digits. `EndToEndIdTest` pins the shape, the embedded UTC minute and that the random suffix
+  differs across calls.
+  **The persisted item is index-consistent from the first write.** The `TX#<txId> / META` item carries
+  `gsi1pk = E2E#<endToEndId>` (reconciliation / inbound-dedup lookup) and `gsi2pk = STATUS#RECEIVED` +
+  `gsi2sk = updatedAt` (the stuck-transaction scan), so steps 27/34's access patterns work with no
+  backfill; fields a later step owns (resolved creditor + `creditorInternal`, fraud verdict,
+  settlement, the `OUTBOX#` sibling) are deliberately not invented. The write is an unconditional
+  `PutItem`: the `txId` is a fresh UUID and request-level de-dup is step 19's layer.
+  **Idempotency-Key: accepted and ignored, on purpose.** The header is required by the OpenAPI
+  contract, but the conditional claim + response replay + `409`-on-hash-mismatch is step 19 (a
+  hand-written-test zone). The controller neither reads nor enforces it this step, with a
+  `// step 19` seam noted — a knowing, documented deviation from Domain Safety Rule #2 for the
+  skeleton, closed next step.
+  **Full new-service checklist per CLAUDE.md:** module + POM in the parent `<modules>`, `Application`,
+  `application.yml`, Dockerfile, compose block (gated on `localstack: service_healthy`, which also
+  guarantees step 17's tables exist), `README.md`, the three packages with one `SendPixUseCase` and a
+  `PaymentBeansConfig` composition root (Clock + EndToEndIdGenerator wired there), `PaymentArchitectureTest`
+  with **both** ArchUnit rules from day one, CORS ahead of the JWT filter, and the endpoint added to
+  **both** the Postman collection (a `payment-service` folder: send/zero/malformed/health, with an
+  auto-`{{$guid}}` Idempotency-Key on the money-moving POST) and the API explorer (a `payment-service`
+  tab, with the auto-UUID Idempotency-Key helper finally wired into the send path — it had been a
+  dormant field since the auth-service card, waiting for "the payment flow"). `docs/local-dev.md` §4
+  gains a step-18 manual-verification block. No `docs/api/openapi.yaml` change: the contract already
+  specified `/payments/pix`, `PaymentAccepted`, the bounded strictly-positive `amount` and the
+  required `Idempotency-Key` (written ahead), so code conforms to it with no drift.
+  **Tests.** 23 total (17 unit + architecture, 6 integration): `MoneyTest` (6), `EndToEndIdTest` (4),
+  `SendPixUseCaseTest` (5, plain-Java with a fake port + fixed clock — pins that the debtor comes from
+  the command and never the payload, and that `"0.00"` persists nothing), `PaymentArchitectureTest`
+  (2); `SendSkeletonIT` (5, MockMvc on real LocalStack — 202 + Location + item read back as RECEIVED
+  with debtor `acc-001`, the source-account-in-body injection, `"0.00"`⇒400, malformed⇒400,
+  no-token⇒401) and `ApplicationContextIT` (1). `mvn -pl services/payment-service -am verify` green;
+  full reactor `mvn package` green.
+  AI: est 2h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - LocalStack init: pix_transactions (GSI1/GSI2/sparse GSI3) and pix_idempotency (TTL) tables (step 17)
   `03-dynamodb-payment.sh` creates the two payment-service tables the internal-send flow (steps 18–21)
   needs — infra only, no seed rows (transactions are born from the flow, not seeded). Numbered **03**

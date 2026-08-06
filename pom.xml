@@ -61,6 +61,7 @@
         <module>services/auth-service</module>
         <module>services/account-service</module>
         <module>services/ledger-service</module>
+        <module>services/payment-service</module>
     </modules>
 
     <dependencyManagement>

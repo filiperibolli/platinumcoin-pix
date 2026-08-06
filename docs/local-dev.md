@@ -327,6 +327,39 @@ aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-
   | jq '.TimeToLiveDescription'
 ```
 
+**Step 18 — sending a Pix (walking skeleton) through payment-service** (`:8084`). The endpoint
+validates, mints `txId` + a Pix-standard `endToEndId`, persists the transaction as `RECEIVED`, and
+returns `202` + `Location`. No money moves yet (ledger debit is step 21) and the `Idempotency-Key` is
+accepted-and-ignored (step 19). The debtor is the token's `accountId`, never the body:
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+
+# 202 + Location + {"transactionId":"tx-…","endToEndId":"E12345678…","status":"PROCESSING"}
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | head -8
+
+# the persisted item: status=RECEIVED, debtor from the JWT (acc-001), amountCents=12550
+TXID=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"125.50"}' | jq -r .transactionId)
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_transactions \
+  --key "{\"pk\":{\"S\":\"TX#$TXID\"},\"sk\":{\"S\":\"META\"}}" \
+  | jq '.Item | {status:.status.S, debtorAccountId:.debtorAccountId.S, amountCents:.amountCents.N}'
+
+# the refusals
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"0.00"}' | jq .code   # INVALID_AMOUNT (400) — not money
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"12.5"}' | jq .code   # VALIDATION_ERROR (400) — bad shape
+curl -si -X POST localhost:8084/v1/payments/pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"1.00"}' | head -1    # 401 without a token
+```
+
 ## 4.1 Reading the logs (ADR-0012)
 
 Every service inherits one logging config from `common-lib` — there is nothing to enable per service.

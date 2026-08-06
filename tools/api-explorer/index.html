@@ -11,7 +11,7 @@
 
     LIVING artifact, exactly like tools/postman: created early and grown one card per endpoint, in
     the same step that adds the endpoint (convention in CLAUDE.md). Step 49 only FINALIZES it.
-    Today it mirrors the Postman collection 1:1: the auth-service and account-service tabs.
+    It mirrors the Postman collection 1:1, one tab per service (auth, account, payment, ledger …).
 
     Opened from disk the browser Origin is "null", so calls are cross-origin — the target service
     must allow CORS. auth-service does (local-dev CorsConfig, ordered before the JWT auth filter).
@@ -365,6 +365,35 @@
         ],
       },
       {
+        id: 'payment', name: 'payment-service', port: 8084, baseUrl: 'http://localhost:8084',
+        blurb: 'The send-Pix entry point — the one endpoint an end user reaches to move money. Step 18 ships the walking skeleton of POST /v1/payments/pix: validate the body, mint a txId and a Pix-standard endToEndId (E&lt;ISPB&gt;&lt;yyyyMMddHHmm-UTC&gt;&lt;random&gt;), persist the transaction as RECEIVED, and return 202 + Location. The debtor is the JWT accountId claim, never the payload (there is no source-account field to send). Idempotency, limits, key resolution and the ledger debit thicken this skeleton across steps 19–21.',
+        endpoints: [
+          {
+            method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — alice → bob (202)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'Accept a send-Pix: 202 Accepted with a Location header (/v1/payments/&lt;txId&gt;) and {transactionId, endToEndId, status:"PROCESSING"}. The transaction is persisted as RECEIVED — 202 means "accepted for processing", not settled, and the external status hides the internal state machine. Note the body has pixKey, amount, description and NO source-account field: the debited account comes from your token\'s accountId claim (Domain Safety Rule #1), so a client cannot even express a different debtor. The endToEndId is minted now because it is stable for the transaction\'s whole life and later becomes the idempotency key toward BACEN. An Idempotency-Key header is auto-attached (required by the contract); this skeleton accepts and ignores it — the claim + replay + 409-on-mismatch is step 19.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '125.50', description: 'explorer manual test' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — zero amount (400 INVALID_AMOUNT)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'amount "0.00" matches the wire pattern (^\\d{1,9}\\.\\d{2}$) but is not money. The strictly-positive rule the pattern cannot express is enforced in the domain (Money.toCents, via BigDecimal so no double ever touches a cent), so this is a 400 with a distinct code INVALID_AMOUNT — not the generic VALIDATION_ERROR — telling you WHY the value was refused. Sub-cent precision like "1.005" is refused the same way.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '0.00' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — malformed amount (400 VALIDATION_ERROR)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'amount "12.5" has one decimal, failing the bean-validation @Pattern on the request body, so it is rejected as 400 VALIDATION_ERROR before the use case runs. This is the wire-shape guard; the value never reaches the domain. Log out and re-send any of these cards to see 401 UNAUTHORIZED — /v1/payments/** is not public.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '12.5' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
+      {
         id: 'ledger', name: 'ledger-service', port: 8085, baseUrl: 'http://localhost:8085',
         blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 shipped the read half (a strongly consistent balance read, because the ledger must read its own writes); step 14 adds the write half \u2014 the atomic double-entry posting, one TransactWriteItems in which every guard is a condition, so a refusal writes nothing at all. No /v1 surface: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
         endpoints: [
@@ -490,9 +519,17 @@
         statusEl.textContent = 'Sending…'; statusEl.className = 'status pending';
         try {
           const bodyEl = $('body-' + key);
+          // Money-moving POSTs auto-attach a fresh Idempotency-Key (mirrors Postman's {{$guid}}); the
+          // minted value is surfaced in the Session panel's field so it is visible, not magic.
+          let headers = ep.headers;
+          if (ep.idempotent) {
+            const idem = crypto.randomUUID();
+            $('idemKey').value = idem;
+            headers = { ...ep.headers, 'Idempotency-Key': idem };
+          }
           const r = ep.capturesToken
             ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
-            : await send({ method: ep.method, path: ep.path, headers: ep.headers,
+            : await send({ method: ep.method, path: ep.path, headers,
                            body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
                            base: currentServiceBase(svc) });
           statusEl.textContent = `${r.status} ${r.statusText}`;
