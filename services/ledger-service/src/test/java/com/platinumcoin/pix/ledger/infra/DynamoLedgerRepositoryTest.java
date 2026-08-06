@@ -1,8 +1,11 @@
 package com.platinumcoin.pix.ledger.infra;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.platinumcoin.pix.ledger.domain.AccountPolicy;
+import com.platinumcoin.pix.ledger.domain.InvalidCursorException;
+import com.platinumcoin.pix.ledger.domain.StatementPage;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
@@ -10,6 +13,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 
 /**
  * Asserts the <b>shape of the request</b> the adapter sends — the part
@@ -68,6 +73,85 @@ class DynamoLedgerRepositoryTest {
     }
 
     /**
+     * The statement query shape — the part LocalStack cannot prove, because a single-node emulator
+     * returns rows in the same order whether {@code ScanIndexForward} is set or not on such a small
+     * partition. Newest-first is a guarantee about the <i>request</i>; asserted here so it survives a
+     * refactor.
+     */
+    @Test
+    void statementQueryIsNewestFirstBeginsWithEntryAndCarriesTheLimit() {
+        dynamo.respondToQueryWith(QueryResponse.builder().build());
+
+        repository.getEntries("acc-001", null, 5);
+
+        QueryRequest request = dynamo.capturedQueryRequest();
+        assertThat(request.tableName()).isEqualTo("pix_ledger");
+        // The whole point: reverse scan of a timestamp-prefixed sort key is newest-first, for free.
+        assertThat(request.scanIndexForward()).isFalse();
+        assertThat(request.limit()).isEqualTo(5);
+        assertThat(request.keyConditionExpression()).contains("begins_with(sk,");
+        assertThat(request.expressionAttributeValues())
+                .containsEntry(":pk", AttributeValue.fromS("ACCOUNT#acc-001"))
+                .containsEntry(":entryPrefix", AttributeValue.fromS("ENTRY#"));
+        // No cursor ⇒ first page ⇒ no ExclusiveStartKey.
+        assertThat(request.exclusiveStartKey()).isNullOrEmpty();
+    }
+
+    /**
+     * The cursor round-trips: DynamoDB's {@code LastEvaluatedKey} is base64-encoded into
+     * {@code nextCursor}, and sending it back becomes the next query's {@code ExclusiveStartKey}
+     * unchanged. Tested through the real encode/decode rather than a hand-built token, so the JSON
+     * shape stays an implementation detail.
+     */
+    @Test
+    void theNextCursorRoundTripsBackIntoTheExclusiveStartKey() {
+        Map<String, AttributeValue> lastKey = Map.of(
+                "pk", AttributeValue.fromS("ACCOUNT#acc-001"),
+                "sk", AttributeValue.fromS("ENTRY#2026-08-03T10:00:00.000Z#tx-1"));
+        dynamo.respondToQueryWith(QueryResponse.builder().lastEvaluatedKey(lastKey).build());
+
+        StatementPage page = repository.getEntries("acc-001", null, 5);
+        assertThat(page.nextCursor()).isNotNull();
+
+        repository.getEntries("acc-001", page.nextCursor(), 5);
+        assertThat(dynamo.capturedQueryRequest().exclusiveStartKey()).isEqualTo(lastKey);
+    }
+
+    /** No continuation from DynamoDB ⇒ {@code nextCursor} is null, i.e. the caller is on the last page. */
+    @Test
+    void anEmptyLastEvaluatedKeyMeansNoNextCursor() {
+        dynamo.respondToQueryWith(QueryResponse.builder().build());
+
+        assertThat(repository.getEntries("acc-001", null, 5).nextCursor()).isNull();
+    }
+
+    @Test
+    void aMalformedCursorIsRejectedAsInvalidBeforeAnyQuery() {
+        assertThatThrownBy(() -> repository.getEntries("acc-001", "!!!not-base64!!!", 5))
+                .isInstanceOf(InvalidCursorException.class);
+
+        // Fail closed: a bad cursor never reaches DynamoDB.
+        assertThat(dynamo.capturedQueryOrNull()).isNull();
+    }
+
+    /**
+     * A cursor minted for one account, replayed against another, is refused — the guard that keeps a
+     * forged token from paging someone else's history. Uses a real cursor (pk = {@code acc-001}) and
+     * asks for {@code acc-002}.
+     */
+    @Test
+    void aCursorForAnotherAccountIsRejected() {
+        Map<String, AttributeValue> aliceKey = Map.of(
+                "pk", AttributeValue.fromS("ACCOUNT#acc-001"),
+                "sk", AttributeValue.fromS("ENTRY#2026-08-03T10:00:00.000Z#tx-1"));
+        dynamo.respondToQueryWith(QueryResponse.builder().lastEvaluatedKey(aliceKey).build());
+        String aliceCursor = repository.getEntries("acc-001", null, 5).nextCursor();
+
+        assertThatThrownBy(() -> repository.getEntries("acc-002", aliceCursor, 5))
+                .isInstanceOf(InvalidCursorException.class);
+    }
+
+    /**
      * Captures the request the adapter builds. The adapter uses the SDK's consumer-builder overload,
      * so the stub stores the {@link Consumer} and the test applies it to a real
      * {@link GetItemRequest.Builder} to inspect what would have been sent over the wire.
@@ -77,8 +161,15 @@ class DynamoLedgerRepositoryTest {
         private Consumer<GetItemRequest.Builder> captured;
         private GetItemResponse response = GetItemResponse.builder().build();
 
+        private QueryRequest capturedQuery;
+        private QueryResponse queryResponse = QueryResponse.builder().build();
+
         void respondWith(GetItemResponse response) {
             this.response = response;
+        }
+
+        void respondToQueryWith(QueryResponse queryResponse) {
+            this.queryResponse = queryResponse;
         }
 
         GetItemRequest capturedRequest() {
@@ -88,10 +179,25 @@ class DynamoLedgerRepositoryTest {
             return builder.build();
         }
 
+        QueryRequest capturedQueryRequest() {
+            assertThat(capturedQuery).as("the adapter never called query").isNotNull();
+            return capturedQuery;
+        }
+
+        QueryRequest capturedQueryOrNull() {
+            return capturedQuery;
+        }
+
         @Override
         public GetItemResponse getItem(Consumer<GetItemRequest.Builder> getItemRequest) {
             this.captured = getItemRequest;
             return response;
+        }
+
+        @Override
+        public QueryResponse query(QueryRequest queryRequest) {
+            this.capturedQuery = queryRequest;
+            return queryResponse;
         }
 
         @Override

@@ -402,6 +402,16 @@
             body: JSON.stringify({ txId: 'tx-explorer-overdraft', debitAccount: 'acc-001', creditAccount: 'acc-002', amountCents: 99999999, entryType: 'PIX_INTERNAL', description: 'more than alice has' }, null, 2),
           },
           {
+            method: 'GET', path: '/internal/ledger/accounts/acc-001/entries?limit=5', title: 'Statement — page the entries (newest first)', auth: true, capturesToken: false,
+            desc: 'One page of acc-001\'s statement, newest first — and the ordering is FREE: the sort key is ENTRY#&lt;isoTimestamp&gt;#&lt;txId&gt;, so Query begins_with(sk,"ENTRY#") scanned backwards (ScanIndexForward=false) is already reverse-chronological, with no sort anywhere. Returns {entries:[...], nextCursor}. Pagination is DynamoDB-native, never offset-based: nextCursor is the base64 of the query\'s LastEvaluatedKey, OPAQUE to you — to fetch the next page, append &cursor=&lt;that value&gt; to the path (nextCursor: null means you reached the end). limit is clamped by the service (default 20, max 100). Each entry ships both amount ("-125.50", the signed decimal string for you) and amountCents (the signed integer for callers that do arithmetic). Fresh out of the seed acc-001 has just its SEED_FUNDING credit leg; run the Posting card a few times to grow the history past one page of 5.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/ledger/accounts/acc-001/entries?cursor=not-a-valid-cursor', title: 'Statement — tampered cursor (400)', auth: true, capturesToken: false,
+            desc: 'A cursor that does not decode ⇒ 400 problem+json (code: INVALID_CURSOR). The same 400 answers a well-formed cursor that names a DIFFERENT account: the token embeds the partition key (ACCOUNT#&lt;id&gt;), so editing a cursor to page someone else\'s history hands the ledger a key that does not match the path — refused, never silently paging the other account. That is the whole reason the cursor is validated on decode and not trusted as an opaque blob.',
+            headers: {}, body: null,
+          },
+          {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
             headers: {}, body: null,

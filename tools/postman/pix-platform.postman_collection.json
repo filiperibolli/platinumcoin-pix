@@ -631,6 +631,81 @@
           }
         },
         {
+          "name": "Statement — page the entries (newest first)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('entries is an array', () => pm.expect(body.entries).to.be.an('array'));",
+                  "// Newest first: timestamps are non-increasing down the page (lexicographic == chronological).",
+                  "pm.test('newest first', () => {",
+                  "  const ts = body.entries.map(e => e.timestamp);",
+                  "  pm.expect(ts).to.eql([...ts].sort().reverse());",
+                  "});",
+                  "// Each entry ships both money representations of ONE signed number.",
+                  "pm.test('amount agrees with amountCents', () => body.entries.forEach(e =>",
+                  "  pm.expect(Math.round(parseFloat(e.amount) * 100)).to.eql(e.amountCents)));",
+                  "// nextCursor is opaque: echo it back to fetch the following page (null ⇒ last page).",
+                  "pm.collectionVariables.set('ledgerNextCursor', body.nextCursor || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/entries?limit=5",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "accounts", "acc-001", "entries"],
+              "query": [
+                { "key": "limit", "value": "5" },
+                { "key": "cursor", "value": "", "disabled": true }
+              ]
+            },
+            "description": "One page of acc-001's statement, **newest first**. The ordering is free: the sort key is `ENTRY#<isoTimestamp>#<txId>`, so `Query begins_with(sk,\"ENTRY#\")` with `ScanIndexForward=false` is already reverse-chronological — no sort anywhere.\n\nPagination is DynamoDB-native, not offset-based: `nextCursor` is the base64 of the query's `LastEvaluatedKey`, **opaque** to you. To fetch the next page, enable the `cursor` query param and paste `nextCursor` into it (the test script also stashes it in `{{ledgerNextCursor}}`). `nextCursor: null` means you have reached the end of the history.\n\n`limit` is clamped by the service (default 20, max 100). Each entry carries both `amount` (\"-125.50\", signed decimal string for you) and `amountCents` (the signed integer for callers that do arithmetic). Post a few times with the \"Posting\" request first to grow the history past one page."
+          }
+        },
+        {
+          "name": "Statement — tampered cursor (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('problem+json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json'));",
+                  "const body = pm.response.json();",
+                  "pm.test('stable error code', () => pm.expect(body.code).to.eql('INVALID_CURSOR'));",
+                  "pm.test('carries the correlation id', () => pm.expect(body.correlationId).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/entries?cursor=not-a-valid-cursor",
+              "host": ["{{ledgerBaseUrl}}"],
+              "path": ["internal", "ledger", "accounts", "acc-001", "entries"],
+              "query": [
+                { "key": "cursor", "value": "not-a-valid-cursor" }
+              ]
+            },
+            "description": "A cursor that does not decode ⇒ **400 INVALID_CURSOR**. The same 400 answers a *well-formed* cursor that names a **different account**: the token embeds the partition key (`ACCOUNT#<id>`), so editing it to page someone else's history hands the ledger a key that does not match the path — refused, never silently paging the other account."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",

@@ -11,6 +11,54 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Ledger statement query: newest-first entries with opaque DynamoDB cursor pagination (step 16)
+  `GET /internal/ledger/accounts/{id}/entries?cursor=&limit=` → `{entries:[...], nextCursor}`, the
+  internal seam the public statement API (step 41) will proxy. The statement is **free from the key
+  design**: the sort key is `ENTRY#<isoTimestamp>#<txId>`, so a `begins_with(sk,"ENTRY#")` range query
+  scanned backwards (`ScanIndexForward=false`) is already reverse-chronological — no sort in DynamoDB
+  or in memory. This is what the step-14 fixed-width millisecond timestamp was *for*: lexicographic
+  order must equal chronological order, or a round-second entry would page wrong.
+  **Cursor pagination the DynamoDB way.** There is no offset in DynamoDB, so the cursor is the base64
+  of the query's `LastEvaluatedKey`, **opaque** to the client, and `nextCursor` is `null` exactly when
+  the last query returned no continuation. The token is serialized to the same `{name:{S|N:…}}` JSON
+  DynamoDB itself uses (so it round-trips any key attribute type) and is decoded **only in the
+  adapter** — because only the adapter can, it is an AWS key. That placement is the interesting design
+  call of the step: the **cross-account guard** (a cursor embeds `ACCOUNT#<id>`, so a forged token
+  must never page another partition) is inseparable from decoding the AWS-typed key, so the adapter
+  owns it and throws the plain-Java `InvalidCursorException` — the same pattern by which
+  `DynamoLedgerRepository` already raises `InsufficientFunds`/`LedgerAccountNotFound`. Malformed base64
+  and a well-formed cursor naming a different account are the **same** failure — `400 INVALID_CURSOR`
+  — so a tampered token is refused, never silently redirected. `limit` is the use case's policy
+  (default 20, ceiling 100, floored at 1 so a nonsensical `0`/negative is coerced rather than passed
+  to DynamoDB, which rejects a non-positive `Limit`); the controller does no clamping and no cursor
+  parsing, per ADR-0011.
+  **Domain.** `StatementPage(entries, nextCursor)`, `InvalidCursorException`, a
+  `getEntries(accountId, cursor, limit)` on the `LedgerRepository` port, and `GetStatementUseCase`
+  (clamp + delegate + business-stage logging). **api/** gains `StatementResponse` and `StatementEntry`
+  — the wire edge where signed cents become a signed decimal string (`"-125.50"` on a DEBIT) beside
+  the `amountCents` integer, mirroring `BalanceResponse`; the timestamp is rendered with the same
+  fixed-width millisecond format the sort key carries. The controller gained the `/entries` mapping,
+  the exception handler the `400 INVALID_CURSOR` case.
+  **Tests.** `GetStatementUseCaseTest` (6) pins the limit policy (default/cap/floor/pass-through) and
+  that account+cursor reach the port untouched; `DynamoLedgerRepositoryTest` (+5) pins the **request
+  shape** the emulator cannot expose — `ScanIndexForward=false`, `Limit`, `begins_with`, the
+  `nextCursor→ExclusiveStartKey` round-trip, "no continuation ⇒ null cursor", and both cursor
+  refusals (fail-closed before any query for a malformed one); `StatementQueryIT` (5) drives the whole
+  HTTP endpoint on real LocalStack — posts a 12-entry history, pages it at `limit=5` asserting
+  newest-first order, **no overlap and no gap** (every txId once), `nextCursor` null only on the last
+  page, and both tampered and cross-account cursors as `400`. Module suite **68 tests** (37 unit +
+  architecture, 31 integration), `mvn -pl services/ledger-service -am verify` green.
+  Verified on the **running compose stack**, not only in tests: seven demo postings grow acc-001's
+  history to 8 legs (the seven plus the seeded `tx-seed-alice` credit as the oldest); `limit=3` pages
+  3+3+2 newest-first with the eight txIds distinct and no gaps; the entry shape carries `amount`
+  `-1.07`/`amountCents` `-107`; a tampered cursor and a cursor minted for acc-002 both return
+  `400 INVALID_CURSOR`, and no token `401` — every one reconstructed end to end by a single
+  `grep cid=…` across auth-service + ledger-service (JWT accepted → use case → `Query` with the exact
+  pk/beginsWith/scanIndexForward → outcome).
+  No `docs/api/openapi.yaml` change: `/internal/**` is by contract not part of the public surface, as
+  that file already states for the other internal seams. `docs/data-model.md` §3 already specified
+  this exact query and cursor (written ahead in the schema), so no doc drift to correct.
+  AI: est 2h / actual 2h / ~90% generated / 0 issues caught in human review
 - Ledger invariant suite: concurrent storm proving no-negative-balance, no-double-spend and conservation of money (step 15)
   **✍️ Hand-written zone** — the entire `LedgerInvariantsIT` was written by the human, by hand, without
   AI code generation (AI assisted with Java syntax only); Claude's role was limited to reviewing the

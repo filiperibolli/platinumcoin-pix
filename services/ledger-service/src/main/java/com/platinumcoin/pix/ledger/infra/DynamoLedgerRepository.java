@@ -1,18 +1,28 @@
 package com.platinumcoin.pix.ledger.infra;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.platinumcoin.pix.ledger.domain.AccountPolicy;
 import com.platinumcoin.pix.ledger.domain.Balance;
 import com.platinumcoin.pix.ledger.domain.Direction;
 import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.InvalidCursorException;
 import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
 import com.platinumcoin.pix.ledger.domain.LedgerBusyException;
+import com.platinumcoin.pix.ledger.domain.LedgerEntry;
 import com.platinumcoin.pix.ledger.domain.LedgerRepository;
 import com.platinumcoin.pix.ledger.domain.PostingCommand;
 import com.platinumcoin.pix.ledger.domain.PostingConflictException;
 import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.StatementPage;
+import java.io.IOException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +35,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.CancellationReason;
 import software.amazon.awssdk.services.dynamodb.model.Put;
+import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
 import software.amazon.awssdk.services.dynamodb.model.ReturnValuesOnConditionCheckFailure;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
@@ -100,6 +112,12 @@ public class DynamoLedgerRepository implements LedgerRepository {
     private static final String TABLE = "pix_ledger";
     private static final String BALANCE_SK = "BALANCE";
     private static final String POSTING_SK = "POSTING";
+
+    /** Every immutable posting leg is an {@code ENTRY#…} item; the statement is a range over them. */
+    private static final String ENTRY_SK_PREFIX = "ENTRY#";
+
+    /** Cursor JSON is tiny and structural (the DynamoDB key), so one shared, thread-safe mapper. */
+    private static final ObjectMapper CURSOR_MAPPER = new ObjectMapper();
 
     /** Positions of the five items in the transaction, and therefore in {@code cancellationReasons}. */
     private static final int DEBIT_BALANCE = 0;
@@ -216,6 +234,138 @@ public class DynamoLedgerRepository implements LedgerRepository {
                 backOff(command, attempt);
             }
         }
+    }
+
+    /**
+     * One page of the statement. The whole ordering trick is in the key: {@code sk} is
+     * {@code ENTRY#<isoTimestamp>#<txId>}, so a {@code begins_with(sk, "ENTRY#")} range query scanned
+     * backwards ({@code ScanIndexForward=false}) is already newest-first — no sort, in DynamoDB or in
+     * memory. The cursor is DynamoDB's own {@code LastEvaluatedKey}, base64-wrapped so the client
+     * treats it as opaque and cannot turn it into an offset (which DynamoDB has no notion of).
+     */
+    @Override
+    public StatementPage getEntries(String accountId, String cursor, int limit) {
+        Map<String, AttributeValue> startKey = decodeCursor(cursor, accountId);
+
+        QueryRequest.Builder request = QueryRequest.builder()
+                .tableName(TABLE)
+                .keyConditionExpression("pk = :pk AND begins_with(sk, :entryPrefix)")
+                .expressionAttributeValues(Map.of(
+                        ":pk", AttributeValue.fromS("ACCOUNT#" + accountId),
+                        ":entryPrefix", AttributeValue.fromS(ENTRY_SK_PREFIX)))
+                .scanIndexForward(false)
+                .limit(limit);
+        if (startKey != null) {
+            request.exclusiveStartKey(startKey);
+        }
+
+        log.debug("DynamoDB Query for a statement page, newest first | table={} pk=ACCOUNT#{} "
+                        + "beginsWith={} scanIndexForward=false limit={} hasCursor={}",
+                TABLE, accountId, ENTRY_SK_PREFIX, limit, startKey != null);
+
+        QueryResponse response = dynamo.query(request.build());
+        List<LedgerEntry> entries = response.items().stream().map(DynamoLedgerRepository::toEntry).toList();
+        String nextCursor = encodeCursor(response.lastEvaluatedKey());
+
+        log.debug("DynamoDB Query returned a statement page | pk=ACCOUNT#{} entries={} hasNextPage={}",
+                accountId, entries.size(), nextCursor != null);
+        return new StatementPage(entries, nextCursor);
+    }
+
+    // ── the pagination cursor ───────────────────────────────────────────────────────────────────
+    // The cursor is the base64 of DynamoDB's LastEvaluatedKey, serialized to the same {name:{S|N:…}}
+    // JSON shape DynamoDB itself uses. Keeping the type tag means the token round-trips any key
+    // attribute type; keeping it opaque means the client never depends on that shape.
+
+    /**
+     * {@code null}/blank cursor ⇒ first page ({@code null} start key). Otherwise decode the token and
+     * <b>refuse it unless its partition key is exactly this account</b>: the key embeds
+     * {@code ACCOUNT#<id>}, so a client that edits a cursor to page someone else's history is handing
+     * over a key that does not match the path — an invalid cursor (400), never another account's page.
+     */
+    private Map<String, AttributeValue> decodeCursor(String cursor, String accountId) {
+        if (cursor == null || cursor.isBlank()) {
+            return null;
+        }
+        Map<String, AttributeValue> key = new LinkedHashMap<>();
+        try {
+            byte[] json = Base64.getUrlDecoder().decode(cursor);
+            JsonNode root = CURSOR_MAPPER.readTree(json);
+            if (root == null || !root.isObject()) {
+                throw new InvalidCursorException("The pagination cursor is not a valid key.");
+            }
+            Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                JsonNode typed = field.getValue();
+                if (typed.hasNonNull("S")) {
+                    key.put(field.getKey(), AttributeValue.fromS(typed.get("S").asText()));
+                } else if (typed.hasNonNull("N")) {
+                    key.put(field.getKey(), AttributeValue.fromN(typed.get("N").asText()));
+                } else {
+                    throw new InvalidCursorException("The pagination cursor has an unrecognized attribute.");
+                }
+            }
+        } catch (IllegalArgumentException | IOException malformed) {
+            // base64 that does not decode, or bytes that are not JSON — a tampered token.
+            log.warn("A pagination cursor could not be decoded, returning 400 | accountId={}", accountId);
+            throw new InvalidCursorException("The pagination cursor could not be decoded.");
+        }
+
+        AttributeValue pk = key.get("pk");
+        String expectedPk = "ACCOUNT#" + accountId;
+        if (pk == null || pk.s() == null || !expectedPk.equals(pk.s())) {
+            log.warn("A pagination cursor named a different account than the request, refusing it, "
+                            + "returning 400 | requestedAccountId={} cursorPk={}",
+                    accountId, pk == null ? null : pk.s());
+            throw new InvalidCursorException(
+                    "The pagination cursor does not belong to account " + accountId + ".");
+        }
+        return key;
+    }
+
+    /** {@code null} when DynamoDB returned no continuation — i.e. this was the last page. */
+    private static String encodeCursor(Map<String, AttributeValue> lastEvaluatedKey) {
+        if (lastEvaluatedKey == null || lastEvaluatedKey.isEmpty()) {
+            return null;
+        }
+        ObjectNode root = CURSOR_MAPPER.createObjectNode();
+        for (Map.Entry<String, AttributeValue> attribute : lastEvaluatedKey.entrySet()) {
+            AttributeValue value = attribute.getValue();
+            ObjectNode typed = root.putObject(attribute.getKey());
+            if (value.s() != null) {
+                typed.put("S", value.s());
+            } else if (value.n() != null) {
+                typed.put("N", value.n());
+            } else {
+                throw new IllegalStateException(
+                        "A LastEvaluatedKey attribute is neither S nor N: " + attribute.getKey());
+            }
+        }
+        try {
+            return Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(CURSOR_MAPPER.writeValueAsBytes(root));
+        } catch (JsonProcessingException impossible) {
+            // Serializing an object we just built from strings cannot fail; treat it as a bug, not a
+            // client error.
+            throw new IllegalStateException("Failed to encode the pagination cursor.", impossible);
+        }
+    }
+
+    /**
+     * Map a raw ENTRY item to the domain record. {@code amountCents} is parsed straight into a signed
+     * {@code long} (DEBIT negative, CREDIT positive) — DynamoDB numbers travel as strings, so this is
+     * an exact decimal parse that never passes through a {@code double}. {@code createdAt} is the
+     * fixed-width millisecond timestamp the posting wrote, parsed back to an {@link Instant}.
+     */
+    private static LedgerEntry toEntry(Map<String, AttributeValue> item) {
+        return new LedgerEntry(
+                item.get("txId").s(),
+                Direction.valueOf(item.get("direction").s()),
+                Long.parseLong(item.get("amountCents").n()),
+                item.get("counterpartAccountId").s(),
+                Instant.parse(item.get("createdAt").s()),
+                item.get("entryType").s());
     }
 
     // ── building the transaction ────────────────────────────────────────────────────────────────

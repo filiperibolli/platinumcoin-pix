@@ -2,6 +2,7 @@ package com.platinumcoin.pix.ledger.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.InvalidCursorException;
 import com.platinumcoin.pix.ledger.domain.InvalidPostingException;
 import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
 import com.platinumcoin.pix.ledger.domain.LedgerBusyException;
@@ -33,6 +34,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>{@code 503 LEDGER_CONFLICT} — lost to concurrent writers past the retry budget. A 5xx on
  *       purpose: nothing is wrong with the request, and the caller may safely re-send the same
  *       {@code txId} — which is precisely what idempotency buys.</li>
+ *   <li>{@code 400 INVALID_CURSOR} — the statement cursor is malformed or names another account. A
+ *       client-error 400, because the request itself is wrong; the cross-account case is answered the
+ *       same way so a forged cursor never pages someone else's history (step 16).</li>
  * </ul>
  *
  * <p>Every one of these comes from a condition evaluated <i>inside</i> the posting transaction, never
@@ -70,6 +74,11 @@ public class LedgerExceptionHandler {
     @ExceptionHandler(LedgerBusyException.class)
     public ResponseEntity<ProblemDetail> handleLedgerBusy(LedgerBusyException ex) {
         return problem(HttpStatus.SERVICE_UNAVAILABLE, "LEDGER_CONFLICT", ex.getMessage());
+    }
+
+    @ExceptionHandler(InvalidCursorException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidCursor(InvalidCursorException ex) {
+        return problem(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
     }
 
     private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code, String detail) {

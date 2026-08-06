@@ -27,6 +27,7 @@ table proves the model against real items while nothing is at stake, so step 14'
 | ------ | ---- | ---- | ----------- |
 | `GET` | `/internal/ledger/accounts/{accountId}/balance` | Bearer | Balance of one ledger account → `{accountId, balance, balanceCents, version}`. Strongly consistent read. |
 | `POST` | `/internal/ledger/postings` | Bearer | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
+| `GET` | `/internal/ledger/accounts/{accountId}/entries?cursor=&limit=` | Bearer | Statement page, newest first → `{entries:[...], nextCursor}`. Opaque base64 `LastEvaluatedKey` cursor; `limit` clamped (default 20, max 100). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -38,6 +39,7 @@ table proves the model against real items while nothing is at stake, so step 14'
 | either account has no BALANCE item | `404` | `LEDGER_ACCOUNT_NOT_FOUND` |
 | lost to concurrent writers past the retry budget | `503` | `LEDGER_CONFLICT` |
 | body fails bean validation | `400` | `VALIDATION_ERROR` |
+| statement cursor malformed or from another account | `400` | `INVALID_CURSOR` |
 
 No token ⇒ `401` (`code: UNAUTHORIZED`) — this service has **no public surface at all**:
 `/internal/**` is deliberately absent from `jwt.public-paths`, and there is no `/v1` API because no
@@ -100,6 +102,27 @@ One `TransactWriteItems`, five items, all-or-nothing (`docs/data-model.md` §3, 
   needs to shard `SPI_CLEARING` without touching a caller, and the reason the "debited account comes
   from the JWT" rule binds payment-service, not this service.
 
+### The statement (step 16)
+
+`GET /internal/ledger/accounts/{id}/entries?cursor=&limit=` → `{entries:[...], nextCursor}`, newest
+first. The internal seam the public statement API (step 41) will proxy.
+
+- **Newest-first is free.** The sort key is `ENTRY#<isoTimestamp>#<txId>`, so
+  `Query begins_with(sk,"ENTRY#")` with `ScanIndexForward=false` is already reverse-chronological —
+  no sort in DynamoDB or in memory. (This is exactly why the posting writes a *fixed-width*
+  millisecond timestamp: lexicographic order must equal chronological order.)
+- **Cursor pagination the DynamoDB way.** There is no offset in DynamoDB; the cursor is the base64 of
+  the query's `LastEvaluatedKey`, **opaque** to the client, and `nextCursor` is `null` on the last
+  page. The client only ever echoes it back.
+- **A cursor is validated on decode.** The token embeds the partition key (`ACCOUNT#<id>`); the
+  adapter refuses one that is malformed *or* names another account (`400 INVALID_CURSOR`), so a forged
+  cursor can never page a partition the caller did not ask for. The cross-account guard lives in the
+  adapter because only it decodes the AWS key.
+- **`limit` is policy, in the use case.** Default 20, ceiling 100, floored at 1 — the controller does
+  no clamping and no cursor parsing.
+- **Money at the edge.** Each entry ships `amount` (signed decimal string, `"-125.50"` on a DEBIT) and
+  `amountCents` (the signed integer), the same one-`long`-formatted-once discipline as the balance.
+
 ### System accounts
 
 `ACCOUNT#SEED` (the funding source, negative by construction) and `ACCOUNT#SPI_CLEARING` (money in
@@ -111,15 +134,16 @@ asserts under a concurrent debit storm, and which `DynamoLedgerRepositoryIT` pin
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance),
+api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance + /entries),
         InternalPostingController (POST /internal/ledger/postings),
         PostingRequest / PostingResponse, BalanceResponse (cents → decimal string),
+        StatementResponse / StatementEntry (page + cents → signed decimal string),
         LedgerExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Balance, LedgerEntry (records), Direction (enum), AccountPolicy,
-                PostingCommand, PostingResult, LedgerRepository (port),
+domain/         Balance, LedgerEntry, StatementPage (records), Direction (enum),
+                AccountPolicy, PostingCommand, PostingResult, LedgerRepository (port),
                 LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
-                PostingConflict / LedgerBusy exceptions                               (plain Java)
-domain/usecase/ GetBalanceUseCase, PostDoubleEntryUseCase                             (plain Java)
+                PostingConflict / LedgerBusy / InvalidCursor exceptions               (plain Java)
+domain/usecase/ GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase        (plain Java)
 infra/  DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
         reading of cancellationReasons live here and nowhere else),
         DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
@@ -204,6 +228,21 @@ curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Beare
 curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"txId":"tx-manual-2","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99999999,"entryType":"PIX_INTERNAL"}' | jq
+
+# ── the statement (step 16) ──────────────────────────────────────────────────
+# newest-first page of acc-001's entries → {"entries":[...],"nextCursor":...}
+curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=5" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# follow the pages: take .nextCursor from the response above and pass it back (opaque)
+CURSOR=$(curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=5" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.nextCursor // empty')
+curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=5&cursor=$CURSOR" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# tampered cursor ⇒ 400 INVALID_CURSOR (a cursor from another account is refused the same way)
+curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?cursor=not-a-valid-cursor" \
+  -H "Authorization: Bearer $TOKEN" | jq
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the
