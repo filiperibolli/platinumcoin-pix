@@ -278,6 +278,55 @@ curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Beare
 > gives the *moved* balances (the sum stays 0). `docker compose -f infra/docker-compose.yml down -v`
 > resets everything and reseeds deterministically.
 
+**Step 17 — `pix_transactions` + `pix_idempotency`** (payment-service; on-demand, no seed rows). All
+three GSIs are created up front (unlike LSIs, GSIs *can* be added later, but backfilling a fat table
+is slow): `gsi1` on `E2E#<endToEndId>` (reconciliation / inbound dedup), `gsi2` on
+`STATUS#<status>`+`updatedAt` (stuck-transaction scan), and the **sparse** `gsi3` on
+`OUTBOX#UNPUBLISHED`+`occurredAt` (the outbox publisher's work queue — only unpublished items carry
+`gsi3pk`, so the index stays O(in-flight)).
+
+```bash
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_transactions \
+  --attribute-definitions \
+      AttributeName=pk,AttributeType=S \
+      AttributeName=sk,AttributeType=S \
+      AttributeName=gsi1pk,AttributeType=S \
+      AttributeName=gsi2pk,AttributeType=S AttributeName=gsi2sk,AttributeType=S \
+      AttributeName=gsi3pk,AttributeType=S AttributeName=gsi3sk,AttributeType=S \
+  --key-schema \
+      AttributeName=pk,KeyType=HASH \
+      AttributeName=sk,KeyType=RANGE \
+  --global-secondary-indexes '[
+      {"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}},
+      {"IndexName":"gsi2","KeySchema":[{"AttributeName":"gsi2pk","KeyType":"HASH"},{"AttributeName":"gsi2sk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}},
+      {"IndexName":"gsi3","KeySchema":[{"AttributeName":"gsi3pk","KeyType":"HASH"},{"AttributeName":"gsi3sk","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}
+  ]' \
+  --billing-mode PAY_PER_REQUEST
+
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_idempotency \
+  --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
+  --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
+
+# TTL is a separate call (not part of create-table); DynamoDB deletes expired items lazily
+aws --endpoint-url=http://localhost:4566 dynamodb update-time-to-live \
+  --table-name pix_idempotency \
+  --time-to-live-specification 'Enabled=true,AttributeName=expiresAt'
+```
+
+Verify the tables and their indexes (the init script `03-dynamodb-payment.sh` runs the above on `up`):
+
+```bash
+# gsi1, gsi2, gsi3 — all three present
+aws --endpoint-url=http://localhost:4566 dynamodb describe-table --table-name pix_transactions \
+  | jq '.Table.GlobalSecondaryIndexes[].IndexName'
+# {"AttributeName":"expiresAt","TimeToLiveStatus":"ENABLED"}
+aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-name pix_idempotency \
+  | jq '.TimeToLiveDescription'
+```
+
 ## 4.1 Reading the logs (ADR-0012)
 
 Every service inherits one logging config from `common-lib` — there is nothing to enable per service.
