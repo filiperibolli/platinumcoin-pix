@@ -4,8 +4,8 @@
 > move money. Step 18 delivers the **walking skeleton** of `POST /v1/payments/pix`: JWT-authenticated,
 > body validated per the OpenAPI contract, `txId` + Pix-standard `endToEndId` generated, the
 > transaction persisted as `RECEIVED` in `pix_transactions`, and a `202 Accepted` returned with a
-> `Location` header. No idempotency, limits, key resolution or ledger debit yet — those thicken the
-> skeleton across steps 19–21.
+> `Location` header. Step 19 adds the **idempotency layer** (claim / replay / `409`). Limits, key
+> resolution and the ledger debit thicken the skeleton across steps 20–21.
 
 - **Port:** `8084`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation)
@@ -34,13 +34,24 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 
 | Outcome | Status | `code` |
 | ------- | ------ | ------ |
-| accepted for processing | `202` | — |
+| accepted for processing (or an idempotent replay of one) | `202` | — |
 | body fails bean validation (`pixKey` blank, `amount` not `^\d{1,9}\.\d{2}$`, `description` > 140) | `400` | `VALIDATION_ERROR` |
 | amount well-formed but not strictly-positive money (`"0.00"`) or sub-cent | `400` | `INVALID_AMOUNT` |
+| `Idempotency-Key` header absent/blank | `400` | `IDEMPOTENCY_KEY_REQUIRED` |
+| same `Idempotency-Key` replayed with a different payload | `409` | `IDEMPOTENCY_KEY_REUSED` |
+| a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
 | no / invalid token | `401` | `UNAUTHORIZED` |
 
-The `Idempotency-Key` header is **required by the contract** but is accepted-and-ignored in this
-skeleton — the conditional claim, response replay and `409` on hash mismatch are step 19.
+**Idempotency (step 19, ADR-0002 layer 1).** The `Idempotency-Key` header is **required** and the send
+is de-duplicated per `(accountId, key)` in `pix_idempotency` (24h TTL). The lifecycle is claim →
+execute → memoize → replay: a conditional claim wins or loses atomically; the winner does the work and
+stores the response; a losing retry with the **same** request-hash replays the memoized response (same
+`transactionId`), a **different** hash is `409 IDEMPOTENCY_KEY_REUSED`, and an `IN_PROGRESS` claim is
+`409 REQUEST_IN_PROGRESS` + `Retry-After` — **unless** it is stale (claimed > 60s ago, i.e. a crash
+left it orphaned), in which case the retry re-claims it, so a crash never blocks the client until the
+TTL. The request-hash is a canonical-JSON SHA-256 over the normalized fields (key order / whitespace
+never change it; a different amount does — `common-lib`'s `CanonicalJson`). DynamoDB TTL deletion is
+lazy, so reads treat an expired-but-present record as absent.
 
 ### The send request
 

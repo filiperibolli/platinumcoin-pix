@@ -329,8 +329,8 @@ aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-
 
 **Step 18 — sending a Pix (walking skeleton) through payment-service** (`:8084`). The endpoint
 validates, mints `txId` + a Pix-standard `endToEndId`, persists the transaction as `RECEIVED`, and
-returns `202` + `Location`. No money moves yet (ledger debit is step 21) and the `Idempotency-Key` is
-accepted-and-ignored (step 19). The debtor is the token's `accountId`, never the body:
+returns `202` + `Location`. No money moves yet (ledger debit is step 21); the `Idempotency-Key` is now
+enforced (step 19, below). The debtor is the token's `accountId`, never the body:
 
 ```bash
 TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
@@ -358,6 +358,37 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
   -d '{"pixKey":"bob@platinum.com","amount":"12.5"}' | jq .code   # VALIDATION_ERROR (400) — bad shape
 curl -si -X POST localhost:8084/v1/payments/pix -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"1.00"}' | head -1    # 401 without a token
+```
+
+**Step 19 — idempotency on send** (ADR-0002). The `Idempotency-Key` header is now required and the
+request is de-duplicated per `(accountId, key)`: a retry with the same body **replays** the original
+response (same `transactionId`), the same key with a **different** body is `409`, and a missing header
+is `400`. The record lives in `pix_idempotency` with a 24h TTL.
+
+```bash
+IDEM=$(uuidgen); BODY='{"pixKey":"bob@platinum.com","amount":"10.00"}'
+
+# first call → a new transactionId
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' -d "$BODY" | jq -r .transactionId
+
+# identical retry (same key + body) → the SAME transactionId (replay, no second transaction)
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' -d "$BODY" | jq -r .transactionId
+
+# same key, different amount → 409 IDEMPOTENCY_KEY_REUSED
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"99.00"}' | jq -r .code
+
+# missing header → 400 IDEMPOTENCY_KEY_REQUIRED
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "$BODY" | jq -r .code
+
+# the stored record (IN_PROGRESS→COMPLETED, 24h TTL on expiresAt)
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_idempotency \
+  --key "{\"pk\":{\"S\":\"IDEM#acc-001#$IDEM\"},\"sk\":{\"S\":\"META\"}}" \
+  | jq '.Item | {status:.status.S, httpStatus:.httpStatus.N, expiresAt:.expiresAt.N}'
 ```
 
 ## 4.1 Reading the logs (ADR-0012)
