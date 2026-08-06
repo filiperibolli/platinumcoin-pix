@@ -31,17 +31,30 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"alice\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{authBaseUrl}}/v1/auth/login",
-              "host": ["{{authBaseUrl}}"],
-              "path": ["v1", "auth", "login"]
+              "host": [
+                "{{authBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
             },
             "description": "Authenticate the seeded user alice (acc-001). On success, saves `accessToken` to the environment."
           }
@@ -63,17 +76,30 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"username\": \"bob\",\n  \"password\": \"bob\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{authBaseUrl}}/v1/auth/login",
-              "host": ["{{authBaseUrl}}"],
-              "path": ["v1", "auth", "login"]
+              "host": [
+                "{{authBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
             },
             "description": "Authenticate the seeded user bob (acc-002). Switches `accessToken` to bob's token."
           }
@@ -99,17 +125,30 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"username\": \"alice\",\n  \"password\": \"wrong\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{authBaseUrl}}/v1/auth/login",
-              "host": ["{{authBaseUrl}}"],
-              "path": ["v1", "auth", "login"]
+              "host": [
+                "{{authBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "login"
+              ]
             },
             "description": "Wrong password ⇒ 401 application/problem+json (no stack trace). Demonstrates the RFC 7807 error contract."
           }
@@ -133,12 +172,21 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{authBaseUrl}}/v1/auth/me",
-              "host": ["{{authBaseUrl}}"],
-              "path": ["v1", "auth", "me"]
+              "host": [
+                "{{authBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "auth",
+                "me"
+              ]
             },
             "description": "Return the caller identity the common-lib JwtAuthFilter derived from the bearer token (`{userId, accountId}`). Run a Login request first so `{{accessToken}}` is set. Without the header it returns 401 problem+json (`code: UNAUTHORIZED`)."
           }
@@ -150,8 +198,13 @@
             "header": [],
             "url": {
               "raw": "{{authBaseUrl}}/actuator/health",
-              "host": ["{{authBaseUrl}}"],
-              "path": ["actuator", "health"]
+              "host": [
+                "{{authBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
             },
             "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
           }
@@ -183,12 +236,21 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{accountBaseUrl}}/v1/accounts/me",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["v1", "accounts", "me"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me"
+              ]
             },
             "description": "The caller's own account (`{accountId, status, dailyLimit}`), derived only from the JWT `accountId` claim — no way to name another account. Login as alice vs bob to see the account track the token. Without the header ⇒ 401 problem+json (`code: UNAUTHORIZED`)."
           }
@@ -213,12 +275,21 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{accountBaseUrl}}/internal/accounts/acc-001",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["internal", "accounts", "acc-001"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "accounts",
+                "acc-001"
+              ]
             },
             "description": "Service-to-service lookup by account id (ADR-0006). Returns integer `dailyLimitCents` for callers that do integer math on the limit. Requires a valid token but is not account-scoped (a purely internal seam). Unknown id ⇒ 404 problem+json (`code: ACCOUNT_NOT_FOUND`)."
           }
@@ -243,8 +314,14 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
@@ -252,8 +329,13 @@
             },
             "url": {
               "raw": "{{accountBaseUrl}}/v1/pix-keys",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["v1", "pix-keys"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "pix-keys"
+              ]
             },
             "description": "Register a Pix key. Global uniqueness is enforced by a conditional `PutItem` (`attribute_not_exists(pk)`) — a value already taken by any account ⇒ 409 problem+json (`code: KEY_ALREADY_EXISTS`). EMAIL is normalized (trim + lowercase); a malformed value ⇒ 422 (`code: INVALID_PIX_KEY`). For `keyType: EVP` the server mints a UUID and ignores `keyValue`. Owner comes from the JWT, never the body."
           }
@@ -276,12 +358,20 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{accountBaseUrl}}/v1/pix-keys",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["v1", "pix-keys"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "pix-keys"
+              ]
             },
             "description": "List the caller's Pix keys (GSI1 query on `ACCOUNT#<accountId from JWT>`). Returns only this account's keys."
           }
@@ -304,12 +394,21 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{accountBaseUrl}}/v1/pix-keys/alice@platinum.com",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["v1", "pix-keys", "alice@platinum.com"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "pix-keys",
+                "alice@platinum.com"
+              ]
             },
             "description": "Delete an owned Pix key ⇒ 204. Ownership-guarded: another account's key ⇒ 403 problem+json (`code: KEY_FORBIDDEN`, existence revealed since Pix keys are globally resolvable); an absent key ⇒ 404 (`code: KEY_NOT_FOUND`)."
           }
@@ -335,14 +434,26 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{accountBaseUrl}}/internal/pix-keys/resolve?key=alice@platinum.com",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["internal", "pix-keys", "resolve"],
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "pix-keys",
+                "resolve"
+              ],
               "query": [
-                { "key": "key", "value": "alice@platinum.com" }
+                {
+                  "key": "key",
+                  "value": "alice@platinum.com"
+                }
               ]
             },
             "description": "account-service's DICT role (ADR-0006 internal seam): resolve a Pix key to its destination. An internal key ⇒ `{internal:true, accountId, keyType}` (register it first via `Register Pix key`); an unknown key ⇒ 404 problem+json (`code: KEY_NOT_FOUND`). The final `{internal, accountId?, externalBank?, keyType}` shape is fixed now — external-PSP delegation lands in step 30. Requires a valid token (`/internal/**` is not public); the incoming key is lowercase-normalized to mirror registration."
@@ -355,10 +466,201 @@
             "header": [],
             "url": {
               "raw": "{{accountBaseUrl}}/actuator/health",
-              "host": ["{{accountBaseUrl}}"],
-              "path": ["actuator", "health"]
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
             },
             "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
+    },
+    {
+      "name": "payment-service",
+      "item": [
+        {
+          "name": "Send Pix — alice → bob (202)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('carries the two ids', () => { pm.expect(body.transactionId).to.be.a('string'); pm.expect(body.endToEndId).to.match(/^E\\d{8}\\d{12}[A-Za-z0-9]{11}$/); });",
+                  "pm.test('external status is PROCESSING', () => pm.expect(body.status).to.eql('PROCESSING'));",
+                  "pm.test('Location points at the status resource', () => pm.expect(pm.response.headers.get('Location')).to.eql('/v1/payments/' + body.transactionId));",
+                  "pm.collectionVariables.set('paymentTxId', body.transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"125.50\",\n  \"description\": \"postman manual test\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "Walking skeleton of the send flow (step 18): validate the body, mint `txId` + Pix-standard `endToEndId` (`E<ISPB><yyyyMMddHHmm-UTC><random>`), persist the transaction as `RECEIVED`, and return `202 Accepted` + `Location`.\n\n**The debtor is the JWT, never the body** — the payload has `pixKey`, `amount`, `description` and *no* source-account field (Domain Safety Rule #1). The `Idempotency-Key` header is required by the contract; this skeleton accepts and ignores it (the claim + replay is step 19)."
+          }
+        },
+        {
+          "name": "Send Pix — zero amount (400 INVALID_AMOUNT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code is INVALID_AMOUNT', () => pm.expect(pm.response.json().code).to.eql('INVALID_AMOUNT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"0.00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "`\"0.00\"` matches the wire pattern but is not money: the strictly-positive rule (which the pattern cannot express) rejects it in the domain as a distinct `INVALID_AMOUNT`."
+          }
+        },
+        {
+          "name": "Send Pix — malformed amount (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code is VALIDATION_ERROR', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"12.5\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "`\"12.5\"` fails the `^\\d{1,9}\\.\\d{2}$` bean-validation pattern (one decimal), so it is a `400 VALIDATION_ERROR` before the use case runs."
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/actuator/health",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Liveness/readiness surface the compose healthcheck probes."
           }
         }
       ]
@@ -392,12 +694,23 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/balance",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "accounts", "acc-001", "balance"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "accounts",
+                "acc-001",
+                "balance"
+              ]
             },
             "description": "Balance of one ledger account, read with `ConsistentRead=true`. Returns `{accountId, balance, balanceCents, version}` — `balance` is a decimal BRL string for the human, `balanceCents` the same amount as an integer for internal callers (payment-service, step 21). Seeded by step 12 at R$ 10,000.00. Not account-scoped on purpose: this is an internal seam, so alice's token may read bob's balance (`acc-002`) — the \"debited account comes from the JWT\" rule binds the money-moving endpoint in payment-service, and nothing here moves money."
           }
@@ -422,12 +735,23 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/SEED/balance",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "accounts", "SEED", "balance"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "accounts",
+                "SEED",
+                "balance"
+              ]
             },
             "description": "`ACCOUNT#SEED` is the double-entry counterpart of the whole money supply, so its balance is **negative by construction** (-R$ 20,000.00). With acc-001, acc-002 and `SPI_CLEARING` (at 0), Σ over every account is **zero** — the conservation invariant step 15 asserts under a concurrent debit storm. System accounts are exempt from the no-negative-balance guard on WRITES, never from being read. Swap `SEED` for `SPI_CLEARING` in the path to see the clearing account at rest."
           }
@@ -454,12 +778,23 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-999/balance",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "accounts", "acc-999", "balance"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "accounts",
+                "acc-999",
+                "balance"
+              ]
             },
             "description": "An account with no BALANCE item ⇒ 404 problem+json (`code: LEDGER_ACCOUNT_NOT_FOUND`), never a balance of zero — the two are opposite facts in a ledger and must not look alike on the wire. Drop the `Authorization` header to see the other failure mode: 401 (`code: UNAUTHORIZED`), because `/internal/**` is not public here either."
           }
@@ -499,18 +834,34 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 12550,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"postman manual test\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "postings"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "postings"
+              ]
             },
             "description": "The atomic double-entry posting: **one** `TransactWriteItems` of five items — debit balance (condition `balanceCents >= :amount`), credit balance, the two immutable ENTRY legs, and the `TX#<txId>/POSTING` idempotency guard. All or nothing: no state exists in which the debit landed without its credit.\n\nMoney on the wire is **integer cents** (`amountCents`); the response echoes both `amount` (\"125.50\", for you) and `amountCents` (for the services that do arithmetic). Run \"Balance (alice)\" afterwards: 10000.00 → 9874.50, while bob gains exactly the same — Σ over every account is unchanged, because a posting *moves* money."
           }
@@ -535,18 +886,34 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 12550,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"postman manual test\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "postings"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "postings"
+              ]
             },
             "description": "Byte-identical to the previous request — the retry a caller makes when a response is lost. Answer: **200 with `replayed: true`**, and alice's balance does *not* move a second time (check it).\n\nThis works because the guard item is keyed on the `txId` **alone**. Keying it on the entry (`ENTRY#<timestamp>#<txId>`) would not: the retry arrives at a new instant, so the key would differ, `attribute_not_exists` would pass, and the payer would be debited twice.\n\nBoth outcomes are 200 on purpose. An API that answered differently would train callers to treat a retry as a failure and mint a *new* txId — the one reaction that actually double-spends."
           }
@@ -570,18 +937,34 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"txId\": \"{{ledgerTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 99,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"same identity, different amount\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "postings"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "postings"
+              ]
             },
             "description": "The same `txId` for a different amount. The ledger refuses instead of guessing: answering \"already done\" would silently swallow this payment, and posting it would double-spend the first one. 409 is the only answer that loses nothing — mint a new `txId` for a new intent.\n\n(`description` is deliberately *not* part of that comparison: a label is not money, so a retry that regenerated its text still replays.)"
           }
@@ -614,18 +997,34 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
-              { "key": "Content-Type", "value": "application/json" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"txId\": \"{{ledgerOverdraftTxId}}\",\n  \"debitAccount\": \"acc-001\",\n  \"creditAccount\": \"acc-002\",\n  \"amountCents\": 99999999,\n  \"entryType\": \"PIX_INTERNAL\",\n  \"description\": \"more than alice has\"\n}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/postings",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "postings"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "postings"
+              ]
             },
             "description": "R$ 999,999.99 out of an account holding R$ 10,000.00 ⇒ **422 INSUFFICIENT_FUNDS**, and — the part that matters — **nothing at all is written**: no balance moved, no entry appended, no guard item left behind. Run \"Balance (alice)\" to confirm.\n\nThat is guaranteed by *where* the check lives: `balanceCents >= :amount` is a condition **inside** the transaction, evaluated by DynamoDB as part of the debit. Reading the balance first and deciding in Java would be the same code with a race in it.\n\nOther refusals worth trying by hand: both legs on one account ⇒ 422 `INVALID_POSTING`; an unknown `creditAccount` ⇒ 404 `LEDGER_ACCOUNT_NOT_FOUND` (an upsert would otherwise have *created* the account); `\"amountCents\": 0` ⇒ 400 `VALIDATION_ERROR`; no `Authorization` header ⇒ 401."
           }
@@ -658,15 +1057,33 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/entries?limit=5",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "accounts", "acc-001", "entries"],
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "accounts",
+                "acc-001",
+                "entries"
+              ],
               "query": [
-                { "key": "limit", "value": "5" },
-                { "key": "cursor", "value": "", "disabled": true }
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "cursor",
+                  "value": "",
+                  "disabled": true
+                }
               ]
             },
             "description": "One page of acc-001's statement, **newest first**. The ordering is free: the sort key is `ENTRY#<isoTimestamp>#<txId>`, so `Query begins_with(sk,\"ENTRY#\")` with `ScanIndexForward=false` is already reverse-chronological — no sort anywhere.\n\nPagination is DynamoDB-native, not offset-based: `nextCursor` is the base64 of the query's `LastEvaluatedKey`, **opaque** to you. To fetch the next page, enable the `cursor` query param and paste `nextCursor` into it (the test script also stashes it in `{{ledgerNextCursor}}`). `nextCursor: null` means you have reached the end of the history.\n\n`limit` is clamped by the service (default 20, max 100). Each entry carries both `amount` (\"-125.50\", signed decimal string for you) and `amountCents` (the signed integer for callers that do arithmetic). Post a few times with the \"Posting\" request first to grow the history past one page."
@@ -692,14 +1109,28 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
             "url": {
               "raw": "{{ledgerBaseUrl}}/internal/ledger/accounts/acc-001/entries?cursor=not-a-valid-cursor",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["internal", "ledger", "accounts", "acc-001", "entries"],
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "accounts",
+                "acc-001",
+                "entries"
+              ],
               "query": [
-                { "key": "cursor", "value": "not-a-valid-cursor" }
+                {
+                  "key": "cursor",
+                  "value": "not-a-valid-cursor"
+                }
               ]
             },
             "description": "A cursor that does not decode ⇒ **400 INVALID_CURSOR**. The same 400 answers a *well-formed* cursor that names a **different account**: the token embeds the partition key (`ACCOUNT#<id>`), so editing it to page someone else's history hands the ledger a key that does not match the path — refused, never silently paging the other account."
@@ -712,13 +1143,24 @@
             "header": [],
             "url": {
               "raw": "{{ledgerBaseUrl}}/actuator/health",
-              "host": ["{{ledgerBaseUrl}}"],
-              "path": ["actuator", "health"]
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
             },
             "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
           }
         }
       ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "paymentTxId",
+      "value": ""
     }
   ]
 }

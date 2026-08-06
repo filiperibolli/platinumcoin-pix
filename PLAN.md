@@ -54,7 +54,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Infra que sobe:** DynamoDB `pix_transactions` + `pix_idempotency` tables. · **Diagram:** ARCHITECTURE §6.4
 
 - [x] [Step 17](docs/steps/step-17.md) — LocalStack init: `pix_transactions` (+GSIs) + `pix_idempotency` tables
-- [ ] [Step 18](docs/steps/step-18.md) — payment-service: `POST /payments/pix` walking skeleton (validation, txId/endToEndId, 202)
+- [x] [Step 18](docs/steps/step-18.md) — payment-service: `POST /payments/pix` walking skeleton (validation, txId/endToEndId, 202)
 - [ ] [Step 19](docs/steps/step-19.md) — idempotency layer: conditional claim, response replay, 409 on hash mismatch **✍️ hand-written zone (tests)**
 - [ ] [Step 20](docs/steps/step-20.md) — daily limit enforcement (calendar-day reservation counter, decision-object seam for future MFA)
 - [ ] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status SETTLED (internal settles instantly)
