@@ -12,6 +12,8 @@ import java.util.Optional;
  *       <b>strongly consistently</b>, because the ledger must read its own writes.</li>
  *   <li>{@link #post(PostingCommand, Instant)} — the double-entry posting, one atomic
  *       {@code TransactWriteItems}.</li>
+ *   <li>{@link #getEntries(String, String, int)} — one page of the account's statement, newest
+ *       first, with a DynamoDB-native opaque cursor.</li>
  * </ul>
  *
  * <p>It returns {@link Optional} rather than throwing on a lookup miss: "no BALANCE item for this
@@ -48,4 +50,26 @@ public interface LedgerRepository {
      * @throws LedgerBusyException            lost to concurrent writers past the retry budget
      */
     PostingResult post(PostingCommand command, Instant postedAt);
+
+    /**
+     * One page of {@code accountId}'s statement — the ENTRY items of the account's partition,
+     * <b>newest first</b>, at most {@code limit} of them. The ordering is free: the sort key is
+     * {@code ENTRY#<isoTimestamp>#<txId>}, so a reverse scan of a range query is already
+     * reverse-chronological, with no sort in memory anywhere (docs/data-model.md §3).
+     *
+     * <p>Pagination is DynamoDB-native, not offset-based (DynamoDB has no offset): {@code cursor} is
+     * the base64 of a previous page's {@code LastEvaluatedKey}, and {@link StatementPage#nextCursor()}
+     * carries the next one, or {@code null} on the last page. The cursor is opaque to the caller and
+     * decoded only here in the adapter, which also enforces that it belongs to {@code accountId} —
+     * the key embeds the partition key, so a forged cursor must never page another account.
+     *
+     * @param accountId the account whose history is read (from the path, not a token — this is an
+     *                  internal seam, ADR-0006)
+     * @param cursor    an opaque continuation token from a prior page, or {@code null}/blank for the
+     *                  first page
+     * @param limit     the maximum number of entries to return, already clamped by the use case
+     * @return the page of entries plus the token for the following page
+     * @throws InvalidCursorException the cursor is malformed or names a different account
+     */
+    StatementPage getEntries(String accountId, String cursor, int limit);
 }

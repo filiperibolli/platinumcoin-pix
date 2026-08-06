@@ -3,6 +3,7 @@ package com.platinumcoin.pix.ledger.infra;
 import com.platinumcoin.pix.ledger.domain.AccountPolicy;
 import com.platinumcoin.pix.ledger.domain.LedgerRepository;
 import com.platinumcoin.pix.ledger.domain.usecase.GetBalanceUseCase;
+import com.platinumcoin.pix.ledger.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.PostDoubleEntryUseCase;
 import java.time.Clock;
 import org.springframework.context.annotation.Bean;
@@ -40,6 +41,11 @@ public class LedgerBeansConfig {
     @Bean
     GetBalanceUseCase getBalanceUseCase(LedgerRepository ledger) {
         return new GetBalanceUseCase(ledger);
+    }
+
+    @Bean
+    GetStatementUseCase getStatementUseCase(LedgerRepository ledger) {
+        return new GetStatementUseCase(ledger);
     }
 
     @Bean

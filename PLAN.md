@@ -47,7 +47,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 13](docs/steps/step-13.md) — ledger-service: data model + balance read (strongly consistent)
 - [x] [Step 14](docs/steps/step-14.md) — atomic double-entry posting via TransactWriteItems (debit+credit+2 entries+txId guard)
 - [x] [Step 15](docs/steps/step-15.md) — invariant test suite: concurrency storm, no-negative-balance, no-double-post, conservation of money **✍️ hand-written zone**
-- [ ] [Step 16](docs/steps/step-16.md) — statement query (paginated, newest first) + posting API polish
+- [x] [Step 16](docs/steps/step-16.md) — statement query (paginated, newest first) + posting API polish
 
 ## Sprint 4 — Send Pix (internal, synchronous)
 **Flow delivered:** alice → bob (internal key) moves real money end-to-end, idempotent, limited.
