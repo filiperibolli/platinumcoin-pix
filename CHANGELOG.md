@@ -11,6 +11,50 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Ledger invariant suite: concurrent storm proving no-negative-balance, no-double-spend and conservation of money (step 15)
+  **✍️ Hand-written zone** — the entire `LedgerInvariantsIT` was written by the human, by hand, without
+  AI code generation (AI assisted with Java syntax only); Claude's role was limited to reviewing the
+  finished suite, running it, and wiring the docs. So the metrics line below is **inverted** from every
+  other entry: `issues caught in human review` normally counts defects the human found in AI code — here
+  it counts defects **Claude found in the human's code** (zero; three trivial non-defect notes recorded
+  below). This is the deliberate-practice payoff the hand-written zones exist for: `ExecutorService` +
+  `CountDownLatch` to release N threads at once, worker threads that **return** rather than assert (an
+  `AssertionError` on a pool thread never reaches JUnit — a test that goes green while testing nothing),
+  and **system-level** invariants (Σ balances constant, Σ entry legs == 0) rather than per-call outcomes.
+  Four ITs, all on real LocalStack, each on its **own fixture accounts** (isolated partitions, so the
+  step-13 absolute seeded-supply assertions are never disturbed by a shared container):
+  **(1) debit storm** — balance 1000_00, 50 parallel postings of 100_00 → **exactly 10** succeed, 40
+  fail `INSUFFICIENT_FUNDS`, final balance 0, history exactly 10 debit + 10 credit legs, Σ per account
+  matching. The `==` on the success count is the whole point: `<=` would pass a storm that refused
+  affordable payments, `>=` one that overdrew. **(2) conservation** — a random transfer storm (24
+  threads × 8 transfers, fixed per-thread seed so the sequence is reproducible though the interleaving
+  is not) among 5 user accounts + a `SPI_CLEARING#…` account allowed to go **negative** (a stronger
+  conservation claim than an all-positive one): Σ balances before == after, Σ of every entry leg == 0,
+  **and** per account `balance == opening + Σ its legs`. **(3) replay under concurrency** — the same
+  `txId` posted from 10 threads at 10 different instants → exactly one commit, the money moves once, all
+  ten replies carry the **committed** `postedAt` (not the retry's), one set of entries. **(4) never seen
+  negative** — a sampler thread reading the payer's balance throughout a storm: never negative, never
+  above the opening, always a multiple of the posting amount (a value no legitimate posting sequence can
+  leave). A smoke detector, not a proof — the real proof is that the guard lives inside the transaction;
+  but the first thing to go red if anyone ever moves that condition into Java. A `postWithResends` helper
+  re-sends the same command on `503 LEDGER_CONFLICT` (nothing was written, so the same `txId` is safe to
+  resend), with jitter — without it, threads that burn the adapter's 3-attempt budget vanish and the
+  counts stop adding up non-deterministically. Wired into `mvn verify` for free: the class is a `*IT`,
+  so failsafe runs it on a plain `mvn verify` with no flag and it is not skippable (DoD #3). No `pom.xml`
+  or config change was needed. Verified: `mvn -pl services/ledger-service -am verify` green —
+  `LedgerInvariantsIT` 4/0/0/0, module total **68 tests** (37 unit + architecture, 31 integration),
+  `BUILD SUCCESS`.
+  AI: est 4h / actual 6h / ~0% generated (hand-written zone; AI: Java syntax help only) / 0 defects found in Claude's review
+  Notes from Claude's review (all non-defects, left as-is by design):
+  1. `legsOf(txId)` reads **GSI1** with `.hasSize(2)` in the replay test; a GSI is eventually
+     consistent, so on real DynamoDB that one assertion could flake (on single-node LocalStack it is
+     effectively synchronous, hence green). The "one set of entries" claim is already proven by the
+     `entriesOf` assertions, which read the **base table** with `ConsistentRead`; `legsOf` only
+     corroborates. Left as-is knowingly.
+  2. `import java.util.concurrent.ExecutorService` is unused (the pools are held in `var`); the build
+     does not enforce unused-imports, so it does not fail. A trivial cleanup for a later pass.
+  3. `Outcome.BUSY` exists only so the `busy == 0` assertion reads as "contention, not a broken
+     invariant" — never expected to occur thanks to `MAX_RESENDS`. Intentional.
 - Atomic double-entry ledger posting via TransactWriteItems with conditional no-negative-balance and txId idempotency (step 14)
   `POST /internal/ledger/postings` — the operation the whole platform is built around, and the direct
   answer to *"how do you guarantee money is never debited without being credited?"*: the debit and the
