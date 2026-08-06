@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.infra;
 
 import com.platinumcoin.pix.payment.domain.EndToEndIdGenerator;
+import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
@@ -40,7 +41,10 @@ public class PaymentBeansConfig {
 
     @Bean
     SendPixUseCase sendPixUseCase(
-            TransactionRepository transactions, EndToEndIdGenerator endToEndIds, Clock clock) {
-        return new SendPixUseCase(transactions, endToEndIds, clock);
+            TransactionRepository transactions,
+            IdempotencyRepository idempotency,
+            EndToEndIdGenerator endToEndIds,
+            Clock clock) {
+        return new SendPixUseCase(transactions, idempotency, endToEndIds, clock);
     }
 }

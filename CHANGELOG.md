@@ -11,6 +11,63 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Idempotency layer on send: conditional claim, response replay, 409 on key reuse with different payload (step 19)
+  ADR-0002's **first layer** on `POST /v1/payments/pix` — the API-level answer to "the user tapped twice
+  / the network retried". The `Idempotency-Key` header is now enforced and the send is de-duplicated per
+  `(accountId, key)` in `pix_idempotency`, so a retry never mints a second transaction. Step 18 shipped
+  the header **accepted-and-ignored**; this step closes that documented deviation from Domain Safety
+  Rule #2.
+  **The lifecycle — claim, execute, memoize, replay.** The amount is parsed *before* any idempotency
+  write (a malformed request must leave no record behind), then a **conditional `PutItem`**
+  (`attribute_not_exists(pk) OR expiresAt < :now`) atomically wins or loses the claim — lock and memo in
+  one write, immune to check-then-act races. The winner does the acceptance work (mint ids, persist
+  `RECEIVED`) and `complete`s the record with the HTTP status + a small response snapshot; a loser loads
+  the live record and decides: same hash + `COMPLETED` ⇒ **replay** the memoized response (same
+  `transactionId`, byte-identical body); different hash ⇒ `409 IDEMPOTENCY_KEY_REUSED`; same hash +
+  `IN_PROGRESS` ⇒ `409 REQUEST_IN_PROGRESS` + `Retry-After: 2`. A missing header is `400
+  IDEMPOTENCY_KEY_REQUIRED`.
+  **The two sharp edges ADR-0002 names, both handled.** (1) *The claim-crash window.* An `IN_PROGRESS`
+  claim whose `claimedAt` is older than a 60s staleness window is treated as crash-orphaned and
+  **re-claimed** by the retry (a conditional `UpdateItem` on `claimedAt`, so exactly one racer wins),
+  instead of blocking the client until the 24h TTL. (2) *Lazy TTL.* DynamoDB's TTL deletion can lag
+  hours, so `get` treats an expired-but-present record as **absent**, and the claim's `OR expiresAt <
+  :now` lets a fresh request re-claim an expired key immediately — the 24h window is enforced by the
+  application, not by the deletion.
+  **The request-hash is canonical.** Replay-vs-`409` compares a **canonical-JSON SHA-256** over the
+  normalized request fields (`pixKey`, `amount`, `description`), computed by the use case via a new
+  `common-lib` `CanonicalJson` — key order and whitespace never change the hash, a different amount does.
+  Hashing the *normalized fields* (not raw bytes) was a deliberate choice: immune to cosmetic
+  reformatting and to irrelevant extra keys, with no raw-body plumbing; the debtor is not hashed because
+  the record is already scoped per account by its key.
+  **Where the logic lives (ADR-0010/0011).** The ArchUnit rule "`api/` never depends on an interface in
+  `domain/`" **forced** the orchestration into the use case: a controller cannot touch the
+  `IdempotencyRepository` port, so `SendPixUseCase` became the idempotent orchestrator (one use case per
+  inbound op) and the controller stayed a three-liner. The result type `SendPixOutcome` is a **record**
+  (with a `replayed` flag), not a sealed interface — a result interface in `domain/` would have tripped
+  that same ArchUnit rule. The response snapshot stores only the two ids (+ httpStatus); the wire
+  vocabulary (`"PROCESSING"`) is re-applied at the `api/` edge, so no wire concern leaks into `domain/`
+  and a fresh `202` and a replay render through the identical path.
+  **Domain.** New port `IdempotencyRepository` (`claim`/`get`/`complete`/`reclaim`), `IdempotencyRecord`
+  + `IdempotencyStatus`, three plain-Java exceptions (`IdempotencyKeyRequired`/`…KeyReuse`/
+  `RequestInProgress`), `SendPixOutcome`, and `idempotencyKey` added to `SendPixCommand`. **infra/**
+  `DynamoIdempotencyRepository` (the two conditions above; Jackson serializes the snapshot, staying out
+  of `domain/`). **api/** the controller reads the header and renders the outcome; the exception handler
+  maps the three codes and attaches `Retry-After`.
+  **Tests.** `CanonicalJsonTest` (9, common-lib) pins the invariance (order/whitespace) and the
+  sensitivity (value); `SendPixUseCaseTest` (10) drives every branch plain-Java with fake ports and a
+  pinned clock — replay creates exactly one transaction, reuse `409`s, a fresh in-progress `409`s, a
+  stale one re-claims and completes; `IdempotencyIT` (6, MockMvc on real LocalStack) proves the same over
+  the real tables incl. a **concurrent double-fire** creating exactly one transaction (the DB is the
+  arbiter, counted by scan) and an explicit `Retry-After: 2` on the in-flight `409`. `SendSkeletonIT`
+  passes **unchanged** (it already sent the header). `mvn -pl services/payment-service -am verify` green.
+  Verified on the **running compose stack**, not only in tests: alice's first send returns a `tx-…`; the
+  identical retry returns the **same** `transactionId`; the same key with `99.00` returns `409
+  IDEMPOTENCY_KEY_REUSED`; a missing header returns `400 IDEMPOTENCY_KEY_REQUIRED`.
+  No `docs/api/openapi.yaml` change: the contract already specified the required `Idempotency-Key`, the
+  `409` and the `Retry-After` on retry (written ahead), so code conforms to it with no drift. Postman /
+  API explorer unchanged — the endpoint was introduced in step 18; this step changes behaviour, not the
+  surface, and Postman already auto-generates the key on the money-moving POST.
+  AI: est 3h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - payment-service POST /payments/pix walking skeleton: validation, txId/endToEndId, 202 + Location (step 18)
   The platform's fifth service (port 8084) and the **client-facing send-Pix entry point** — the one
   endpoint an end user reaches to move money. This step ships the *walking skeleton*: a real,

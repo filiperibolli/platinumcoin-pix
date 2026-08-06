@@ -1,7 +1,5 @@
 package com.platinumcoin.pix.payment.api;
 
-import com.platinumcoin.pix.payment.domain.Transaction;
-
 /**
  * The {@code 202 Accepted} body of {@code POST /v1/payments/pix} — the {@code PaymentAccepted} schema
  * of docs/api/openapi.yaml. It carries the two ids the client needs to track the payment
@@ -19,7 +17,13 @@ public record PaymentAcceptedResponse(String transactionId, String endToEndId, S
     /** The single external status a just-accepted payment can have. */
     private static final String PROCESSING = "PROCESSING";
 
-    static PaymentAcceptedResponse from(Transaction transaction) {
-        return new PaymentAcceptedResponse(transaction.txId(), transaction.endToEndId(), PROCESSING);
+    /**
+     * Render from the two identifying ids alone — used by <b>both</b> a fresh acceptance and an
+     * idempotent replay, so a retry is byte-identical to the original response. The external status
+     * lives here (never in {@code domain/}), which is why the idempotency snapshot stores only the ids
+     * and re-applies the wire vocabulary at this edge.
+     */
+    static PaymentAcceptedResponse of(String transactionId, String endToEndId) {
+        return new PaymentAcceptedResponse(transactionId, endToEndId, PROCESSING);
     }
 }
