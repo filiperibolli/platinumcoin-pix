@@ -1,10 +1,10 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import com.platinumcoin.pix.ledger.domain.Balance;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
-import com.platinumcoin.pix.ledger.domain.StatementPage;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.model.StatementPage;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;

@@ -1,8 +1,8 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
-import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
-import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;

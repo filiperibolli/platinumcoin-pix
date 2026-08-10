@@ -1,9 +1,9 @@
 package com.platinumcoin.pix.ledger.api;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import com.platinumcoin.pix.ledger.domain.Balance;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The money-formatting contract of the API edge, in isolation. This is the <b>only</b> place in

@@ -1,14 +1,14 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.account.domain.KeyResolution;
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyNotFoundException;
-import com.platinumcoin.pix.account.domain.PixKeyType;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotFoundException;
+import com.platinumcoin.pix.account.domain.model.KeyResolution;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.model.PixKeyType;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Plain unit test of the DICT resolution logic — no Spring, no LocalStack, just a fake

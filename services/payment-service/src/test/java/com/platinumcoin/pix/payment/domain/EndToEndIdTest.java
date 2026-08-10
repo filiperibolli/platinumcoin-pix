@@ -1,10 +1,11 @@
 package com.platinumcoin.pix.payment.domain;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
+import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The Pix end-to-end id format {@code E<ISPB(8)><yyyyMMddHHmm-UTC(12)><random(11)>} — a fixed

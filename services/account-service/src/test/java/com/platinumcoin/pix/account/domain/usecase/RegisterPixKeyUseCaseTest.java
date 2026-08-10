@@ -1,16 +1,16 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.account.domain.InvalidPixKeyException;
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyAlreadyExistsException;
-import com.platinumcoin.pix.account.domain.PixKeyType;
+import com.platinumcoin.pix.account.domain.exception.InvalidPixKeyException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyAlreadyExistsException;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.model.PixKeyType;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The payoff of ADR-0011, in test form: every rule below used to require MockMvc + a running

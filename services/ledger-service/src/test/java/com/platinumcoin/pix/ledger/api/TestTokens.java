@@ -1,12 +1,12 @@
 package com.platinumcoin.pix.ledger.api;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import java.time.Instant;
 import java.util.Date;
 import javax.crypto.SecretKey;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * Mints valid HS256 tokens for the controller ITs. ledger-service cannot call {@code /auth/login}

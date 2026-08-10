@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.DailyLimitReservation;
-import com.platinumcoin.pix.payment.domain.LimitDecision;
+import com.platinumcoin.pix.payment.domain.model.LimitDecision;
+import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
 import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;

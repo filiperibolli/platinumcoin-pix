@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
-import com.platinumcoin.pix.ledger.domain.StatementPage;
+import com.platinumcoin.pix.ledger.domain.model.StatementPage;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

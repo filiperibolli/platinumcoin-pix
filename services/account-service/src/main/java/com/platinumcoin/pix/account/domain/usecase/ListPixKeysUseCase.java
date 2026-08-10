@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyRepository;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import java.util.List;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;

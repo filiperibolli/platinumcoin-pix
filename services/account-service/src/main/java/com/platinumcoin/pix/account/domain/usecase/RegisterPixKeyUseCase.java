@@ -1,10 +1,10 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import com.platinumcoin.pix.account.domain.InvalidPixKeyException;
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyAlreadyExistsException;
-import com.platinumcoin.pix.account.domain.PixKeyRepository;
-import com.platinumcoin.pix.account.domain.PixKeyType;
+import com.platinumcoin.pix.account.domain.exception.InvalidPixKeyException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyAlreadyExistsException;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.model.PixKeyType;
+import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;

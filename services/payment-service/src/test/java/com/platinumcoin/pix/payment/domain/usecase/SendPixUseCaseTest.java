@@ -1,27 +1,27 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.payment.domain.EndToEndIdGenerator;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
-import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
-import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
-import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
-import com.platinumcoin.pix.payment.domain.InvalidAmountException;
-import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
-import com.platinumcoin.pix.payment.domain.LedgerUnavailableException;
-import com.platinumcoin.pix.payment.domain.LimitDecision;
-import com.platinumcoin.pix.payment.domain.LimitExceededException;
-import com.platinumcoin.pix.payment.domain.RequestInProgressException;
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
+import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
+import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.model.LimitDecision;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Plain-Java unit tests for the send operation, with fake ports and a pinned clock — no Spring, no

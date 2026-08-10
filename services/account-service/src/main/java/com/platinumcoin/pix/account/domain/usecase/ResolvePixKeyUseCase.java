@@ -1,8 +1,8 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import com.platinumcoin.pix.account.domain.KeyResolution;
-import com.platinumcoin.pix.account.domain.PixKeyNotFoundException;
-import com.platinumcoin.pix.account.domain.PixKeyRepository;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotFoundException;
+import com.platinumcoin.pix.account.domain.model.KeyResolution;
+import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;

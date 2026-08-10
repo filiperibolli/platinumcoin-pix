@@ -1,8 +1,8 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import com.platinumcoin.pix.ledger.domain.Balance;
-import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerAccountNotFoundException;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

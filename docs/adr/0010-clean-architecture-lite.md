@@ -1,6 +1,6 @@
 # ADR-0010: Clean/hexagonal-lite architecture inside each service
 
-**Status:** Accepted · **Date:** 2026-07-19 · **Amended by:** [ADR-0011](0011-explicit-use-case-layer.md)
+**Status:** Accepted · **Date:** 2026-07-19 · **Amended by:** [ADR-0011](0011-explicit-use-case-layer.md) · **Amended 2026-08-10** (internal sub-package layout, below)
 
 > **Amendment notice.** ADR-0011 reverses this ADR on **one** point: the rejection of a use-case ring
 > below. Every inbound operation now gets an explicit `<Verb><Noun>UseCase` class in
@@ -9,6 +9,12 @@
 > outbound-infra, DTO-only-when-shapes-diverge, ArchUnit enforcement, the `common-lib` exemption —
 > stands as written. Read this ADR for the shape and the reasoning; read ADR-0011 for what changed
 > and why the original trade-off did not hold.
+
+> **Amendment notice (2026-08-10) — internal sub-package layout.** The three top-level packages
+> `api/` · `domain/` · `infra/` stay exactly as decided; this amendment only says **how the files
+> inside `domain/` and `infra/` are grouped**, because a flat `domain/` of ~25 mixed files (entities,
+> ports, and a dozen exceptions side by side) had become hard to navigate. It changes nothing about
+> the dependency rule or the ArchUnit tests. See "Internal package layout" under Decision.
 
 ## Context
 ADR-0006 decides how the system splits **across** services. It says nothing about how a single
@@ -32,6 +38,47 @@ Every service module follows the same three-package internal layout under
   **ports** (outbound interfaces the domain calls). Plain Java only.
 - **`infra/`** — outbound adapters implementing the ports (DynamoDB/SQS/SNS/Redis/HTTP), plus Spring
   configuration and wiring.
+
+### Internal package layout (amendment 2026-08-10)
+
+Inside `domain/` and `infra/`, files are **grouped by role** into a fixed set of sub-packages —
+**one folder per role, always, even when a role holds a single file.** Uniformity beats a size
+threshold: a reader learns one shape and it holds for every service, and there is never a "does this
+belong in a folder yet?" judgement call. This is navigation only — the dependency rule and the
+ArchUnit tests are unchanged, because their matchers already target the whole subtree (`..domain..`,
+`..api..`, `..infra..`), so a file keeps satisfying them wherever inside its layer it lives. **No
+`.java` sits loose at the root of `domain/` or `infra/`** (only `Application.java` stays at the
+service-package root, as the Spring entry point).
+
+- **`domain/model/`** — entities & value objects (records/enums): `Transaction`, `Money`,
+  `IdempotencyRecord`, `TransactionStatus`, etc.
+- **`domain/port/`** — the outbound interfaces the domain drives: repositories, external clients,
+  publishers (`TransactionRepository`, `LedgerClient`, `PixKeyResolver`, …). A lone port still lives
+  here (`LedgerRepository` in ledger-service is the only port — it goes in `port/` all the same). Ports
+  are **not** further split into repository/client sub-packages; the ArchUnit `api → interface-in-
+  domain` ban already treats them uniformly.
+- **`domain/exception/`** — the plain-Java domain exceptions (`InsufficientFundsException`,
+  `LimitExceededException`, …); a single exception (auth-service's `InvalidCredentialsException`) gets
+  the folder too.
+- **`domain/service/`** — concrete, framework-free **domain services / helpers** that are neither a
+  value object nor a use case (`EndToEndIdGenerator` in payment-service, `AccountPolicy` in
+  ledger-service). Plain Java, injected into use cases; distinct from `usecase/` because they are not a
+  `<Verb><Noun>UseCase` inbound operation.
+- **`domain/usecase/`** — the `<Verb><Noun>UseCase` classes (ADR-0011) **and their command/outcome
+  records** (`SendPixCommand`, `SendPixOutcome`), which are use-case-scoped, not shared model.
+- **`infra/persistence/`** — datastore adapters implementing repository ports (`DynamoTransactionRepository`,
+  `DynamoIdempotencyRepository`, and in-memory stand-ins like auth's `InMemoryUserRepository`).
+- **`infra/client/`** — HTTP/SPI adapters implementing external-service client ports
+  (`HttpLedgerClient`, `HttpPixKeyResolver`, `HttpAccountLimitClient`, …).
+- **`infra/security/`** — crypto/token/security adapters implementing security ports
+  (`BCryptPasswordVerifier`, `JwtIssuer` in auth-service). Present in services that have such adapters.
+- **`infra/config/`** — Spring configuration and `@ConfigurationProperties` (`*BeansConfig`,
+  `DynamoConfig`, `CorsConfig`, `AwsProperties`, …).
+
+A service only carries the folders for roles it actually has (account-service has no `infra/client/`;
+auth-service has no `infra/client/` but does have `infra/security/`). What is uniform is: **when a role
+exists, it is a folder, whatever the count.** `common-lib`, `mock-bacen-spi` and `labs/ledger-pg` keep
+the thinner structure the scope note below already grants them (a shared adapter layer, a stub, a lab).
 
 Governed by four rules:
 

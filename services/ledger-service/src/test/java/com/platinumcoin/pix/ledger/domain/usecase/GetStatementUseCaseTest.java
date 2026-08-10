@@ -1,12 +1,13 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import com.platinumcoin.pix.ledger.domain.LedgerEntry;
-import com.platinumcoin.pix.ledger.domain.StatementPage;
+import com.platinumcoin.pix.ledger.domain.model.Direction;
+import com.platinumcoin.pix.ledger.domain.model.LedgerEntry;
+import com.platinumcoin.pix.ledger.domain.model.StatementPage;
 import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The one policy {@link GetStatementUseCase} owns: what a page is. The cursor's meaning, its decoding
@@ -58,7 +59,7 @@ class GetStatementUseCaseTest {
     @Test
     void theUseCaseReturnsWhateverPageThePortProduces() {
         StatementPage page = new StatementPage(
-                List.of(new LedgerEntry("tx-1", com.platinumcoin.pix.ledger.domain.Direction.DEBIT,
+                List.of(new LedgerEntry("tx-1", com.platinumcoin.pix.ledger.domain.model.Direction.DEBIT,
                         -100L, "acc-002", Instant.parse("2026-08-03T10:00:00.000Z"), "PIX_OUT")),
                 "next");
         ledger.returnPage(page);

@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.auth.api;
 
-import com.platinumcoin.pix.auth.domain.IssuedToken;
+import com.platinumcoin.pix.auth.domain.model.IssuedToken;
 
 /**
  * Login response, shaped to OpenAPI {@code /auth/login}: {@code accessToken}, a fixed

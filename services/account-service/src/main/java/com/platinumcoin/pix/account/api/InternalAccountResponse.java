@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
-import com.platinumcoin.pix.account.domain.Account;
+import com.platinumcoin.pix.account.domain.model.Account;
 import java.time.Instant;
 
 /**

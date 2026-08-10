@@ -10,6 +10,24 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Changed
+- Internal package layout standardized across all four services into role sub-packages (ADR-0010
+  amendment 2026-08-10). `domain/` now groups into `model/` · `port/` · `exception/` · `service/` ·
+  `usecase/`, and `infra/` into `persistence/` · `client/` · `security/` · `config/` — **one folder per
+  role, always** (a lone port, a single exception, a single adapter each get their folder), with no
+  `.java` loose at a layer root (only `Application` stays at the service-package root). Motivated by a
+  code review: payment-service's flat `domain/` of ~26 mixed files (entities, ports and a dozen
+  exceptions side by side) had become hard to navigate. **Behaviour and the HTTP contract are
+  unchanged**, and each `*ArchitectureTest` stays green untouched — the ArchUnit rules match by layer
+  subtree (`..domain..`/`..api..`/`..infra..`), so grouping never touches the dependency rules. Applied
+  to auth (step 03), account (step 09), ledger (step 13) and payment (steps 18–22); each service's
+  scaffold-step metrics line carries the `+1 issue`. `mvn verify` green on all four.
+- ADR-0002 **validated** (2026-08-10): a review asked whether idempotency should move to Redis. Evaluated
+  Redis-only, Redis-hybrid, and the DynamoDB-durable original, and **kept DynamoDB** as the source of
+  truth (it is the AWS Powertools default; Redis stays scoped to the balance cache, ADR-0008). A
+  deterministic `txId` was considered as defense-in-depth and **rejected** (it collides with the 24h
+  key-reuse semantics). **No code or schema change** — the original design was already correct.
+
 ### Added
 - `GET /payments/{id}` status endpoint with owner-only access and internal→external status mapping (step 22)
   The transaction's public read side, and the first place the platform **translates its internal state
@@ -108,7 +126,15 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   `docs/local-dev.md` §4 a step-21 manual-verify block, and the service README the orchestration + new
   env (`LEDGER_SERVICE_BASE_URL`). Postman / API explorer unchanged — the endpoint was introduced in step
   18; this step changes behaviour, not the surface.
-  AI: est 3.5h / actual 2h / ~90% generated / 0 issues caught in human review
+  **Scope note (added in review):** `POST /v1/payments/pix` today accepts **internal Pix only** — the
+  destination key must resolve to a PlatinumCoin account, and the single atomic ledger posting *is* the
+  settlement (`SETTLED` directly, no SPI leg). This is deliberate, not a limitation: the **external** case
+  (destination at another bank) reuses the **same endpoint and the same orchestration shape** and only
+  *thickens the methods* — the resolve step gains BACEN-DICT delegation, the debit credits the
+  `SPI_CLEARING` account instead of the payee, and settlement becomes asynchronous — in steps 27–35. No
+  new endpoint, no client-visible surface change is planned; the internal-vs-external branch is a use-case
+  decision to be added where `acceptAndComplete` orchestrates, when those steps land.
+  AI: est 3.5h / actual 2h / ~90% generated / 1 issue caught in human review
 - Daily limit enforcement (calendar-day reservation counter) with a decision-object MFA seam mapping REQUIRE_STEP_UP to deny (step 20)
   Before any money moves, payment-service now reads the debtor's `dailyLimitCents` from account-service
   (`GET /internal/accounts/{id}`, forwarding the caller's bearer token — ADR-0007) and **reserves** the
@@ -259,7 +285,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   with debtor `acc-001`, the source-account-in-body injection, `"0.00"`⇒400, malformed⇒400,
   no-token⇒401) and `ApplicationContextIT` (1). `mvn -pl services/payment-service -am verify` green;
   full reactor `mvn package` green.
-  AI: est 2h / actual 1.5h / ~90% generated / 0 issues caught in human review
+  AI: est 2h / actual 1.5h / ~90% generated / 1 issue caught in human review
 - LocalStack init: pix_transactions (GSI1/GSI2/sparse GSI3) and pix_idempotency (TTL) tables (step 17)
   `03-dynamodb-payment.sh` creates the two payment-service tables the internal-send flow (steps 18–21)
   needs — infra only, no seed rows (transactions are born from the flow, not seeded). Numbered **03**
@@ -667,7 +693,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   directly, the Mockito mock costs 740ms. The stub stayed — for the real reason, which is that
   `getItem` is overloaded on request and builder-consumer, so mocking it needs a type-witnessed
   matcher and an unchecked cast — and the false performance claim was removed from the code.
-  AI: est 2.5h / actual 1h / ~95% generated / 0 issues caught in human review
+  AI: est 2.5h / actual 1h / ~95% generated / 1 issue caught in human review
 - LocalStack init: pix_ledger table (GSI1) + seed balances and system accounts SPI_CLEARING/SEED (step 12)
   `02-dynamodb-ledger.sh` creates `pix_ledger` exactly per `docs/data-model.md` §3 — PK
   `ACCOUNT#<accountId>`, SK `BALANCE` | `ENTRY#<isoTs>#<txId>`, on-demand, plus `gsi1` on
@@ -767,7 +793,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   `/accounts/me` (account-service 8082); step-09 spec's verify note records the internal-JWT
   decision; Postman + API explorer each grow an `account-service` section (`/me`, internal lookup,
   health), the explorer extended with per-service editable base URLs.
-  AI: est 2.5h / actual 4h / ~85% generated / 4 issues caught in human review
+  AI: est 2.5h / actual 4h / ~85% generated / 5 issues caught in human review
   Issues caught in human review (fixed in this change):
   1. Logging gap — each endpoint logged a single INFO on entry only, so a `correlationId` could
      not reconstruct the flow's *outcome* stages (resolved vs missing) the way CLAUDE.md's logging
@@ -841,7 +867,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   3. Naming — the outbound port `UserDirectory` renamed to `UserRepository`
      (`InMemoryUserRepository`), matching its repository role in the ADR-0010 vocabulary.
 - auth-service Spring Boot skeleton with Actuator health, Dockerfile and compose wiring (step 03)
-  AI: est 1h / actual 0.7h / ~85% generated / 1 issues caught in human review
+  AI: est 1h / actual 0.7h / ~85% generated / 2 issues caught in human review
 - Shared error model (RFC 7807), correlation-id propagation and structured JSON logging in common-lib (step 02)
   AI: est 1.5h / actual 0.6h / ~90% generated / 2 issues caught in human review
 - Maven multi-module scaffold with parent POM (Java 21, Spring Boot & AWS BOMs) and common-lib module (step 01)

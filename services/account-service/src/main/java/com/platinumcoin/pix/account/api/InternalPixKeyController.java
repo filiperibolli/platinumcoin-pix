@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
-import com.platinumcoin.pix.account.domain.KeyResolution;
+import com.platinumcoin.pix.account.domain.model.KeyResolution;
 import com.platinumcoin.pix.account.domain.usecase.ResolvePixKeyUseCase;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;

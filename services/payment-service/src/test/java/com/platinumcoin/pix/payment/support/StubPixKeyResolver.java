@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.support;
 
-import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
-import com.platinumcoin.pix.payment.domain.PixKeyResolver;
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;

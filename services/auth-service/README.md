@@ -44,10 +44,13 @@ Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml)
 ```
 api/            AuthController, MeController, LoginRequest/Response, MeResponse,
                 AuthExceptionHandler                                              (inbound adapter)
-domain/         User, IssuedToken (records), InvalidCredentialsException,
-                ports: UserRepository, PasswordVerifier, TokenIssuer                  (plain Java)
-domain/usecase/ LoginUseCase                                                          (plain Java)
-infra/  JwtIssuer (jjwt), BCryptPasswordVerifier, InMemoryUserRepository, AuthBeansConfig   (outbound adapters + wiring)
+domain/model/     User, IssuedToken (records)                                         (plain Java)
+domain/port/      UserRepository, PasswordVerifier, TokenIssuer                (outbound interfaces)
+domain/exception/ InvalidCredentialsException                                          (plain Java)
+domain/usecase/   LoginUseCase                                                          (plain Java)
+infra/persistence/ InMemoryUserRepository
+infra/security/    JwtIssuer (jjwt), BCryptPasswordVerifier
+infra/config/      AuthBeansConfig, JwtProperties, SeededUsersProperties, CorsConfig  (outbound adapters + wiring)
 ```
 
 `LoginUseCase` (renamed from `AuthenticationService` by ADR-0011) owns the whole operation, including

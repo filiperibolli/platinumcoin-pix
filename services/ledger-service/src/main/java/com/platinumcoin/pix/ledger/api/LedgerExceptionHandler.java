@@ -1,12 +1,12 @@
 package com.platinumcoin.pix.ledger.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
-import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
-import com.platinumcoin.pix.ledger.domain.InvalidCursorException;
-import com.platinumcoin.pix.ledger.domain.InvalidPostingException;
-import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
-import com.platinumcoin.pix.ledger.domain.LedgerBusyException;
-import com.platinumcoin.pix.ledger.domain.PostingConflictException;
+import com.platinumcoin.pix.ledger.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.exception.InvalidCursorException;
+import com.platinumcoin.pix.ledger.domain.exception.InvalidPostingException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerAccountNotFoundException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerBusyException;
+import com.platinumcoin.pix.ledger.domain.exception.PostingConflictException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;

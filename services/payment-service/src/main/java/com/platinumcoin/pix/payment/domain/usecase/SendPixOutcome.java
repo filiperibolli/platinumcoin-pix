@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.Transaction;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
 
 /**
  * The result of the idempotency-guarded send operation, as it reaches the controller. It is a plain

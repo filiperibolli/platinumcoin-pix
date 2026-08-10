@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
-import com.platinumcoin.pix.payment.domain.PixKeyResolver;
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;

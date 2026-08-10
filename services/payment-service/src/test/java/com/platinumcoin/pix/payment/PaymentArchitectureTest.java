@@ -1,15 +1,15 @@
 package com.platinumcoin.pix.payment;
 
-import static com.tngtech.archunit.base.DescribedPredicate.and;
-import static com.tngtech.archunit.core.domain.JavaClass.Predicates.INTERFACES;
-import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
-import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
-
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchRule;
 import org.junit.jupiter.api.Test;
+
+import static com.tngtech.archunit.base.DescribedPredicate.and;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.INTERFACES;
+import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
  * ADR-0010 + ADR-0011 enforcement for payment-service, present from day one per the new-service

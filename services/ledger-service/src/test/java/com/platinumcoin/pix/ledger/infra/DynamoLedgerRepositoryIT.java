@@ -1,13 +1,13 @@
 package com.platinumcoin.pix.ledger.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
-import com.platinumcoin.pix.ledger.domain.Balance;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Proves the adapter reads the <b>real</b> money supply seeded by {@code 05-seed-ledger.sh} (step 12)

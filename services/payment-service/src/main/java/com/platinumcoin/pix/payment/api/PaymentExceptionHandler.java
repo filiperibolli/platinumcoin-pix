@@ -1,16 +1,16 @@
 package com.platinumcoin.pix.payment.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
-import com.platinumcoin.pix.payment.domain.AccountLookupException;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
-import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
-import com.platinumcoin.pix.payment.domain.InvalidAmountException;
-import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
-import com.platinumcoin.pix.payment.domain.LedgerUnavailableException;
-import com.platinumcoin.pix.payment.domain.LimitExceededException;
-import com.platinumcoin.pix.payment.domain.PaymentNotFoundException;
-import com.platinumcoin.pix.payment.domain.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.exception.AccountLookupException;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
+import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
+import com.platinumcoin.pix.payment.domain.exception.PaymentNotFoundException;
+import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;

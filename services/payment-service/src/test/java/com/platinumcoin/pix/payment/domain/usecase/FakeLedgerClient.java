@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.LedgerClient;
+import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.ArrayList;
 import java.util.List;
 

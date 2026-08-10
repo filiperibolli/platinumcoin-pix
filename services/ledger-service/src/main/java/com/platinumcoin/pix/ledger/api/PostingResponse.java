@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.ledger.api;
 
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
 import java.math.BigDecimal;
 import java.time.Instant;
 

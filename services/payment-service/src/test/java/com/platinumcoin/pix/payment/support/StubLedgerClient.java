@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.support;
 
-import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
-import com.platinumcoin.pix.payment.domain.LedgerClient;
+import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;

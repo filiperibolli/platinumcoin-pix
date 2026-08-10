@@ -1,11 +1,11 @@
 package com.platinumcoin.pix.auth.domain.usecase;
 
-import com.platinumcoin.pix.auth.domain.InvalidCredentialsException;
-import com.platinumcoin.pix.auth.domain.IssuedToken;
-import com.platinumcoin.pix.auth.domain.PasswordVerifier;
-import com.platinumcoin.pix.auth.domain.TokenIssuer;
-import com.platinumcoin.pix.auth.domain.User;
-import com.platinumcoin.pix.auth.domain.UserRepository;
+import com.platinumcoin.pix.auth.domain.exception.InvalidCredentialsException;
+import com.platinumcoin.pix.auth.domain.model.IssuedToken;
+import com.platinumcoin.pix.auth.domain.model.User;
+import com.platinumcoin.pix.auth.domain.port.PasswordVerifier;
+import com.platinumcoin.pix.auth.domain.port.TokenIssuer;
+import com.platinumcoin.pix.auth.domain.port.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

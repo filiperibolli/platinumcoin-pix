@@ -1,13 +1,13 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.payment.domain.PaymentNotFoundException;
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.exception.PaymentNotFoundException;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Plain-Java contract of the status query (step 22): ownership is enforced here (ADR-0011), and both
