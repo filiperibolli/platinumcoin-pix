@@ -4,7 +4,10 @@ import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import com.platinumcoin.pix.payment.domain.AccountLookupException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
+import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
 import org.slf4j.Logger;
@@ -34,9 +37,17 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       (client bug).</li>
  *   <li>{@code 409 REQUEST_IN_PROGRESS} — a concurrent request with the same key is still in flight;
  *       carries {@code Retry-After: 2} so the client backs off and later replays the result.</li>
+ *   <li>{@code 422 KEY_NOT_FOUND} — the destination Pix key does not resolve to an internal account
+ *       (step 21). {@code 422}, not {@code 404}: the request is well-formed and understood; it is the
+ *       destination it names that does not exist.</li>
  *   <li>{@code 422 LIMIT_EXCEEDED} — the send would breach the debtor's daily Pix limit (step 20,
  *       ADR-0007). {@code 422}, not {@code 403}: the request is well-formed and authorized, it just
  *       violates a business rule a later send or the next calendar day may satisfy.</li>
+ *   <li>{@code 422 INSUFFICIENT_FUNDS} — the ledger refused the debit for lack of funds (step 21). The
+ *       daily-limit reservation is released by the use case before this maps; no money moved.</li>
+ *   <li>{@code 503 LEDGER_UNAVAILABLE} — the ledger was unreachable, timed out, or lost to contention
+ *       (step 21). Carries {@code Retry-After: 5}: nothing was debited and the same {@code txId} is
+ *       safe to retry (ADR-0002).</li>
  *   <li>{@code 502 ACCOUNT_LOOKUP_FAILED} — account-service could not supply the debtor's limit
  *       (not found / unreachable); the fault is a dependency of ours, not the caller's request.</li>
  * </ul>
@@ -53,9 +64,37 @@ public class PaymentExceptionHandler {
     /** Seconds a client should wait before retrying an in-flight idempotent request (ADR-0002). */
     private static final String RETRY_AFTER_SECONDS = "2";
 
+    /** Seconds a client should wait before retrying a send the ledger could not serve (step 21). */
+    private static final String RETRY_AFTER_LEDGER_SECONDS = "5";
+
     @ExceptionHandler(InvalidAmountException.class)
     public ResponseEntity<ProblemDetail> handleInvalidAmount(InvalidAmountException ex) {
         return problem(HttpStatus.BAD_REQUEST, "INVALID_AMOUNT", ex.getMessage());
+    }
+
+    @ExceptionHandler(KeyNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleKeyNotFound(KeyNotFoundException ex) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "KEY_NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(InsufficientFundsException.class)
+    public ResponseEntity<ProblemDetail> handleInsufficientFunds(InsufficientFundsException ex) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "INSUFFICIENT_FUNDS", ex.getMessage());
+    }
+
+    @ExceptionHandler(LedgerUnavailableException.class)
+    public ResponseEntity<ProblemDetail> handleLedgerUnavailable(LedgerUnavailableException ex) {
+        // Nothing was debited and the same txId is safe to retry, so — like REQUEST_IN_PROGRESS — this
+        // carries Retry-After telling the client to back off and re-send rather than give up. The 503
+        // message is safe (no internals); the cause chain is logged, not returned.
+        log.warn("Mapped a domain failure to the client response | status={} code={} detail={} retryAfter={}",
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "LEDGER_UNAVAILABLE", ex.getMessage(),
+                RETRY_AFTER_LEDGER_SECONDS);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_LEDGER_SECONDS)
+                .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(ProblemDetailFactory.of(
+                        HttpStatus.SERVICE_UNAVAILABLE, "LEDGER_UNAVAILABLE", ex.getMessage()));
     }
 
     @ExceptionHandler(IdempotencyKeyRequiredException.class)

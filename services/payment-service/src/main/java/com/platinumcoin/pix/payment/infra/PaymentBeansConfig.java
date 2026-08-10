@@ -4,6 +4,8 @@ import com.platinumcoin.pix.payment.domain.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.DailyLimitReservation;
 import com.platinumcoin.pix.payment.domain.EndToEndIdGenerator;
 import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
+import com.platinumcoin.pix.payment.domain.LedgerClient;
+import com.platinumcoin.pix.payment.domain.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
@@ -45,11 +47,13 @@ public class PaymentBeansConfig {
     SendPixUseCase sendPixUseCase(
             TransactionRepository transactions,
             IdempotencyRepository idempotency,
+            PixKeyResolver pixKeys,
             AccountLimitClient accountLimits,
             DailyLimitReservation dailyLimits,
+            LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
             Clock clock) {
         return new SendPixUseCase(
-                transactions, idempotency, accountLimits, dailyLimits, endToEndIds, clock);
+                transactions, idempotency, pixKeys, accountLimits, dailyLimits, ledger, endToEndIds, clock);
     }
 }

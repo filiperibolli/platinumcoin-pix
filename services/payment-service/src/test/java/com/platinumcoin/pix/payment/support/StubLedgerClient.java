@@ -1,0 +1,61 @@
+package com.platinumcoin.pix.payment.support;
+
+import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.LedgerClient;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * A hermetic {@link LedgerClient} for the payment-service integration tests: an in-memory double-entry
+ * ledger, so a test can assert that a send actually <b>moved money on both legs</b> and that a replay
+ * does not double-debit — without booting ledger-service. The real ledger's atomicity and
+ * no-negative-balance guarantees are proven by ledger-service's own step 14/15 suite; the true
+ * cross-service journey is the end-to-end test (step 46). Registered as {@code @Primary} by
+ * {@link PaymentTestSupport}, overriding {@code HttpLedgerClient}.
+ *
+ * <p>It mirrors the two ledger behaviours the send flow depends on: it refuses a debit that would
+ * overdraw ({@link InsufficientFundsException}, like the ledger's {@code 422}), and it is idempotent by
+ * {@code txId} (a repeat of the same {@code txId} is a no-op that returns normally, like a replay).
+ * System accounts are not modelled — a creditor is simply credited.
+ *
+ * <p><b>Permissive by default</b>: an account whose balance a test has not set is treated as amply
+ * funded ({@link #DEFAULT_BALANCE_CENTS}), so ITs unconcerned with funds (idempotency, limit, skeleton
+ * shape) settle their sends. A test that asserts money moved, or drives the insufficient-funds path,
+ * pins the opening balances it cares about with {@link #setBalance}.
+ */
+public class StubLedgerClient implements LedgerClient {
+
+    /** Opening balance of an unseeded account — large enough that ordinary sends never overdraw. */
+    public static final long DEFAULT_BALANCE_CENTS = 1_000_000_000L;
+
+    private final Map<String, Long> balances = new ConcurrentHashMap<>();
+    private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
+
+    @Override
+    public synchronized void postInternalTransfer(
+            String txId, String debtorAccountId, String creditorAccountId, long amountCents,
+            String description) {
+        // Idempotent by txId: a replayed posting returns normally without moving money again.
+        if (postedTxIds.contains(txId)) {
+            return;
+        }
+        long debtorBalance = balances.getOrDefault(debtorAccountId, DEFAULT_BALANCE_CENTS);
+        if (debtorBalance < amountCents) {
+            throw new InsufficientFundsException();
+        }
+        balances.put(debtorAccountId, debtorBalance - amountCents);
+        balances.merge(creditorAccountId, amountCents, Long::sum);
+        postedTxIds.add(txId);
+    }
+
+    /** Seed an account's opening balance (integer cents) before a test sends. */
+    public void setBalance(String accountId, long balanceCents) {
+        balances.put(accountId, balanceCents);
+    }
+
+    /** The account's current balance in the in-memory ledger (cents). */
+    public long balance(String accountId) {
+        return balances.getOrDefault(accountId, 0L);
+    }
+}

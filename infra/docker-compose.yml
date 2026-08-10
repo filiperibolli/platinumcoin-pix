@@ -121,9 +121,13 @@ services:
       # PlatinumCoin's Pix participant id, baked into every endToEndId (E<ISPB><ts><random>).
       PIX_ISPB: "12345678"
       # account-service base URL: payment-service reads the debtor's dailyLimitCents from its
-      # internal endpoint before reserving daily-limit headroom (step 20). Service name on the
-      # shared network; the caller's bearer token is forwarded (ADR-0007).
+      # internal endpoint before reserving daily-limit headroom (step 20), and resolves the
+      # destination Pix key against its DICT seam (step 21). Service name on the shared network;
+      # the caller's bearer token is forwarded (ADR-0007).
       ACCOUNT_SERVICE_BASE_URL: http://account-service:8082
+      # ledger-service base URL: payment-service commands the atomic debit/credit that settles an
+      # internal Pix (step 21). Service name on the shared network; bearer token forwarded.
+      LEDGER_SERVICE_BASE_URL: http://ledger-service:8085
       # Reach LocalStack by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
       AWS_REGION: us-east-1
@@ -132,9 +136,12 @@ services:
     depends_on:
       localstack:
         condition: service_healthy
-      # The daily-limit check calls account-service; gate startup on it being healthy so the
-      # first send doesn't race a not-yet-ready dependency.
+      # The daily-limit check + key resolution call account-service; gate startup on it being
+      # healthy so the first send doesn't race a not-yet-ready dependency.
       account-service:
+        condition: service_healthy
+      # The internal send debits via ledger-service; gate startup on it being healthy too (step 21).
+      ledger-service:
         condition: service_healthy
     networks:
       - pix-net

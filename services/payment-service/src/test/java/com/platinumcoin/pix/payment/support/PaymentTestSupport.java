@@ -5,10 +5,12 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 /**
- * Shared test wiring for payment-service {@code *IT}s: a {@code @Primary} {@link StubAccountLimitClient}
- * so the send flow reads limits from an in-memory stub rather than a live account-service. Every
- * payment IT imports this (identical config ⇒ one cached Spring context, so the LocalStack singleton
- * is shared and the suite stays fast).
+ * Shared test wiring for payment-service {@code *IT}s: {@code @Primary} in-memory stubs for the three
+ * outbound service ports the send flow uses — the daily-limit client, the Pix-key resolver, and the
+ * ledger — so an IT exercises the orchestration over the real {@code pix_transactions}/
+ * {@code pix_idempotency} tables (LocalStack) without booting account-service or ledger-service. Every
+ * payment IT imports this (identical config ⇒ one cached Spring context, so the LocalStack singleton is
+ * shared and the suite stays fast); a test unconcerned with a port simply leaves its stub at defaults.
  */
 @TestConfiguration
 public class PaymentTestSupport {
@@ -17,5 +19,17 @@ public class PaymentTestSupport {
     @Primary
     public StubAccountLimitClient stubAccountLimitClient() {
         return new StubAccountLimitClient();
+    }
+
+    @Bean
+    @Primary
+    public StubPixKeyResolver stubPixKeyResolver() {
+        return new StubPixKeyResolver();
+    }
+
+    @Bean
+    @Primary
+    public StubLedgerClient stubLedgerClient() {
+        return new StubLedgerClient();
     }
 }

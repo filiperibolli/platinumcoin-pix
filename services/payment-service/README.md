@@ -3,14 +3,19 @@
 > The **send-Pix entry point** of the PlatinumCoin platform — the one endpoint an end user reaches to
 > move money. Step 18 delivers the **walking skeleton** of `POST /v1/payments/pix`: JWT-authenticated,
 > body validated per the OpenAPI contract, `txId` + Pix-standard `endToEndId` generated, the
-> transaction persisted as `RECEIVED` in `pix_transactions`, and a `202 Accepted` returned with a
+> transaction persisted in `pix_transactions`, and a `202 Accepted` returned with a
 > `Location` header. Step 19 adds the **idempotency layer** (claim / replay / `409`). Step 20 adds
-> **daily-limit enforcement** (a calendar-day reservation counter with an MFA seam). Key resolution and
-> the ledger debit thicken the skeleton in step 21.
+> **daily-limit enforcement** (a calendar-day reservation counter with an MFA seam). Step 21 wires the
+> **internal orchestration** — resolve the destination key → account-service's DICT, command the atomic
+> debit/credit in ledger-service, persist the terminal status **`SETTLED`** (an internal transfer settles
+> the instant the posting commits — no SPI leg). The orchestration order `resolve → limit → debit →
+> persist` is the shape the external, asynchronous flow (Sprint 6) will extend.
 
 - **Port:** `8084`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation); **account-service**
-  (reads `dailyLimitCents` from `GET /internal/accounts/{id}` before reserving limit headroom, step 20)
+  (reads `dailyLimitCents` from `GET /internal/accounts/{id}`, and resolves the destination key via
+  `GET /internal/pix-keys/resolve`, step 21); **ledger-service** (commands the atomic debit/credit via
+  `POST /internal/ledger/postings`, step 21)
 - **Infra:** LocalStack (DynamoDB, tables `pix_transactions` + `pix_idempotency`) — created by the
   step-17 init script `infra/localstack/init/03-dynamodb-payment.sh` (no seed rows; transactions are
   born from the flow, not seeded). The daily-limit counter lives in `pix_transactions` as
@@ -32,7 +37,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. Persists the transaction as `RECEIVED`. |
+| `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); the wire `status` stays `PROCESSING` — the honest terminal state is served by `GET /payments/{id}` (step 22). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -43,7 +48,10 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `Idempotency-Key` header absent/blank | `400` | `IDEMPOTENCY_KEY_REQUIRED` |
 | same `Idempotency-Key` replayed with a different payload | `409` | `IDEMPOTENCY_KEY_REUSED` |
 | a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
+| the destination Pix key does not resolve to an internal account (step 21) | `422` | `KEY_NOT_FOUND` |
 | the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
+| the ledger refused the debit for lack of funds (step 21; limit reservation released) | `422` | `INSUFFICIENT_FUNDS` |
+| the ledger was unreachable / timed out / lost to contention (step 21; carries `Retry-After: 5`) | `503` | `LEDGER_UNAVAILABLE` |
 | account-service could not supply the debtor's limit (not found / unreachable) | `502` | `ACCOUNT_LOOKUP_FAILED` |
 | no / invalid token | `401` | `UNAUTHORIZED` |
 
@@ -70,6 +78,19 @@ step-up challenge later changes one branch, not the flow. The reservation lives 
 idempotency claim, so a double-tap or a replay never reserves twice; `release` (`ADD -:amount`) is
 provided for a later rejection/reversal to hand back exactly what it reserved (wired in steps 21/25/33).
 
+**Internal orchestration (step 21).** For an internal send, the won-claim path is `resolve → limit →
+debit → persist` — the shape the external flow (Sprint 6) extends. (1) **Resolve** the destination key
+against account-service's DICT (`GET /internal/pix-keys/resolve`) → the creditor's internal `accountId`;
+an unknown key is `422 KEY_NOT_FOUND` **before** the limit counter is touched, so there is nothing to
+unwind. (2) **Reserve** the daily limit. (3) **Debit**: command ledger-service
+(`POST /internal/ledger/postings`, `entryType=PIX_INTERNAL`, keyed by `txId`) to move both legs in one
+atomic transaction (Domain Safety Rule #4). `INSUFFICIENT_FUNDS` ⇒ `422` and the reservation is
+**released** (no money moved); ledger unreachable/timeout/503 ⇒ `503 LEDGER_UNAVAILABLE` + `Retry-After:
+5` (nothing debited, the same `txId` is safe to retry — a circuit breaker is deferred to step 32). (4)
+**Persist** `SETTLED` with `settledAt` and the resolved `creditorAccountId`: an internal transfer has no
+SPI leg, so the atomic posting *is* the settlement — it never dwells in an intermediate `DEBITED` that
+`GET /payments/{id}` would map to an eternal `PROCESSING`.
+
 ### The send request
 
 - **The debtor is the token, and the payload cannot express one.** `SendPixRequest` has `pixKey`,
@@ -95,16 +116,19 @@ provided for a later rejection/reversal to hand back exactly what it reserved (w
 
 ```
 api/    PaymentController (POST /v1/payments/pix), SendPixRequest (wire shape + bean validation),
-        PaymentAcceptedResponse (internal RECEIVED → external "PROCESSING"),
+        PaymentAcceptedResponse (internal state → external "PROCESSING"),
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Transaction (record), TransactionStatus (enum), TransactionRepository (port),
+domain/         Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
+                TransactionRepository, PixKeyResolver, LedgerClient (ports),
                 Money (string → strictly-positive long cents), EndToEndIdGenerator,
                 AccountLimitClient + DailyLimitReservation (ports), LimitDecision (enum),
-                InvalidAmountException, LimitExceededException, AccountLookupException   (plain Java)
+                InvalidAmountException, KeyNotFoundException, LimitExceededException,
+                InsufficientFundsException, LedgerUnavailableException, AccountLookupException  (plain Java)
 domain/usecase/ SendPixUseCase, SendPixCommand                                        (plain Java)
 infra/  DynamoTransactionRepository (AWS SDK — the only place a transaction is written),
-        DynamoDailyLimitReservation (the LIMIT#/DAY# counter), HttpAccountLimitClient (RestClient →
-        account-service, forwards the bearer token), DynamoConfig,
+        DynamoDailyLimitReservation (the LIMIT#/DAY# counter), HttpAccountLimitClient +
+        HttpPixKeyResolver (RestClient → account-service), HttpLedgerClient (RestClient →
+        ledger-service, with connect/read timeouts) — all forward the bearer token; DynamoConfig,
         PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator, use case),
         AwsProperties, CorsConfig                                         (outbound adapter + wiring)
 ```
@@ -124,7 +148,8 @@ mechanical rather than a review habit.
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/v1/payments/**` is **not** here — every send requires a token. |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
-| `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup; compose overrides to `http://account-service:8082`. |
+| `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup **and** key resolution (step 21); compose overrides to `http://account-service:8082`. |
+| `LEDGER_SERVICE_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service base URL for the atomic debit/credit (step 21); compose overrides to `http://ledger-service:8085`. Connect/read timeouts default 2000/3000 ms (`services.ledger-service.*-timeout-ms`). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |

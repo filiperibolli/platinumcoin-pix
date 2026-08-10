@@ -30,13 +30,20 @@ pix:
   ispb: ${PIX_ISPB:12345678}
 
 # Service-to-service base URLs. payment-service reads the debtor's dailyLimitCents from account-service
-# before reserving daily-limit headroom (step 20). Default targets a locally-run account-service
-# (port 8082, docs/local-dev.md §2); compose overrides it to the service name on the shared network.
-# The internal endpoint is behind the JWT filter, so the caller's bearer token is forwarded (ADR-0007;
-# a service credential is the deployed posture, step-45 hardening).
+# before reserving daily-limit headroom (step 20), resolves the destination Pix key against
+# account-service's DICT seam, and commands the atomic debit/credit against ledger-service (step 21).
+# Defaults target locally-run services (ports 8082/8085, docs/local-dev.md §2); compose overrides them
+# to the service names on the shared network. Both internal endpoints are behind the JWT filter, so the
+# caller's bearer token is forwarded (ADR-0007; a service credential is the deployed posture, step-45).
 services:
   account-service:
     base-url: ${ACCOUNT_SERVICE_BASE_URL:http://localhost:8082}
+  ledger-service:
+    base-url: ${LEDGER_SERVICE_BASE_URL:http://localhost:8085}
+    # A hung ledger must surface as a timeout (→ 503 LEDGER_UNAVAILABLE + Retry-After), not pin the
+    # request thread. A deployed build adds a circuit breaker after repeated failures (step 32).
+    connect-timeout-ms: ${LEDGER_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${LEDGER_READ_TIMEOUT_MS:3000}
 
 # AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
 # AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK
