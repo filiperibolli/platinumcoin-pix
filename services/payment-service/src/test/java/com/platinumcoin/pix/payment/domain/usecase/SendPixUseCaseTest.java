@@ -9,11 +9,14 @@ import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
 import com.platinumcoin.pix.payment.domain.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.LimitDecision;
+import com.platinumcoin.pix.payment.domain.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
 import com.platinumcoin.pix.payment.domain.Transaction;
 import com.platinumcoin.pix.payment.domain.TransactionStatus;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
 
@@ -33,8 +36,10 @@ class SendPixUseCaseTest {
     private final EndToEndIdGenerator endToEndIds = new EndToEndIdGenerator("12345678");
     private final FakeTransactionRepository transactions = new FakeTransactionRepository();
     private final FakeIdempotencyRepository idempotency = new FakeIdempotencyRepository();
-    private final SendPixUseCase useCase =
-            new SendPixUseCase(transactions, idempotency, endToEndIds, clock);
+    private final FakeAccountLimitClient accountLimits = new FakeAccountLimitClient();
+    private final FakeDailyLimitReservation dailyLimits = new FakeDailyLimitReservation();
+    private final SendPixUseCase useCase = new SendPixUseCase(
+            transactions, idempotency, accountLimits, dailyLimits, endToEndIds, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -159,11 +164,54 @@ class SendPixUseCaseTest {
         assertThat(useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)).replayed()).isTrue();
     }
 
+    // --- step 20: daily limit -------------------------------------------------------------------
+
+    @Test
+    void underTheDailyLimitTheSendProceedsAndReservesTheAmountOnce() {
+        accountLimits.setDailyLimitCents(50_000L); // R$ 500,00
+
+        accept(command("bob@platinum.com", "125.50", "lunch", KEY));
+
+        // Reserved exactly the amount, exactly once — a maintained counter, not a re-summed total.
+        assertThat(dailyLimits.reserveCalls()).isEqualTo(1);
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isEqualTo(12_550L);
+        assertThat(transactions.only().amountCents()).isEqualTo(12_550L);
+    }
+
+    @Test
+    void overTheDailyLimitIsRefusedWith422AndPersistsNoTransaction() {
+        accountLimits.setDailyLimitCents(10_000L); // R$ 100,00 — below the R$ 125,50 send
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
+                .isInstanceOf(LimitExceededException.class);
+
+        // Nothing advanced: no transaction, and the counter was not incremented by a denied reserve.
+        assertThat(transactions.created()).isEmpty();
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isZero();
+    }
+
+    @Test
+    void aRequireStepUpDecisionCurrentlyDeniesTheSendTheMfaSeamMapsToRefusal() {
+        // The MFA seam (ADR-0007): a reservation could ask for step-up; until MFA exists it must deny.
+        dailyLimits.force(LimitDecision.REQUIRE_STEP_UP);
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(LimitExceededException.class);
+
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
+    private static LocalDate saoPauloDay() {
+        return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();
+    }
+
     /** The request-hash the use case computes for the canonical "lunch / 10.00" request. */
     private String hashOfLunch10() {
         // Drive a first real accept under a throwaway key to capture the stored hash, then read it back.
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
-        new SendPixUseCase(new FakeTransactionRepository(), probe, endToEndIds, clock)
+        new SendPixUseCase(new FakeTransactionRepository(), probe, new FakeAccountLimitClient(),
+                new FakeDailyLimitReservation(), endToEndIds, clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
     }

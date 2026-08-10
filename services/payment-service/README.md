@@ -4,14 +4,17 @@
 > move money. Step 18 delivers the **walking skeleton** of `POST /v1/payments/pix`: JWT-authenticated,
 > body validated per the OpenAPI contract, `txId` + Pix-standard `endToEndId` generated, the
 > transaction persisted as `RECEIVED` in `pix_transactions`, and a `202 Accepted` returned with a
-> `Location` header. Step 19 adds the **idempotency layer** (claim / replay / `409`). Limits, key
-> resolution and the ledger debit thicken the skeleton across steps 20–21.
+> `Location` header. Step 19 adds the **idempotency layer** (claim / replay / `409`). Step 20 adds
+> **daily-limit enforcement** (a calendar-day reservation counter with an MFA seam). Key resolution and
+> the ledger debit thicken the skeleton in step 21.
 
 - **Port:** `8084`
-- **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation)
+- **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation); **account-service**
+  (reads `dailyLimitCents` from `GET /internal/accounts/{id}` before reserving limit headroom, step 20)
 - **Infra:** LocalStack (DynamoDB, tables `pix_transactions` + `pix_idempotency`) — created by the
   step-17 init script `infra/localstack/init/03-dynamodb-payment.sh` (no seed rows; transactions are
-  born from the flow, not seeded)
+  born from the flow, not seeded). The daily-limit counter lives in `pix_transactions` as
+  `LIMIT#<accountId>`/`DAY#<yyyy-MM-dd>` items with a ~48h TTL on `expiresAt`.
 
 ## Why it exists
 
@@ -40,6 +43,8 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `Idempotency-Key` header absent/blank | `400` | `IDEMPOTENCY_KEY_REQUIRED` |
 | same `Idempotency-Key` replayed with a different payload | `409` | `IDEMPOTENCY_KEY_REUSED` |
 | a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
+| the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
+| account-service could not supply the debtor's limit (not found / unreachable) | `502` | `ACCOUNT_LOOKUP_FAILED` |
 | no / invalid token | `401` | `UNAUTHORIZED` |
 
 **Idempotency (step 19, ADR-0002 layer 1).** The `Idempotency-Key` header is **required** and the send
@@ -52,6 +57,18 @@ left it orphaned), in which case the retry re-claims it, so a crash never blocks
 TTL. The request-hash is a canonical-JSON SHA-256 over the normalized fields (key order / whitespace
 never change it; a different amount does — `common-lib`'s `CanonicalJson`). DynamoDB TTL deletion is
 lazy, so reads treat an expired-but-present record as absent.
+
+**Daily limit (step 20, ADR-0007).** Before any money moves, the use case reads the debtor's
+`dailyLimitCents` from account-service and **reserves** the amount against a per-account,
+per-calendar-day counter (`LIMIT#<accountId>`/`DAY#<yyyy-MM-dd>` in `pix_transactions`, window = the
+**America/São Paulo** calendar day). The reserve is a conditional `UpdateItem ADD usedCents` — an
+atomic increment bounded by the limit, **not** a query-and-sum (the table has no index by debtor, and a
+counter is what makes `release` well-defined). Over the limit ⇒ `422 LIMIT_EXCEEDED` with nothing
+persisted. The check returns a **decision object** (`ALLOW`/`DENY`/`REQUIRE_STEP_UP`), not a boolean:
+`REQUIRE_STEP_UP` is the **MFA seam** — today it maps to the same deny as `DENY`, so plugging in a
+step-up challenge later changes one branch, not the flow. The reservation lives *inside* the won
+idempotency claim, so a double-tap or a replay never reserves twice; `release` (`ADD -:amount`) is
+provided for a later rejection/reversal to hand back exactly what it reserved (wired in steps 21/25/33).
 
 ### The send request
 
@@ -82,10 +99,13 @@ api/    PaymentController (POST /v1/payments/pix), SendPixRequest (wire shape + 
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
 domain/         Transaction (record), TransactionStatus (enum), TransactionRepository (port),
                 Money (string → strictly-positive long cents), EndToEndIdGenerator,
-                InvalidAmountException                                                 (plain Java)
+                AccountLimitClient + DailyLimitReservation (ports), LimitDecision (enum),
+                InvalidAmountException, LimitExceededException, AccountLookupException   (plain Java)
 domain/usecase/ SendPixUseCase, SendPixCommand                                        (plain Java)
 infra/  DynamoTransactionRepository (AWS SDK — the only place a transaction is written),
-        DynamoConfig, PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator, use case),
+        DynamoDailyLimitReservation (the LIMIT#/DAY# counter), HttpAccountLimitClient (RestClient →
+        account-service, forwards the bearer token), DynamoConfig,
+        PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator, use case),
         AwsProperties, CorsConfig                                         (outbound adapter + wiring)
 ```
 
@@ -104,6 +124,7 @@ mechanical rather than a review habit.
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/v1/payments/**` is **not** here — every send requires a token. |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
+| `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup; compose overrides to `http://account-service:8082`. |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
@@ -146,6 +167,12 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
 curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"12.5"}' | jq
+
+# above the daily limit ⇒ 422 LIMIT_EXCEEDED (seeded limit is R$ 5,000.00; a single R$ 9,000 send
+# alone exceeds it, or repeated sends accumulate past it on the same São Paulo calendar day)
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"9000.00"}' | jq
 
 # no token ⇒ 401 UNAUTHORIZED
 curl -si -X POST localhost:8084/v1/payments/pix -H 'Content-Type: application/json' \

@@ -208,7 +208,7 @@ Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark
 }
 ```
 
-- **Reserve** (before any money moves): `UpdateItem ADD usedCents :amount` with `ConditionExpression: attribute_not_exists(usedCents) OR usedCents <= :limitMinusAmount` (the account's `dailyLimitCents` is read from account-service first; the comparison value is computed client-side because condition expressions cannot do arithmetic). Condition fails ⇒ `422 LIMIT_EXCEEDED`.
+- **Reserve** (before any money moves): `UpdateItem ADD usedCents :amount` with `ConditionExpression: attribute_not_exists(usedCents) OR usedCents <= :limitMinusAmount` (the account's `dailyLimitCents` is read from account-service first; the comparison value is computed client-side because condition expressions cannot do arithmetic). Condition fails ⇒ `422 LIMIT_EXCEEDED`. **First-send guard:** on the day's first send the item does not exist, so `attribute_not_exists(usedCents)` is true and the condition alone would wave through *any* amount — even one larger than the whole limit. So when `dailyLimitCents - amountCents < 0` (the amount alone exceeds the limit) the send is denied **before** the counter is touched, in application code; the conditional `ADD` then only ever governs accumulation. `expiresAt` (~48h epoch seconds) is written on every reserve/release; TTL is enabled on `pix_transactions` for it (only `LIMIT#` items carry `expiresAt`, so transaction/outbox items are never reaped).
 - **Release** (fraud-deny, insufficient funds, reversal): `ADD usedCents -:amount` — a rejection returns exactly what it reserved.
 - Window: **calendar day** (America/Sao_Paulo), matching how Pix limits are communicated to users; TTL (~48h) cleans past days.
 

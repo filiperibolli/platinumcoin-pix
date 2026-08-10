@@ -11,6 +11,37 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Daily limit enforcement (calendar-day reservation counter) with a decision-object MFA seam mapping REQUIRE_STEP_UP to deny (step 20)
+  Before any money moves, payment-service now reads the debtor's `dailyLimitCents` from account-service
+  (`GET /internal/accounts/{id}`, forwarding the caller's bearer token — ADR-0007) and **reserves** the
+  amount against a per-account, per-calendar-day counter (`LIMIT#<accountId>`/`DAY#<yyyy-MM-dd>` in
+  `pix_transactions`, window = the **America/São Paulo** calendar day). Over the limit ⇒ `422
+  LIMIT_EXCEEDED` with **nothing persisted**.
+  **A maintained counter, not a query-and-sum.** `pix_transactions` deliberately has no index by debtor
+  account, so "today's outbound total" is not a supported access pattern. Reserve is a conditional
+  `UpdateItem ADD usedCents :amount` with `attribute_not_exists(usedCents) OR usedCents <=
+  :limitMinusAmount` — an atomic increment bounded by the limit — and a counter is what makes **release**
+  (`ADD -:amount`) well-defined: a later rejection/reversal (steps 21/25/33) hands back exactly what it
+  reserved. The comparison value is computed in Java (condition expressions cannot do arithmetic); a
+  **first-send guard** denies an amount that alone exceeds the whole limit before the counter is touched,
+  since on the day's first send `attribute_not_exists(usedCents)` would otherwise wave any amount through
+  (docs/data-model.md §4 amended).
+  **The MFA seam is explicit (ADR-0007).** The check returns a `LimitDecision` object
+  (`ALLOW`/`DENY`/`REQUIRE_STEP_UP`), not a boolean; `REQUIRE_STEP_UP` maps to the same deny path as
+  `DENY` today, so plugging in a step-up challenge later changes **one branch, not the flow** —
+  unit-tested to currently deny.
+  **The reservation sits inside the won idempotency claim**, so a double-tap (one claim winner) or a
+  replay (`COMPLETED`) never reserves twice. Two conservative, documented edges: a stale-reclaim after a
+  crash between reserve and complete may over-count usage (never overspend, self-heals next day), and a
+  `DENY` leaves the idempotency record `IN_PROGRESS` so an immediate retry gets `409 REQUEST_IN_PROGRESS`
+  until the 60s stale window turns it into a deterministic `422`.
+  Ports `AccountLimitClient` (HTTP, `RestClient` with token forwarding) and `DailyLimitReservation`
+  (DynamoDB) keep `domain/` framework-free (ArchUnit still green). TTL on `pix_transactions.expiresAt`
+  enabled in the step-17 init script (only `LIMIT#` items carry `expiresAt`; tx/outbox items untouched).
+  Tests: `DynamoDailyLimitReservationIT` (reserve/deny/day-boundary/release-restores on LocalStack),
+  `DailyLimitIT` (202 under limit, `422 LIMIT_EXCEEDED` on crossing, no tx advanced), and use-case units
+  for the ALLOW/DENY/REQUIRE_STEP_UP branches.
+  AI: est 3h / actual 2.25h / ~85% generated / 0 issues caught in human review
 - Idempotency layer on send: conditional claim, response replay, 409 on key reuse with different payload (step 19)
   ADR-0002's **first layer** on `POST /v1/payments/pix` — the API-level answer to "the user tapped twice
   / the network retried". The `Idempotency-Key` header is now enforced and the send is de-duplicated per

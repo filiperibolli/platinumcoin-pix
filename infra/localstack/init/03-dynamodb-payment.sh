@@ -68,6 +68,22 @@ create_table_if_absent pix_transactions \
       ]' \
   --billing-mode PAY_PER_REQUEST
 
+# Enable TTL on expiresAt for pix_transactions. ONLY the daily-limit counter items
+# (LIMIT#<accountId>/DAY#<day>, step 20) carry an expiresAt (~48h), so TTL reaps past
+# days automatically; transaction META and OUTBOX# items have no expiresAt and are
+# never touched. Same describe-guarded, idempotent pattern as pix_idempotency below.
+ttl_status_tx=$(aws --endpoint-url="$ENDPOINT" dynamodb describe-time-to-live \
+  --table-name pix_transactions --query 'TimeToLiveDescription.TimeToLiveStatus' --output text 2>/dev/null || echo "UNKNOWN")
+if [ "$ttl_status_tx" = "ENABLED" ] || [ "$ttl_status_tx" = "ENABLING" ]; then
+  echo "[init] TTL on pix_transactions.expiresAt already $ttl_status_tx — skipping"
+else
+  echo "[init] enabling TTL on pix_transactions.expiresAt"
+  aws --endpoint-url="$ENDPOINT" dynamodb update-time-to-live \
+    --table-name pix_transactions \
+    --time-to-live-specification 'Enabled=true,AttributeName=expiresAt' >/dev/null
+  echo "[init] TTL enabled on pix_transactions.expiresAt"
+fi
+
 # ── pix_idempotency ───────────────────────────────────────────────────────────
 # PK IDEM#<accountId>#<idempotencyKey>, SK META — one record per money-moving POST
 # (step 19). Claimed with attribute_not_exists(pk); the record carries a request
@@ -98,4 +114,4 @@ else
   echo "[init] TTL enabled on pix_idempotency.expiresAt"
 fi
 
-echo "[init] payment tables ready: pix_transactions (gsi1/gsi2/sparse gsi3), pix_idempotency (TTL)"
+echo "[init] payment tables ready: pix_transactions (gsi1/gsi2/sparse gsi3, TTL on expiresAt), pix_idempotency (TTL)"
