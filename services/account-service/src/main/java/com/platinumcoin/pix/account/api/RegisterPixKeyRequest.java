@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
-import com.platinumcoin.pix.account.domain.PixKeyType;
+import com.platinumcoin.pix.account.domain.model.PixKeyType;
 import jakarta.validation.constraints.NotNull;
 
 /**

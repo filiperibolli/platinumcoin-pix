@@ -1,9 +1,8 @@
 package com.platinumcoin.pix.auth.infra;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.assertj.core.api.Assertions.assertThat;
-
-import com.platinumcoin.pix.auth.domain.IssuedToken;
+import com.platinumcoin.pix.auth.domain.model.IssuedToken;
+import com.platinumcoin.pix.auth.infra.config.JwtProperties;
+import com.platinumcoin.pix.auth.infra.security.JwtIssuer;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.Jwts;
@@ -11,6 +10,9 @@ import io.jsonwebtoken.security.Keys;
 import java.time.Duration;
 import javax.crypto.SecretKey;
 import org.junit.jupiter.api.Test;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit test of the HS256 issuer: the token must verify under the shared secret, carry the exact

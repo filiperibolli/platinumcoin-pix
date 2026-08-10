@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionRepository;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;

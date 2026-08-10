@@ -1,9 +1,11 @@
 package com.platinumcoin.pix.payment.domain;
 
+import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.model.Money;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import org.junit.jupiter.api.Test;
 
 /**
  * The money invariant, tested explicitly (CLAUDE.md): a decimal string becomes exact integer cents,

@@ -1,24 +1,24 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
-import com.platinumcoin.pix.payment.domain.AccountLimitClient;
-import com.platinumcoin.pix.payment.domain.DailyLimitReservation;
-import com.platinumcoin.pix.payment.domain.EndToEndIdGenerator;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
-import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
-import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
-import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
-import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
-import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
-import com.platinumcoin.pix.payment.domain.LedgerClient;
-import com.platinumcoin.pix.payment.domain.LimitDecision;
-import com.platinumcoin.pix.payment.domain.LimitExceededException;
-import com.platinumcoin.pix.payment.domain.Money;
-import com.platinumcoin.pix.payment.domain.PixKeyResolver;
-import com.platinumcoin.pix.payment.domain.RequestInProgressException;
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionRepository;
-import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
+import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
+import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
+import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
+import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.model.LimitDecision;
+import com.platinumcoin.pix.payment.domain.model.Money;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
+import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
+import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
+import com.platinumcoin.pix.payment.domain.port.LedgerClient;
+import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
+import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
+import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -120,16 +120,16 @@ public class SendPixUseCase {
      * Accept the send idempotently and return whether the transaction was freshly accepted or the
      * response was replayed.
      *
-     * @throws com.platinumcoin.pix.payment.domain.InvalidAmountException the amount is not strictly
+     * @throws com.platinumcoin.pix.payment.domain.exception.InvalidAmountException the amount is not strictly
      *                                                                    positive money
      * @throws IdempotencyKeyRequiredException the {@code Idempotency-Key} was absent/blank
      * @throws IdempotencyKeyReuseException    the key was replayed with a different payload
      * @throws RequestInProgressException      a concurrent request with the same key is in flight
-     * @throws com.platinumcoin.pix.payment.domain.KeyNotFoundException      the destination key does not
+     * @throws com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException      the destination key does not
      *                                                                       resolve to an internal account
      * @throws LimitExceededException          the send would breach the debtor's daily Pix limit
      * @throws InsufficientFundsException      the ledger refused the debit for lack of funds
-     * @throws com.platinumcoin.pix.payment.domain.LedgerUnavailableException the ledger was unreachable
+     * @throws com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException the ledger was unreachable
      */
     public SendPixOutcome execute(SendPixCommand command) {
         String key = command.idempotencyKey();
@@ -281,7 +281,7 @@ public class SendPixUseCase {
      *
      * <p>On {@link InsufficientFundsException} the ledger wrote nothing — the guard lives inside its
      * transaction — so the daily-limit reservation taken in step 2 is <b>released</b> before the failure
-     * propagates as a {@code 422}. A {@link com.platinumcoin.pix.payment.domain.LedgerUnavailableException}
+     * propagates as a {@code 422}. A {@link com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException}
      * is <i>not</i> released: nothing was debited and the client retries the same idempotency key, which
      * re-drives this whole path (the reservation is honoured by that retry). Leaving the record
      * {@code IN_PROGRESS} accepts the conservative over-count edge ADR-0007/step 20 already documents —

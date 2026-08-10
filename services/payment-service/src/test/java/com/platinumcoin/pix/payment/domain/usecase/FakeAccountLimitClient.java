@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
-import com.platinumcoin.pix.payment.domain.AccountLimitClient;
+import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 
 /**
  * In-memory {@link AccountLimitClient} for the plain-Java use-case tests: returns a single configured

@@ -1,10 +1,10 @@
 package com.platinumcoin.pix.account.api;
 
-import com.platinumcoin.pix.account.domain.AccountNotFoundException;
-import com.platinumcoin.pix.account.domain.InvalidPixKeyException;
-import com.platinumcoin.pix.account.domain.PixKeyAlreadyExistsException;
-import com.platinumcoin.pix.account.domain.PixKeyNotFoundException;
-import com.platinumcoin.pix.account.domain.PixKeyNotOwnedException;
+import com.platinumcoin.pix.account.domain.exception.AccountNotFoundException;
+import com.platinumcoin.pix.account.domain.exception.InvalidPixKeyException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyAlreadyExistsException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotFoundException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotOwnedException;
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

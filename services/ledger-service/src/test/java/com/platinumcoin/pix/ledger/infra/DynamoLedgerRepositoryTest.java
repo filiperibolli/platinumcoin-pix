@@ -1,11 +1,9 @@
 package com.platinumcoin.pix.ledger.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.ledger.domain.AccountPolicy;
-import com.platinumcoin.pix.ledger.domain.InvalidCursorException;
-import com.platinumcoin.pix.ledger.domain.StatementPage;
+import com.platinumcoin.pix.ledger.domain.exception.InvalidCursorException;
+import com.platinumcoin.pix.ledger.domain.model.StatementPage;
+import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
+import com.platinumcoin.pix.ledger.infra.persistence.DynamoLedgerRepository;
 import java.util.Map;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.Test;
@@ -15,6 +13,9 @@ import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
 import software.amazon.awssdk.services.dynamodb.model.GetItemResponse;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
 import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Asserts the <b>shape of the request</b> the adapter sends — the part

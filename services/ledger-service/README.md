@@ -139,15 +139,17 @@ api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance + /entr
         PostingRequest / PostingResponse, BalanceResponse (cents → decimal string),
         StatementResponse / StatementEntry (page + cents → signed decimal string),
         LedgerExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Balance, LedgerEntry, StatementPage (records), Direction (enum),
-                AccountPolicy, PostingCommand, PostingResult, LedgerRepository (port),
-                LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
-                PostingConflict / LedgerBusy / InvalidCursor exceptions               (plain Java)
-domain/usecase/ GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase        (plain Java)
-infra/  DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
-        reading of cancellationReasons live here and nowhere else),
-        DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
-        AwsProperties, CorsConfig                                         (outbound adapter + wiring)
+domain/model/     Balance, LedgerEntry, StatementPage, PostingCommand, PostingResult (records),
+                  Direction (enum)                                                    (plain Java)
+domain/port/      LedgerRepository                                            (outbound interface)
+domain/exception/ LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
+                  PostingConflict / LedgerBusy / InvalidCursor exceptions             (plain Java)
+domain/service/   AccountPolicy (system vs customer account rules)                     (plain Java)
+domain/usecase/   GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase       (plain Java)
+infra/persistence/ DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
+                   reading of cancellationReasons live here and nowhere else)
+infra/config/      DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
+                   AwsProperties, CorsConfig                                (outbound adapter + wiring)
 ```
 
 `Clock` is injected rather than read as `Instant.now()`: the posting's instant becomes part of both

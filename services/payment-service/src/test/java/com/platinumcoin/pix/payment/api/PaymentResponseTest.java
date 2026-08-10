@@ -1,11 +1,11 @@
 package com.platinumcoin.pix.payment.api;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The edge mapping from the internal state machine to the external wire vocabulary (step 22). The

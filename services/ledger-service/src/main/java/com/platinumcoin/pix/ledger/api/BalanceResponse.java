@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.ledger.api;
 
-import com.platinumcoin.pix.ledger.domain.Balance;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
 import java.math.BigDecimal;
 
 /**

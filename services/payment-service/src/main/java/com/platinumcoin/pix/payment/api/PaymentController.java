@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.api;
 
 import com.platinumcoin.pix.common.security.AuthenticatedUser;
-import com.platinumcoin.pix.payment.domain.Transaction;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixCommand;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixOutcome;

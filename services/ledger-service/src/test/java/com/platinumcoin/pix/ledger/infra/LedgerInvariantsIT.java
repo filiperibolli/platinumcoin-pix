@@ -1,14 +1,12 @@
 package com.platinumcoin.pix.ledger.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.ledger.LedgerAccountFixture;
-import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
-import com.platinumcoin.pix.ledger.domain.LedgerBusyException;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerBusyException;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -29,6 +27,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Concurrency tests for the ledger. LedgerPostingIT covers one posting at a time; this one covers

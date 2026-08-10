@@ -1,16 +1,13 @@
 package com.platinumcoin.pix.ledger.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.ledger.LedgerAccountFixture;
-import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
-import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingConflictException;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerAccountNotFoundException;
+import com.platinumcoin.pix.ledger.domain.exception.PostingConflictException;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -21,6 +18,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The double-entry posting against a real DynamoDB — the step's central test, and the one that has to

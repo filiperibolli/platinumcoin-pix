@@ -1,14 +1,14 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.account.domain.Account;
-import com.platinumcoin.pix.account.domain.AccountNotFoundException;
-import com.platinumcoin.pix.account.domain.AccountRepository;
+import com.platinumcoin.pix.account.domain.exception.AccountNotFoundException;
+import com.platinumcoin.pix.account.domain.model.Account;
+import com.platinumcoin.pix.account.domain.port.AccountRepository;
 import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Thin use case, thin test — but it pins the one behaviour that is not the repository's: a valid

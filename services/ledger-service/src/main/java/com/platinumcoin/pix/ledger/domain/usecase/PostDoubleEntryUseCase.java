@@ -1,9 +1,9 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import com.platinumcoin.pix.ledger.domain.InvalidPostingException;
-import com.platinumcoin.pix.ledger.domain.LedgerRepository;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.exception.InvalidPostingException;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;

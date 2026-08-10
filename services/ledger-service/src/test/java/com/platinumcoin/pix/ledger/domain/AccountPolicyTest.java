@@ -1,8 +1,9 @@
 package com.platinumcoin.pix.ledger.domain;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
+import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The one place that decides which accounts may go negative. This is a money rule, so it gets a test

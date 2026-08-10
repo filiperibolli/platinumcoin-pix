@@ -1,8 +1,8 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import com.platinumcoin.pix.account.domain.Account;
-import com.platinumcoin.pix.account.domain.AccountNotFoundException;
-import com.platinumcoin.pix.account.domain.AccountRepository;
+import com.platinumcoin.pix.account.domain.exception.AccountNotFoundException;
+import com.platinumcoin.pix.account.domain.model.Account;
+import com.platinumcoin.pix.account.domain.port.AccountRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

@@ -81,14 +81,15 @@ api/    AccountController (/v1/accounts/me), InternalAccountController (/interna
         PixKeyController (/v1/pix-keys), InternalPixKeyController (/internal/pix-keys/resolve),
         AccountResponse, InternalAccountResponse, RegisterPixKeyRequest, PixKeyResponse,
         AccountExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Account, PixKey, KeyResolution (records), PixKeyType (enum),
-                AccountRepository, PixKeyRepository (ports),
-                AccountNotFound / InvalidPixKey / PixKeyAlreadyExists /
-                PixKeyNotFound / PixKeyNotOwned exceptions                              (plain Java)
-domain/usecase/ GetMyAccountUseCase, GetAccountUseCase, RegisterPixKeyUseCase,
-                ListPixKeysUseCase, DeletePixKeyUseCase, ResolvePixKeyUseCase           (plain Java)
-infra/  DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK), DynamoConfig,
-        AccountBeansConfig (composition root + Clock), AwsProperties        (outbound adapter + wiring)
+domain/model/     Account, PixKey, KeyResolution (records), PixKeyType (enum)          (plain Java)
+domain/port/      AccountRepository, PixKeyRepository                          (outbound interfaces)
+domain/exception/ AccountNotFound / InvalidPixKey / PixKeyAlreadyExists /
+                  PixKeyNotFound / PixKeyNotOwned exceptions                           (plain Java)
+domain/usecase/   GetMyAccountUseCase, GetAccountUseCase, RegisterPixKeyUseCase,
+                  ListPixKeysUseCase, DeletePixKeyUseCase, ResolvePixKeyUseCase         (plain Java)
+infra/persistence/ DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK)
+infra/config/      DynamoConfig, AccountBeansConfig (composition root + Clock),
+                   AwsProperties, CorsConfig                                (outbound adapter + wiring)
 ```
 
 **`domain/usecase/` is the capability list** — one class per inbound operation, single `execute(...)`,

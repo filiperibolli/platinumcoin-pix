@@ -1,10 +1,8 @@
 package com.platinumcoin.pix.payment.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
-import com.platinumcoin.pix.payment.domain.DailyLimitReservation;
-import com.platinumcoin.pix.payment.domain.LimitDecision;
+import com.platinumcoin.pix.payment.domain.model.LimitDecision;
+import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
 import com.platinumcoin.pix.payment.support.PaymentTestSupport;
 import java.time.LocalDate;
 import java.util.Map;
@@ -14,6 +12,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The reserve/release counter over the real {@code pix_transactions} {@code LIMIT#}/{@code DAY#} item

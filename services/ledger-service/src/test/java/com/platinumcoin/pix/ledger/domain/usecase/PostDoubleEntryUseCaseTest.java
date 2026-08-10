@@ -1,15 +1,15 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.ledger.domain.InvalidPostingException;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.exception.InvalidPostingException;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The use case owns three things the adapter must never decide: <b>what a valid posting is</b>,

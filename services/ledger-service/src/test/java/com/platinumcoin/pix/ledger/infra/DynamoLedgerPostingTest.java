@@ -1,15 +1,13 @@
 package com.platinumcoin.pix.ledger.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.ledger.domain.AccountPolicy;
-import com.platinumcoin.pix.ledger.domain.InsufficientFundsException;
-import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
-import com.platinumcoin.pix.ledger.domain.LedgerBusyException;
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
-import com.platinumcoin.pix.ledger.domain.PostingConflictException;
-import com.platinumcoin.pix.ledger.domain.PostingResult;
+import com.platinumcoin.pix.ledger.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerAccountNotFoundException;
+import com.platinumcoin.pix.ledger.domain.exception.LedgerBusyException;
+import com.platinumcoin.pix.ledger.domain.exception.PostingConflictException;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
+import com.platinumcoin.pix.ledger.infra.persistence.DynamoLedgerRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,6 +26,9 @@ import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsRequest;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItemsResponse;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 import software.amazon.awssdk.services.dynamodb.model.Update;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Two things only this test can prove, and both are money-critical.

@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.ledger.api;
 
-import com.platinumcoin.pix.ledger.domain.PostingCommand;
+import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
 

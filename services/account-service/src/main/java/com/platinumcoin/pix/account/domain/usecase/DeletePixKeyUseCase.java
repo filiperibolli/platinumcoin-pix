@@ -1,9 +1,9 @@
 package com.platinumcoin.pix.account.domain.usecase;
 
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyNotFoundException;
-import com.platinumcoin.pix.account.domain.PixKeyNotOwnedException;
-import com.platinumcoin.pix.account.domain.PixKeyRepository;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotFoundException;
+import com.platinumcoin.pix.account.domain.exception.PixKeyNotOwnedException;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

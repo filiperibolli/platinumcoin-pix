@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.payment.api;
 
-import com.platinumcoin.pix.payment.domain.Transaction;
-import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.math.BigDecimal;
 import java.time.Instant;
 

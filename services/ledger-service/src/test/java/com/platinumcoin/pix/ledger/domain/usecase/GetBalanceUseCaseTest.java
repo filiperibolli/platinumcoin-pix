@@ -1,11 +1,11 @@
 package com.platinumcoin.pix.ledger.domain.usecase;
 
+import com.platinumcoin.pix.ledger.domain.exception.LedgerAccountNotFoundException;
+import com.platinumcoin.pix.ledger.domain.model.Balance;
+import org.junit.jupiter.api.Test;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import com.platinumcoin.pix.ledger.domain.Balance;
-import com.platinumcoin.pix.ledger.domain.LedgerAccountNotFoundException;
-import org.junit.jupiter.api.Test;
 
 /**
  * The one business decision this step owns: an absent BALANCE item is a domain failure

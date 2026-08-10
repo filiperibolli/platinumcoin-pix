@@ -1,7 +1,7 @@
 package com.platinumcoin.pix.ledger.api;
 
-import com.platinumcoin.pix.ledger.domain.Direction;
-import com.platinumcoin.pix.ledger.domain.LedgerEntry;
+import com.platinumcoin.pix.ledger.domain.model.Direction;
+import com.platinumcoin.pix.ledger.domain.model.LedgerEntry;
 import java.math.BigDecimal;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;

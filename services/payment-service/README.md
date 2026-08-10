@@ -120,20 +120,23 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         + bean validation), PaymentAcceptedResponse (internal state → external "PROCESSING"),
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/         Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
-                TransactionRepository, PixKeyResolver, LedgerClient (ports),
-                Money (string → strictly-positive long cents), EndToEndIdGenerator,
-                AccountLimitClient + DailyLimitReservation (ports), LimitDecision (enum),
-                InvalidAmountException, KeyNotFoundException, LimitExceededException,
-                InsufficientFundsException, LedgerUnavailableException, AccountLookupException,
-                PaymentNotFoundException                                                        (plain Java)
-domain/usecase/ SendPixUseCase, SendPixCommand, GetPaymentStatusUseCase              (plain Java)
-infra/  DynamoTransactionRepository (AWS SDK — the only place a transaction is written),
-        DynamoDailyLimitReservation (the LIMIT#/DAY# counter), HttpAccountLimitClient +
-        HttpPixKeyResolver (RestClient → account-service), HttpLedgerClient (RestClient →
-        ledger-service, with connect/read timeouts) — all forward the bearer token; DynamoConfig,
-        PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator, use case),
-        AwsProperties, CorsConfig                                         (outbound adapter + wiring)
+domain/model/     Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
+                  IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
+                  Money (string → strictly-positive long cents)                       (plain Java)
+domain/port/      TransactionRepository, IdempotencyRepository, PixKeyResolver, LedgerClient,
+                  AccountLimitClient, DailyLimitReservation                    (outbound interfaces)
+domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededException,
+                  InsufficientFundsException, LedgerUnavailableException, AccountLookupException,
+                  PaymentNotFoundException, IdempotencyKeyRequiredException,
+                  IdempotencyKeyReuseException, RequestInProgressException            (plain Java)
+domain/service/   EndToEndIdGenerator (BACEN E2E id minting)                          (plain Java)
+domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase (plain Java)
+infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
+                   DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter)
+infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
+                   HttpLedgerClient (RestClient → ledger-service, timeouts) — all forward the bearer token
+infra/config/      DynamoConfig, PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator,
+                   use case), AwsProperties, CorsConfig                    (outbound adapter + wiring)
 ```
 
 `Clock` is injected rather than read as `Instant.now()`: the transaction's instant, and the minute

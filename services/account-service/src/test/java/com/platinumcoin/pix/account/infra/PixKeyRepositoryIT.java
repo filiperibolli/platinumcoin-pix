@@ -1,10 +1,8 @@
 package com.platinumcoin.pix.account.infra;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
-import com.platinumcoin.pix.account.domain.PixKey;
-import com.platinumcoin.pix.account.domain.PixKeyRepository;
-import com.platinumcoin.pix.account.domain.PixKeyType;
+import com.platinumcoin.pix.account.domain.model.PixKey;
+import com.platinumcoin.pix.account.domain.model.PixKeyType;
+import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import java.time.Instant;
 import java.util.List;
@@ -12,6 +10,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Proves the DynamoDB adapter enforces the {@code pix_keys} model against the real (step-07) table on

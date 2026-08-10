@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.auth.api;
 
-import com.platinumcoin.pix.auth.domain.InvalidCredentialsException;
+import com.platinumcoin.pix.auth.domain.exception.InvalidCredentialsException;
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

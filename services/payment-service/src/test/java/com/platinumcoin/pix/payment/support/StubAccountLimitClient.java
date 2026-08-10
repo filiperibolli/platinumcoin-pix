@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.payment.support;
 
-import com.platinumcoin.pix.payment.domain.AccountLimitClient;
+import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
