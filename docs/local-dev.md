@@ -419,6 +419,24 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
   -d '{"pixKey":"bob@platinum.com","amount":"9999999.00"}' | jq -r .code # INSUFFICIENT_FUNDS (422), limit released
 ```
 
+**Step 22 — status query: `GET /payments/{id}`.** Owner-only; maps the internal state onto the
+external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`). Reuse the `$TXID` from the step-21
+happy send above:
+
+```bash
+# 200 with the Payment schema — an internal send already reads back SETTLED + settledAt
+curl -s localhost:8084/v1/payments/$TXID -H "Authorization: Bearer $TOKEN" | jq
+
+# an unknown id → 404 PAYMENT_NOT_FOUND (and a token for another account gives the SAME 404 for a real
+# id — the two are indistinguishable on purpose, so existence never leaks)
+curl -s localhost:8084/v1/payments/tx-does-not-exist -H "Authorization: Bearer $TOKEN" | jq -r .code
+
+# bob's token reading alice's transaction → 404 too (owner-only, from the JWT)
+BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
+curl -s localhost:8084/v1/payments/$TXID -H "Authorization: Bearer $BOB" | jq -r .code  # PAYMENT_NOT_FOUND
+```
+
 ## 4.1 Reading the logs (ADR-0012)
 
 Every service inherits one logging config from `common-lib` — there is nothing to enable per service.

@@ -38,6 +38,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); the wire `status` stays `PROCESSING` — the honest terminal state is served by `GET /payments/{id}` (step 22). |
+| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -115,16 +116,18 @@ SPI leg, so the atomic posting *is* the settlement — it never dwells in an int
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-api/    PaymentController (POST /v1/payments/pix), SendPixRequest (wire shape + bean validation),
-        PaymentAcceptedResponse (internal state → external "PROCESSING"),
+api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPixRequest (wire shape
+        + bean validation), PaymentAcceptedResponse (internal state → external "PROCESSING"),
+        PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
 domain/         Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
                 TransactionRepository, PixKeyResolver, LedgerClient (ports),
                 Money (string → strictly-positive long cents), EndToEndIdGenerator,
                 AccountLimitClient + DailyLimitReservation (ports), LimitDecision (enum),
                 InvalidAmountException, KeyNotFoundException, LimitExceededException,
-                InsufficientFundsException, LedgerUnavailableException, AccountLookupException  (plain Java)
-domain/usecase/ SendPixUseCase, SendPixCommand                                        (plain Java)
+                InsufficientFundsException, LedgerUnavailableException, AccountLookupException,
+                PaymentNotFoundException                                                        (plain Java)
+domain/usecase/ SendPixUseCase, SendPixCommand, GetPaymentStatusUseCase              (plain Java)
 infra/  DynamoTransactionRepository (AWS SDK — the only place a transaction is written),
         DynamoDailyLimitReservation (the LIMIT#/DAY# counter), HttpAccountLimitClient +
         HttpPixKeyResolver (RestClient → account-service), HttpLedgerClient (RestClient →
@@ -179,9 +182,15 @@ TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
 
 # send R$ 125.50 to bob ⇒ 202 + Location + {transactionId, endToEndId, status:"PROCESSING"}
-curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+TX=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
-  -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | head -8
+  -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | jq -r .transactionId)
+
+# poll its status (step 22) ⇒ 200 with the external vocabulary; an internal send is already SETTLED
+curl -s localhost:8084/v1/payments/$TX -H "Authorization: Bearer $TOKEN" | jq
+
+# an unknown id — or someone else's transaction — ⇒ 404 PAYMENT_NOT_FOUND (no existence leak)
+curl -s localhost:8084/v1/payments/tx-does-not-exist -H "Authorization: Bearer $TOKEN" | jq
 
 # "0.00" ⇒ 400 INVALID_AMOUNT (the strictly-positive rule the wire pattern cannot express)
 curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \

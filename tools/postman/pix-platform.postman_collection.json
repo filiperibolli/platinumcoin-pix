@@ -699,6 +699,81 @@
           }
         },
         {
+          "name": "Get payment status (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('is my transaction', () => pm.expect(body.transactionId).to.eql(pm.collectionVariables.get('paymentTxId')));",
+                  "pm.test('external status is one of the wire vocabulary', () => pm.expect(['PROCESSING','SETTLED','FAILED','REVERSED','REJECTED']).to.include(body.status));",
+                  "pm.test('an internal send is already SETTLED', () => pm.expect(body.status).to.eql('SETTLED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/{{paymentTxId}}",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "{{paymentTxId}}"
+              ]
+            },
+            "description": "Owner-only status query (step 22). Run **Send Pix — alice → bob (202)** first: it captures `paymentTxId`, and this card polls `GET /v1/payments/{id}` for it.\n\nThe response is the external view of the internal state machine — clients see `PROCESSING / SETTLED / FAILED / REVERSED / REJECTED`, never internal names like `DEBITED`, so the machine can evolve without breaking mobile clients. An **internal** send has already settled (the atomic ledger posting *is* the settlement), so it reads back `SETTLED` with `settledAt` — even though the `202` said `PROCESSING`.\n\nOwnership is enforced from the JWT: a token for another account, or an unknown id, both return `404 PAYMENT_NOT_FOUND` (never `403`) so existence never leaks."
+          }
+        },
+        {
+          "name": "Get payment status — someone else's / unknown (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('code is PAYMENT_NOT_FOUND', () => pm.expect(pm.response.json().code).to.eql('PAYMENT_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/tx-does-not-exist",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "tx-does-not-exist"
+              ]
+            },
+            "description": "An unknown transaction id — and, identically, another account's real id — returns `404 PAYMENT_NOT_FOUND`. The two cases are deliberately indistinguishable: a `403` would confirm a foreign id is real and let a caller enumerate other accounts' transactions (Domain Safety Rule #1 — existence must not leak)."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",

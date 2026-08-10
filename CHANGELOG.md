@@ -11,6 +11,48 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- `GET /payments/{id}` status endpoint with owner-only access and internal→external status mapping (step 22)
+  The transaction's public read side, and the first place the platform **translates its internal state
+  machine to the external status vocabulary**. Clients see `PROCESSING / SETTLED / FAILED / REVERSED /
+  REJECTED`; internal names like `DEBITED` or `SENT_TO_SPI` never cross the wire, so Sprint 6 can grow
+  the machine without a single mobile client learning a new word (API-versioning discipline). For an
+  **internal** send this endpoint is already terminal — the `202` said `PROCESSING`, but the poll reads
+  back `SETTLED` with `settledAt`, the honest state the send response deliberately withheld; for external
+  Pix (Sprint 6) it becomes the poll target while settlement runs.
+  **Owner-only, and not-found ≡ not-yours (Domain Safety Rule #1).** The ownership check is the use
+  case's decision (ADR-0011), taken against the JWT `accountId` the controller forwards — never a path
+  or body field. A transaction that does not exist **and** one that exists but was debited from another
+  account both raise `PaymentNotFoundException` → `404 PAYMENT_NOT_FOUND`; answering `403` for
+  "exists-but-not-yours" would confirm a foreign id is real and let a caller enumerate other accounts'
+  transactions, so the two cases are made indistinguishable.
+  **The mapping is an exhaustive `switch` with no `default`** (`PaymentResponse.externalStatusOf`): the
+  moment steps 27/33 add `DEBITED`/`SENT_TO_SPI`/`FAILED`/`REVERSED`/`REJECTED` to `TransactionStatus`,
+  the code stops compiling until each new state is given its external face — the mapping can never
+  silently fall through to a wrong default. Today's two states are exhaustive (`RECEIVED`→`PROCESSING`,
+  `SETTLED`→`SETTLED`). `failureReason` is `null` until the `FAILED` states exist (step 33); both it and
+  `settledAt` are always present in the JSON (as `null` when absent) so the shape never shifts under the
+  client.
+  **Where the logic lives (ADR-0010/0011).** New `GetPaymentStatusUseCase` (ownership + not-found
+  decision) keeps the controller a three-liner — bind the path variable, call one use case, map the
+  returned `Transaction` to `PaymentResponse` (the `Payment` schema; cents→decimal and status mapping at
+  this one edge). `TransactionRepository` gains a `findById` port method; `DynamoTransactionRepository`
+  implements it as a **strongly consistent** `GetItem` (read-your-writes: a client polls the payment it
+  just created — an eventually-consistent read could briefly 404 a committed transaction). ArchUnit stays
+  green: the use case is a class, `PaymentResponse` depends only on the `Transaction` record + enum, so
+  `api/` still reaches no port. `PaymentExceptionHandler` maps the new `404`.
+  **Tests.** `GetPaymentStatusUseCaseTest` (plain-Java, fake port): owner reads their own; unknown id and
+  another account's id both raise `PaymentNotFoundException`. `PaymentResponseTest`: every current
+  internal→external transition + the cents→decimal rendering. `StatusQueryIT` (MockMvc on LocalStack,
+  same stub ledger/DICT as the send ITs): after a real internal send the owner gets `200 SETTLED` with
+  the schema fields; a different account's token ⇒ `404`; an unknown id ⇒ `404`. `mvn -pl
+  services/payment-service -am verify` green — 35 unit+architecture, 25 integration.
+  **One fix along the way:** the new `@PathVariable` needed an explicit name (`@PathVariable("transactionId")`)
+  because the build does not emit `-parameters`; without it Spring cannot bind the argument and every GET
+  500s. No `docs/api/openapi.yaml` change — the `Payment` schema and the `404` were written ahead, so code
+  conforms with no drift. Postman + API explorer each gain the status card (200) and a `404` card (the new
+  endpoint is added to both harnesses in the step that introduces it); the service README and
+  `docs/local-dev.md` §4 gain the status curls.
+  AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
 - Internal Pix orchestration: key resolution + atomic ledger debit (credit payee directly), terminal status SETTLED (step 21)
   The first flow that moves a **user's real money**, end to end and synchronously. `POST /v1/payments/pix`
   gains its money-moving core for the **internal** case: inside the won idempotency claim it now runs
