@@ -17,22 +17,27 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  * in one {@code TX#<txId>} partition — which is what lets step 28 write the transaction and its outbox
  * event in one {@code TransactWriteItems}.
  *
- * <h2>The item this skeleton writes</h2>
- * The {@code TX#<txId> / META} item, filled with what acceptance already knows and made
+ * <h2>The item this writes</h2>
+ * The {@code TX#<txId> / META} item, filled with what the send flow now knows and made
  * index-consistent from the first write:
  * <ul>
  *   <li>{@code gsi1pk = E2E#<endToEndId>} — the reconciliation / inbound-dedup lookup (GSI1).</li>
  *   <li>{@code gsi2pk = STATUS#<status>} + {@code gsi2sk = <updatedAt>} — the stuck-transaction scan
  *       (GSI2); both key attributes are present so the item actually appears in the index.</li>
+ *   <li>{@code creditorAccountId} + {@code settledAt} — the internal orchestration's outputs (step 21):
+ *       the DICT-resolved creditor and the instant the atomic posting committed. Written only when
+ *       present, so a not-yet-settled item never carries an empty attribute.</li>
  * </ul>
- * Fields a later step owns are deliberately not invented here: the resolved creditor account and
- * {@code creditorInternal} (step 21), the fraud verdict (step 25), the settlement fields (steps
- * 27/31) and the {@code OUTBOX#} sibling (step 28). {@code direction} is a constant {@code OUTBOUND}:
- * every {@code /payments/pix} is an outbound send (inbound Pix is a different writer, step 37).
+ * Fields a later step owns are deliberately not invented here: the {@code creditorInternal} flag (it
+ * only means something once an <i>external</i> creditor exists, step 27), the fraud verdict (step 25),
+ * the external settlement fields (steps 27/31) and the {@code OUTBOX#} sibling (step 28).
+ * {@code direction} is a constant {@code OUTBOUND}: every {@code /payments/pix} is an outbound send
+ * (inbound Pix is a different writer, step 37).
  *
  * <p>The write is an unconditional {@code PutItem}: the {@code txId} is a fresh server-minted UUID, so
  * there is nothing to race, and request-level de-duplication (the {@code Idempotency-Key}) is step
- * 19's layer, not this write's.
+ * 19's layer, not this write's. An internal send reaches this write only after the ledger posting has
+ * already committed the money (Domain Safety Rule #4), so the persisted {@code SETTLED} is honest.
  */
 @Repository
 public class DynamoTransactionRepository implements TransactionRepository {
@@ -70,16 +75,25 @@ public class DynamoTransactionRepository implements TransactionRepository {
         item.put("description", AttributeValue.fromS(transaction.description()));
         item.put("createdAt", AttributeValue.fromS(transaction.createdAt().toString()));
         item.put("updatedAt", AttributeValue.fromS(updatedAt));
+        // Step-21 fields, written only when set: a resolved-and-settled internal send carries both; a
+        // not-yet-settled item would carry neither (no empty attributes).
+        if (transaction.creditorAccountId() != null) {
+            item.put("creditorAccountId", AttributeValue.fromS(transaction.creditorAccountId()));
+        }
+        if (transaction.settledAt() != null) {
+            item.put("settledAt", AttributeValue.fromS(transaction.settledAt().toString()));
+        }
 
         log.debug("DynamoDB PutItem of the transaction META item | table={} pk=TX#{} sk={} "
-                        + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} amountCents={}",
+                        + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} "
+                        + "creditorAccountId={} amountCents={} settledAt={}",
                 TABLE, transaction.txId(), META_SK, transaction.endToEndId(),
                 transaction.status().name(), transaction.debtorAccountId(), transaction.creditorKey(),
-                transaction.amountCents());
+                transaction.creditorAccountId(), transaction.amountCents(), transaction.settledAt());
 
         dynamo.putItem(request -> request.tableName(TABLE).item(item));
 
-        log.debug("DynamoDB PutItem stored the transaction as RECEIVED | pk=TX#{} sk={}",
-                transaction.txId(), META_SK);
+        log.debug("DynamoDB PutItem stored the transaction | pk=TX#{} sk={} status={}",
+                transaction.txId(), META_SK, transaction.status().name());
     }
 }

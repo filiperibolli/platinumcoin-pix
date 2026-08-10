@@ -13,19 +13,23 @@ import java.time.Instant;
  * string at the {@code api/} edge. {@code amountCents} is guaranteed strictly positive by
  * {@link Money#toCents(String)} before a {@code Transaction} is ever constructed.
  *
- * <p><b>What is deliberately absent in the skeleton:</b> the creditor's resolved account and the
- * {@code creditorInternal} flag (step 21 resolves the key), the fraud verdict (step 25) and the
- * settlement fields (steps 27/31). {@code creditorKey} holds the raw destination key exactly as the
- * client sent it. The debtor is the JWT {@code accountId} — there is no source-account field here or
- * on the wire (Domain Safety Rule #1).
+ * <p><b>Resolved on the internal path (step 21):</b> {@code creditorAccountId} is account-service's
+ * DICT answer for {@code creditorKey} (the raw destination key as the client sent it), and
+ * {@code settledAt} is stamped when the atomic ledger posting commits — for an internal send that is
+ * the same instant the money moves. Both are {@code null} on a freshly {@code RECEIVED} transaction
+ * that has not yet been resolved/settled. The fraud verdict (step 25) and the external settlement
+ * fields (steps 27/31) remain deliberately absent. The debtor is the JWT {@code accountId} — there is
+ * no source-account field here or on the wire (Domain Safety Rule #1).
  */
 public record Transaction(
         String txId,
         String endToEndId,
         String debtorAccountId,
         String creditorKey,
+        String creditorAccountId,
         long amountCents,
         TransactionStatus status,
         String description,
-        Instant createdAt) {
+        Instant createdAt,
+        Instant settledAt) {
 }

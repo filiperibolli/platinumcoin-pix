@@ -11,6 +11,62 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Internal Pix orchestration: key resolution + atomic ledger debit (credit payee directly), terminal status SETTLED (step 21)
+  The first flow that moves a **user's real money**, end to end and synchronously. `POST /v1/payments/pix`
+  gains its money-moving core for the **internal** case: inside the won idempotency claim it now runs
+  `resolve → limit → debit → persist` — the orchestration shape the external, asynchronous flow (Sprint 6)
+  will extend. Both legs are inside PlatinumCoin, so a single atomic ledger posting **is** the settlement:
+  the terminal status is `SETTLED`, never a `DEBITED` that step 22 would map to an eternal `PROCESSING`.
+  **Resolve first, on purpose.** The destination key is resolved against account-service's DICT
+  (`GET /internal/pix-keys/resolve`) → the creditor's internal `accountId` **before** the daily-limit
+  counter is touched, so an unknown key is `422 KEY_NOT_FOUND` with nothing to unwind. Only internal
+  creditors are payable this step; a non-internal resolution is treated as not-found (external routing is
+  step 27/30). **Debit atomically.** ledger-service is commanded via `POST /internal/ledger/postings`
+  (`entryType=PIX_INTERNAL`, keyed by `txId`, Domain Safety Rules #2 & #4) to move debit+credit in one
+  `TransactWriteItems`. **Failure mapping is the interesting part:** `INSUFFICIENT_FUNDS` ⇒ `422` **and the
+  daily-limit reservation is released** (the guard lives inside the ledger transaction, so no money moved);
+  ledger unreachable / read-timeout / `503 LEDGER_CONFLICT` ⇒ `503 LEDGER_UNAVAILABLE` + `Retry-After: 5`
+  (nothing debited, and the `txId`-keyed idempotency makes re-sending the same key safe). A **circuit
+  breaker** on repeated ledger failures is deliberately deferred to Sprint 7 / step 32 (a documented seam
+  at the adapter); the HTTP client carries connect/read timeouts so a hung ledger surfaces as a timeout
+  rather than pinning the request thread.
+  **The reservation-release seam from step 20 is now consumed** — `DailyLimitReservation.release` is called
+  on insufficient funds so the debtor's headroom is handed back exactly. A ledger-unavailable `503` does
+  **not** release: the client retries the same idempotency key and that retry re-drives the flow, accepting
+  the same conservative over-count edge ADR-0007/step 20 already documents (never overspend, self-heals next
+  calendar day). On success the transaction is persisted **once** as `SETTLED` (a single `PutItem` after the
+  posting commits — no `RECEIVED`-then-update), carrying `settledAt` and the resolved `creditorAccountId`;
+  the idempotency record is then completed, so a replay re-serves the response and **never re-debits**
+  (proven both plain-Java and on LocalStack). The `202` wire body keeps `status:"PROCESSING"` (the send
+  contract is "accepted for processing"); the honest terminal `SETTLED` is served by `GET /payments/{id}`
+  (step 22).
+  **Where the logic lives (ADR-0010/0011).** Two new outbound ports keep `domain/` framework-free —
+  `PixKeyResolver` (HTTP → account-service DICT) and `LedgerClient` (HTTP → ledger-service), both
+  token-forwarding `RestClient` adapters that map the peer's error contract onto plain-Java domain
+  exceptions (`KeyNotFoundException`, `InsufficientFundsException`, `LedgerUnavailableException`). The
+  orchestration is in `SendPixUseCase` (a controller cannot touch a port — ArchUnit still green); the
+  controller stays a three-liner. `TransactionStatus` gains `SETTLED`; `Transaction` gains
+  `creditorAccountId` + `settledAt` (written only when set — a not-yet-settled item carries neither).
+  `PaymentExceptionHandler` maps the three new codes (`Retry-After: 5` on the `503`).
+  **Tests.** `SendPixUseCaseTest` grew to 17 (plain-Java, fake ports, pinned clock): resolve→debit→SETTLED
+  moves money and stamps `settledAt`; unknown key ⇒ `KEY_NOT_FOUND` with no reservation taken (resolve runs
+  before the limit); insufficient funds ⇒ release-to-zero; ledger-unavailable ⇒ **not** released (the
+  over-count edge, asserted); a replay does not re-resolve or re-post. `InternalSendIT` (3, MockMvc on real
+  LocalStack with in-memory stub ledger/DICT — the money-movement is asserted on the stub's double-entry
+  balances, the transaction/idempotency/limit counter on the real tables): a send moves money on **both
+  legs**, persists `SETTLED` + `settledAt` + `creditorAccountId`, and an idempotent retry replays the same
+  `txId` without double-debiting; unknown key ⇒ `422 KEY_NOT_FOUND`; insufficient funds ⇒ `422` with the
+  real LIMIT counter back to **0 used**. `SendSkeletonIT` updated (the persisted item is now `SETTLED`);
+  `IdempotencyIT`/`DailyLimitIT` pass unchanged behind permissive stub defaults. Real ledger atomicity is
+  ledger-service's step 14/15 suite; the true cross-service journey is step 46. `mvn -pl
+  services/payment-service -am verify` green — 29 unit+architecture, 22 integration.
+  No `docs/api/openapi.yaml` change: the contract already specified `202`, the `422` set
+  (`KEY_NOT_FOUND`/`INSUFFICIENT_FUNDS`) and the `503` + `Retry-After: 5` (written ahead), so code conforms
+  with no drift. `docs/data-model.md` §4 gains the internal-send fields (`creditorAccountId`, `settledAt`),
+  `docs/local-dev.md` §4 a step-21 manual-verify block, and the service README the orchestration + new
+  env (`LEDGER_SERVICE_BASE_URL`). Postman / API explorer unchanged — the endpoint was introduced in step
+  18; this step changes behaviour, not the surface.
+  AI: est 3.5h / actual 2h / ~90% generated / 0 issues caught in human review
 - Daily limit enforcement (calendar-day reservation counter) with a decision-object MFA seam mapping REQUIRE_STEP_UP to deny (step 20)
   Before any money moves, payment-service now reads the debtor's `dailyLimitCents` from account-service
   (`GET /internal/accounts/{id}`, forwarding the caller's bearer token — ADR-0007) and **reserves** the

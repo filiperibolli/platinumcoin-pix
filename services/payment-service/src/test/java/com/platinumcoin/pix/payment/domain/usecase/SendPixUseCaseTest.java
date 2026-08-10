@@ -8,7 +8,10 @@ import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.LimitDecision;
 import com.platinumcoin.pix.payment.domain.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
@@ -36,10 +39,12 @@ class SendPixUseCaseTest {
     private final EndToEndIdGenerator endToEndIds = new EndToEndIdGenerator("12345678");
     private final FakeTransactionRepository transactions = new FakeTransactionRepository();
     private final FakeIdempotencyRepository idempotency = new FakeIdempotencyRepository();
+    private final FakePixKeyResolver pixKeys = new FakePixKeyResolver();
     private final FakeAccountLimitClient accountLimits = new FakeAccountLimitClient();
     private final FakeDailyLimitReservation dailyLimits = new FakeDailyLimitReservation();
+    private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
-            transactions, idempotency, accountLimits, dailyLimits, endToEndIds, clock);
+            transactions, idempotency, pixKeys, accountLimits, dailyLimits, ledger, endToEndIds, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -54,7 +59,9 @@ class SendPixUseCaseTest {
     }
 
     @Test
-    void acceptsAValidSendAndPersistsItAsReceived() {
+    void acceptsAValidSendResolvesTheCreditorMovesMoneyAndPersistsItAsSettled() {
+        pixKeys.map("bob@platinum.com", "acc-002");
+
         SendPixOutcome outcome = accept(command("bob@platinum.com", "125.50", "lunch", KEY));
 
         Transaction persisted = transactions.only();
@@ -62,10 +69,20 @@ class SendPixUseCaseTest {
         assertThat(outcome.endToEndId()).isEqualTo(persisted.endToEndId());
         assertThat(persisted.debtorAccountId()).isEqualTo("acc-001");
         assertThat(persisted.creditorKey()).isEqualTo("bob@platinum.com");
+        assertThat(persisted.creditorAccountId()).isEqualTo("acc-002");
         assertThat(persisted.amountCents()).isEqualTo(12550L);
-        assertThat(persisted.status()).isEqualTo(TransactionStatus.RECEIVED);
+        // Internal transfer settles the instant the posting commits: terminal SETTLED, settledAt stamped.
+        assertThat(persisted.status()).isEqualTo(TransactionStatus.SETTLED);
+        assertThat(persisted.settledAt()).isEqualTo(NOW);
         assertThat(persisted.description()).isEqualTo("lunch");
         assertThat(persisted.createdAt()).isEqualTo(NOW);
+
+        // The ledger was commanded to debit the payer and credit the resolved payee, keyed by txId.
+        FakeLedgerClient.Posting posting = ledger.only();
+        assertThat(posting.txId()).isEqualTo(persisted.txId());
+        assertThat(posting.debtor()).isEqualTo("acc-001");
+        assertThat(posting.creditor()).isEqualTo("acc-002");
+        assertThat(posting.amountCents()).isEqualTo(12550L);
     }
 
     @Test
@@ -201,6 +218,66 @@ class SendPixUseCaseTest {
         assertThat(transactions.created()).isEmpty();
     }
 
+    // --- step 21: internal orchestration (resolve → limit → debit → persist SETTLED) ----------------
+
+    @Test
+    void anUnknownKeyIs422KeyNotFoundMovesNoMoneyAndTakesNoReservation() {
+        pixKeys.markNotFound("ghost@platinum.com");
+
+        assertThatThrownBy(() -> useCase.execute(command("ghost@platinum.com", "10.00", "x", KEY)))
+                .isInstanceOf(KeyNotFoundException.class);
+
+        // Resolve runs BEFORE the limit reservation, so an unknown destination leaves nothing to unwind.
+        assertThat(transactions.created()).isEmpty();
+        assertThat(ledger.postings()).isEmpty();
+        assertThat(dailyLimits.reserveCalls()).isZero();
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isZero();
+    }
+
+    @Test
+    void insufficientFundsIs422ReleasesTheReservationAndPersistsNoTransaction() {
+        accountLimits.setDailyLimitCents(50_000L);
+        ledger.failWith(new InsufficientFundsException());
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
+                .isInstanceOf(InsufficientFundsException.class);
+
+        // No money moved, no transaction persisted, and the reservation taken for this send was released
+        // (reserved then released nets to zero headroom used).
+        assertThat(transactions.created()).isEmpty();
+        assertThat(dailyLimits.reserveCalls()).isEqualTo(1);
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isZero();
+    }
+
+    @Test
+    void ledgerUnavailableIs503AndDeliberatelyDoesNotReleaseTheReservation() {
+        accountLimits.setDailyLimitCents(50_000L);
+        ledger.failWith(new LedgerUnavailableException("ledger down", null));
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
+                .isInstanceOf(LedgerUnavailableException.class);
+
+        // Nothing debited, but the reservation is NOT released: the client retries the same idempotency
+        // key, and that retry re-drives the flow. Leaving it reserved accepts the conservative over-count
+        // edge (never overspend, self-heals next calendar day — ADR-0007/step 20).
+        assertThat(transactions.created()).isEmpty();
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isEqualTo(12_550L);
+    }
+
+    @Test
+    void anIdenticalRetryReplaysWithoutDebitingTheLedgerASecondTime() {
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        SendPixOutcome retry = useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        assertThat(retry.replayed()).isTrue();
+        // The replay short-circuits on the COMPLETED idempotency record: it does not re-resolve, and it
+        // does not command a second ledger posting — the money moved exactly once.
+        assertThat(transactions.created()).hasSize(1);
+        assertThat(ledger.postings()).hasSize(1);
+        assertThat(pixKeys.resolveCalls()).isEqualTo(1);
+    }
+
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
     private static LocalDate saoPauloDay() {
         return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();
@@ -210,8 +287,9 @@ class SendPixUseCaseTest {
     private String hashOfLunch10() {
         // Drive a first real accept under a throwaway key to capture the stored hash, then read it back.
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
-        new SendPixUseCase(new FakeTransactionRepository(), probe, new FakeAccountLimitClient(),
-                new FakeDailyLimitReservation(), endToEndIds, clock)
+        new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
+                new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeLedgerClient(),
+                endToEndIds, clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
     }

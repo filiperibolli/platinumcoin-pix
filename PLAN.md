@@ -57,7 +57,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 18](docs/steps/step-18.md) — payment-service: `POST /payments/pix` walking skeleton (validation, txId/endToEndId, 202)
 - [x] [Step 19](docs/steps/step-19.md) — idempotency layer: conditional claim, response replay, 409 on hash mismatch
 - [x] [Step 20](docs/steps/step-20.md) — daily limit enforcement (calendar-day reservation counter, decision-object seam for future MFA)
-- [ ] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status SETTLED (internal settles instantly)
+- [x] [Step 21](docs/steps/step-21.md) — internal orchestration: key resolution + ledger debit (credit payee directly) + status SETTLED (internal settles instantly)
 - [ ] [Step 22](docs/steps/step-22.md) — `GET /payments/{id}` status endpoint
 
 ## Sprint 5 — Fraud in the path

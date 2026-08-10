@@ -24,8 +24,10 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 /**
  * End-to-end HTTP behaviour of {@code POST /v1/payments/pix} over the real {@code pix_transactions}
  * table (extends {@link LocalStackTestBase}, whose init scripts include step 17's payment tables).
- * Asserts the step-18 walking-skeleton contract: {@code 202} + {@code Location} + ids, the item
- * persisted as {@code RECEIVED} with the debtor from the token, and the four rejection paths.
+ * Asserts the send contract: {@code 202} + {@code Location} + ids, the debtor taken from the token
+ * (never the payload), and the four rejection paths. Since step 21 the internal send moves money and
+ * settles, so the persisted item is {@code SETTLED} (the {@link PaymentTestSupport} stub ledger has
+ * ample default funds; the money-movement assertions live in {@code InternalSendIT}).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -41,7 +43,7 @@ class SendSkeletonIT extends LocalStackTestBase {
     DynamoDbClient dynamo;
 
     @Test
-    void validSendReturns202WithLocationAndPersistsReceivedForTheTokenAccount() throws Exception {
+    void validSendReturns202WithLocationAndPersistsSettledForTheTokenAccount() throws Exception {
         MvcResult result = mvc.perform(post("/v1/payments/pix")
                         .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001"))
                         .header("Idempotency-Key", "3f2a-skeleton-key")
@@ -64,14 +66,16 @@ class SendSkeletonIT extends LocalStackTestBase {
 
         Map<String, AttributeValue> item = getMeta(txId);
         assertThat(item).isNotEmpty();
-        assertThat(item.get("status").s()).isEqualTo("RECEIVED");
+        // Internal send settles the instant the atomic posting commits (step 21): terminal SETTLED.
+        assertThat(item.get("status").s()).isEqualTo("SETTLED");
+        assertThat(item.get("settledAt").s()).isNotBlank();
         // Domain Safety Rule #1: the debtor is the token's account, not anything from the payload.
         assertThat(item.get("debtorAccountId").s()).isEqualTo("acc-001");
         assertThat(item.get("creditorKey").s()).isEqualTo("bob@platinum.com");
         assertThat(item.get("amountCents").n()).isEqualTo("12550");
         assertThat(item.get("endToEndId").s()).isEqualTo(endToEndId);
         assertThat(item.get("gsi1pk").s()).isEqualTo("E2E#" + endToEndId);
-        assertThat(item.get("gsi2pk").s()).isEqualTo("STATUS#RECEIVED");
+        assertThat(item.get("gsi2pk").s()).isEqualTo("STATUS#SETTLED");
     }
 
     @Test

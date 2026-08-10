@@ -341,7 +341,8 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | head -8
 
-# the persisted item: status=RECEIVED, debtor from the JWT (acc-001), amountCents=12550
+# the persisted item: debtor from the JWT (acc-001), amountCents=12550 (status is SETTLED since step 21,
+# below — in the step-18 skeleton it was RECEIVED and no money moved)
 TXID=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"125.50"}' | jq -r .transactionId)
@@ -389,6 +390,33 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
 aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_idempotency \
   --key "{\"pk\":{\"S\":\"IDEM#acc-001#$IDEM\"},\"sk\":{\"S\":\"META\"}}" \
   | jq '.Item | {status:.status.S, httpStatus:.httpStatus.N, expiresAt:.expiresAt.N}'
+```
+
+**Step 21 — internal orchestration: the send now moves real money.** payment-service resolves the
+destination key against account-service's DICT (`acc-002` for `bob@platinum.com`), commands the atomic
+debit/credit in ledger-service, and persists the transaction as **`SETTLED`** (an internal transfer has
+no SPI leg — it *is* settled the moment the posting commits). Needs the full stack up (`payment` +
+`account` + `ledger` + LocalStack).
+
+```bash
+# a happy internal send → 202; then the item is SETTLED with settledAt + the resolved creditorAccountId
+TXID=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | jq -r .transactionId)
+aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_transactions \
+  --key "{\"pk\":{\"S\":\"TX#$TXID\"},\"sk\":{\"S\":\"META\"}}" \
+  | jq '.Item | {status:.status.S, settledAt:.settledAt.S, creditorAccountId:.creditorAccountId.S}'
+
+# bob (acc-002) was credited — read it through the ledger
+curl -s localhost:8085/internal/ledger/accounts/acc-002/balance -H "Authorization: Bearer $TOKEN" | jq
+
+# the failure mappings
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"ghost@platinum.com","amount":"1.00"}' | jq -r .code   # KEY_NOT_FOUND (422)
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"9999999.00"}' | jq -r .code # INSUFFICIENT_FUNDS (422), limit released
 ```
 
 ## 4.1 Reading the logs (ADR-0012)

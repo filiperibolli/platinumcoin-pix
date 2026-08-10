@@ -179,6 +179,17 @@ Access patterns: get transaction by id (status query); find by endToEndId (recon
 }
 ```
 
+The example above is an **external** send mid-flight (`DEBITED`). An **internal** send (step 21) settles
+in one atomic ledger posting and is written straight to `SETTLED`, carrying two step-21 fields the
+example does not show:
+- `creditorAccountId` — account-service's DICT resolution of `creditorKey` to an internal account (the
+  debit's counterpart leg). Present once resolved.
+- `settledAt` — the instant the ledger posting committed; for an internal transfer that is the moment the
+  money moved. Present once `SETTLED`.
+
+Both are written only when set, so a not-yet-settled item carries neither. `creditorInternal` and the
+`fraud*` fields belong to the external/fraud flows (steps 25/27) and are absent on a pure internal send.
+
 **Outbox item (same table, same partition as its transaction):**
 ```json
 {
