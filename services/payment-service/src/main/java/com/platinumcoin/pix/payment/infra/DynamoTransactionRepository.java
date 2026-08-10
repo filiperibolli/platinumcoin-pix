@@ -2,8 +2,11 @@ package com.platinumcoin.pix.payment.infra;
 
 import com.platinumcoin.pix.payment.domain.Transaction;
 import com.platinumcoin.pix.payment.domain.TransactionRepository;
+import com.platinumcoin.pix.payment.domain.TransactionStatus;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
@@ -95,5 +98,50 @@ public class DynamoTransactionRepository implements TransactionRepository {
 
         log.debug("DynamoDB PutItem stored the transaction | pk=TX#{} sk={} status={}",
                 transaction.txId(), META_SK, transaction.status().name());
+    }
+
+    @Override
+    public Optional<Transaction> findById(String txId) {
+        // Strongly consistent on purpose: this backs GET /payments/{id}, a poll a client fires right
+        // after its own send, so read-your-writes matters — an eventually-consistent read could briefly
+        // 404 a transaction that already committed. The extra RCU buys that guarantee.
+        Map<String, AttributeValue> key = Map.of(
+                "pk", AttributeValue.fromS("TX#" + txId),
+                "sk", AttributeValue.fromS(META_SK));
+
+        log.debug("DynamoDB GetItem of the transaction META item | table={} pk=TX#{} sk={} consistent=true",
+                TABLE, txId, META_SK);
+
+        Map<String, AttributeValue> item = dynamo
+                .getItem(request -> request.tableName(TABLE).key(key).consistentRead(true))
+                .item();
+        if (item == null || item.isEmpty()) {
+            log.debug("DynamoDB GetItem found no transaction | pk=TX#{} sk={}", txId, META_SK);
+            return Optional.empty();
+        }
+
+        Transaction transaction = toTransaction(item);
+        log.debug("DynamoDB GetItem read the transaction | pk=TX#{} sk={} status={} debtorAccountId={}",
+                txId, META_SK, transaction.status().name(), transaction.debtorAccountId());
+        return Optional.of(transaction);
+    }
+
+    /**
+     * Rebuild the domain {@link Transaction} from its stored item. The optional step-21 attributes
+     * ({@code creditorAccountId}, {@code settledAt}) are absent on a not-yet-settled item, so they map
+     * back to {@code null} — the same shape the use case wrote.
+     */
+    private static Transaction toTransaction(Map<String, AttributeValue> item) {
+        return new Transaction(
+                item.get("txId").s(),
+                item.get("endToEndId").s(),
+                item.get("debtorAccountId").s(),
+                item.get("creditorKey").s(),
+                item.containsKey("creditorAccountId") ? item.get("creditorAccountId").s() : null,
+                Long.parseLong(item.get("amountCents").n()),
+                TransactionStatus.valueOf(item.get("status").s()),
+                item.get("description").s(),
+                Instant.parse(item.get("createdAt").s()),
+                item.containsKey("settledAt") ? Instant.parse(item.get("settledAt").s()) : null);
     }
 }

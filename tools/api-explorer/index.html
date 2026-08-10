@@ -220,6 +220,9 @@
     // ---- In-memory session (never persisted) --------------------------------------------------
     let accessToken = null;
     let identity = null;
+    // The txId of the last send that returned one — lets the "Get payment status" card poll the very
+    // transaction you just created (mirrors Postman's captured {{paymentTxId}}). Send a Pix first.
+    let lastPaymentTxId = null;
 
     const $ = (id) => document.getElementById(id);
     const authBase = () => $('authBaseUrl').value.replace(/\/+$/, '');
@@ -366,7 +369,7 @@
       },
       {
         id: 'payment', name: 'payment-service', port: 8084, baseUrl: 'http://localhost:8084',
-        blurb: 'The send-Pix entry point — the one endpoint an end user reaches to move money. Step 18 ships the walking skeleton of POST /v1/payments/pix: validate the body, mint a txId and a Pix-standard endToEndId (E&lt;ISPB&gt;&lt;yyyyMMddHHmm-UTC&gt;&lt;random&gt;), persist the transaction as RECEIVED, and return 202 + Location. The debtor is the JWT accountId claim, never the payload (there is no source-account field to send). Idempotency, limits, key resolution and the ledger debit thicken this skeleton across steps 19–21.',
+        blurb: 'The send-Pix entry point — the one endpoint an end user reaches to move money. Step 18 ships the walking skeleton of POST /v1/payments/pix: validate the body, mint a txId and a Pix-standard endToEndId (E&lt;ISPB&gt;&lt;yyyyMMddHHmm-UTC&gt;&lt;random&gt;), persist the transaction as RECEIVED, and return 202 + Location. The debtor is the JWT accountId claim, never the payload (there is no source-account field to send). Idempotency, limits, key resolution and the ledger debit thicken this skeleton across steps 19–21; step 22 adds GET /v1/payments/{id}, the owner-only status poll that maps the internal state machine onto the external PROCESSING/SETTLED/FAILED/REVERSED/REJECTED vocabulary.',
         endpoints: [
           {
             method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — alice → bob (202)', auth: true, capturesToken: false, idempotent: true,
@@ -391,6 +394,17 @@
             desc: 'Step 20\'s daily-limit check (ADR-0007). Before any money moves, the debtor\'s dailyLimitCents is read server-side from account-service and the amount is reserved against a per-account, São-Paulo-calendar-day counter. The seeded limit is R$ 5,000.00, so a single R$ 9,000 send alone exceeds it → 422 LIMIT_EXCEEDED and NO transaction is persisted. The check returns a decision object (ALLOW/DENY/REQUIRE_STEP_UP), not a boolean: REQUIRE_STEP_UP is the MFA seam — today it maps to deny, so adding a step-up challenge later changes one branch, not the flow. Usage is a maintained counter with reserve/release semantics, not a query-and-sum.',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '9000.00' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/v1/payments/{txId}', title: 'Get payment status (200)', auth: true, capturesToken: false,
+            resolvePath: () => '/v1/payments/' + (lastPaymentTxId || 'send-a-pix-first'),
+            desc: 'Owner-only status query (step 22). Send the "alice → bob (202)" card first — its returned transactionId is captured, and this card polls GET /v1/payments/&lt;txId&gt; for it. The response is the EXTERNAL view of the internal state machine: clients see PROCESSING / SETTLED / FAILED / REVERSED / REJECTED, never internal names like DEBITED, so the machine can evolve without breaking mobile clients (API versioning discipline). An internal send has already settled — the atomic ledger posting IS the settlement — so it reads back SETTLED with settledAt, even though the 202 said PROCESSING. Ownership comes from the JWT: another account\'s token, or an unknown id, both return 404 PAYMENT_NOT_FOUND (never 403) so existence never leaks.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/payments/tx-does-not-exist', title: 'Get payment status — unknown / not yours (404)', auth: true, capturesToken: false,
+            desc: 'An unknown transaction id — and, identically, another account\'s real id — returns 404 PAYMENT_NOT_FOUND. The two cases are deliberately indistinguishable: a 403 would confirm a foreign id is real and let a caller enumerate other accounts\' transactions (Domain Safety Rule #1 — existence must not leak).',
+            headers: {}, body: null,
           },
           {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
@@ -533,11 +547,16 @@
             $('idemKey').value = idem;
             headers = { ...ep.headers, 'Idempotency-Key': idem };
           }
+          // Some cards target a resource created by an earlier one (e.g. GET a payment by its txId);
+          // resolvePath() is evaluated now, at click time, so it can read that captured id.
+          const path = ep.resolvePath ? ep.resolvePath() : ep.path;
           const r = ep.capturesToken
             ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
-            : await send({ method: ep.method, path: ep.path, headers,
+            : await send({ method: ep.method, path, headers,
                            body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
                            base: currentServiceBase(svc) });
+          // Capture a returned transactionId so the status card can poll the send you just made.
+          if (r.json && r.json.transactionId) lastPaymentTxId = r.json.transactionId;
           statusEl.textContent = `${r.status} ${r.statusText}`;
           statusEl.className = 'status ' + (r.ok ? 'ok' : 'bad');
           outEl.style.display = 'block'; outEl.textContent = pretty(r);

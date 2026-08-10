@@ -9,6 +9,7 @@ import com.platinumcoin.pix.payment.domain.InvalidAmountException;
 import com.platinumcoin.pix.payment.domain.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.LimitExceededException;
+import com.platinumcoin.pix.payment.domain.PaymentNotFoundException;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,6 +51,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       safe to retry (ADR-0002).</li>
  *   <li>{@code 502 ACCOUNT_LOOKUP_FAILED} — account-service could not supply the debtor's limit
  *       (not found / unreachable); the fault is a dependency of ours, not the caller's request.</li>
+ *   <li>{@code 404 PAYMENT_NOT_FOUND} — the queried transaction does not exist <i>or</i> belongs to
+ *       another account (step 22). The two cases are deliberately indistinguishable: a {@code 403}
+ *       would confirm a foreign transaction id is real, so both answer {@code 404} and leak nothing.</li>
  * </ul>
  *
  * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case/domain; this class logs
@@ -110,6 +114,11 @@ public class PaymentExceptionHandler {
     @ExceptionHandler(LimitExceededException.class)
     public ResponseEntity<ProblemDetail> handleLimitExceeded(LimitExceededException ex) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "LIMIT_EXCEEDED", ex.getMessage());
+    }
+
+    @ExceptionHandler(PaymentNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handlePaymentNotFound(PaymentNotFoundException ex) {
+        return problem(HttpStatus.NOT_FOUND, "PAYMENT_NOT_FOUND", ex.getMessage());
     }
 
     @ExceptionHandler(AccountLookupException.class)

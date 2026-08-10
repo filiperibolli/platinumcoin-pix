@@ -7,6 +7,7 @@ import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.LedgerClient;
 import com.platinumcoin.pix.payment.domain.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.TransactionRepository;
+import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
 import org.springframework.beans.factory.annotation.Value;
@@ -55,5 +56,10 @@ public class PaymentBeansConfig {
             Clock clock) {
         return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, ledger, endToEndIds, clock);
+    }
+
+    @Bean
+    GetPaymentStatusUseCase getPaymentStatusUseCase(TransactionRepository transactions) {
+        return new GetPaymentStatusUseCase(transactions);
     }
 }

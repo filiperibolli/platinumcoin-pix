@@ -4,6 +4,7 @@ import com.platinumcoin.pix.payment.domain.Transaction;
 import com.platinumcoin.pix.payment.domain.TransactionRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * In-memory {@link TransactionRepository} for the plain-Java use-case tests: it captures every
@@ -16,6 +17,16 @@ final class FakeTransactionRepository implements TransactionRepository {
 
     @Override
     public void create(Transaction transaction) {
+        created.add(transaction);
+    }
+
+    @Override
+    public Optional<Transaction> findById(String txId) {
+        return created.stream().filter(t -> t.txId().equals(txId)).findFirst();
+    }
+
+    /** Seed a transaction as if it had already been persisted — for the read-side (status query) tests. */
+    void save(Transaction transaction) {
         created.add(transaction);
     }
 
