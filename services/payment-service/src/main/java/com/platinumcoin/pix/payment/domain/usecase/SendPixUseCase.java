@@ -1,12 +1,16 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
+import com.platinumcoin.pix.payment.domain.AccountLimitClient;
+import com.platinumcoin.pix.payment.domain.DailyLimitReservation;
 import com.platinumcoin.pix.payment.domain.EndToEndIdGenerator;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.LimitDecision;
+import com.platinumcoin.pix.payment.domain.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.Money;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
 import com.platinumcoin.pix.payment.domain.Transaction;
@@ -15,6 +19,8 @@ import com.platinumcoin.pix.payment.domain.TransactionStatus;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -70,18 +76,32 @@ public class SendPixUseCase {
 
     private static final int ACCEPTED_HTTP_STATUS = 202;
 
+    /**
+     * The zone whose calendar day the daily limit is windowed on. America/São Paulo, matching how Pix
+     * limits are communicated to Brazilian users (a "daily" limit rolls over at local midnight, not
+     * UTC). Reading the clock and resolving it to a day is the use case's job (ADR-0011), so the day
+     * boundary is a value a test can pin via the injected {@link Clock}.
+     */
+    private static final ZoneId LIMIT_ZONE = ZoneId.of("America/Sao_Paulo");
+
     private final TransactionRepository transactions;
     private final IdempotencyRepository idempotency;
+    private final AccountLimitClient accountLimits;
+    private final DailyLimitReservation dailyLimits;
     private final EndToEndIdGenerator endToEndIds;
     private final Clock clock;
 
     public SendPixUseCase(
             TransactionRepository transactions,
             IdempotencyRepository idempotency,
+            AccountLimitClient accountLimits,
+            DailyLimitReservation dailyLimits,
             EndToEndIdGenerator endToEndIds,
             Clock clock) {
         this.transactions = transactions;
         this.idempotency = idempotency;
+        this.accountLimits = accountLimits;
+        this.dailyLimits = dailyLimits;
         this.endToEndIds = endToEndIds;
         this.clock = clock;
     }
@@ -95,6 +115,7 @@ public class SendPixUseCase {
      * @throws IdempotencyKeyRequiredException the {@code Idempotency-Key} was absent/blank
      * @throws IdempotencyKeyReuseException    the key was replayed with a different payload
      * @throws RequestInProgressException      a concurrent request with the same key is in flight
+     * @throws LimitExceededException          the send would breach the debtor's daily Pix limit
      */
     public SendPixOutcome execute(SendPixCommand command) {
         String key = command.idempotencyKey();
@@ -176,6 +197,12 @@ public class SendPixUseCase {
     /** Do the acceptance work, memoize the response, and return the fresh outcome. */
     private SendPixOutcome acceptAndComplete(
             SendPixCommand command, long amountCents, String accountId, String key, Instant now) {
+        // Reserve the daily-limit headroom BEFORE minting anything (step 20). This lives inside the
+        // won-claim path on purpose: the reservation is a non-idempotent counter increment, so it must
+        // run exactly once per idempotency key — a double-tap (two claims, one winner) or a replay
+        // (COMPLETED) must never reserve twice. A DENY throws here, so nothing is persisted.
+        reserveDailyLimit(accountId, amountCents, now);
+
         Transaction transaction = accept(command, amountCents, now);
 
         Map<String, String> snapshot = new LinkedHashMap<>();
@@ -187,6 +214,33 @@ public class SendPixUseCase {
                         + "idempotencyKey={} transactionId={} httpStatus={}",
                 accountId, key, transaction.txId(), ACCEPTED_HTTP_STATUS);
         return SendPixOutcome.accepted(transaction);
+    }
+
+    /**
+     * Read the debtor's daily limit (server-side, never from the client) and reserve the amount against
+     * today's calendar-day counter (ADR-0007, step 20). The decision is a three-valued object, not a
+     * boolean, so the MFA seam is explicit: {@code ALLOW} proceeds; {@code DENY} and — until MFA lands —
+     * {@code REQUIRE_STEP_UP} both refuse with {@link LimitExceededException} ({@code 422}). Plugging in a
+     * step-up challenge later changes only the {@code REQUIRE_STEP_UP} branch, not this flow.
+     */
+    private void reserveDailyLimit(String accountId, long amountCents, Instant now) {
+        long dailyLimitCents = accountLimits.dailyLimitCents(accountId);
+        LocalDate day = now.atZone(LIMIT_ZONE).toLocalDate();
+
+        LimitDecision decision = dailyLimits.reserve(accountId, amountCents, dailyLimitCents, day);
+        if (decision == LimitDecision.ALLOW) {
+            log.info("Daily-limit headroom reserved, the send may proceed | debtorAccountId={} "
+                            + "amountCents={} dailyLimitCents={} day={} decision={}",
+                    accountId, amountCents, dailyLimitCents, day, decision);
+            return;
+        }
+
+        // DENY or REQUIRE_STEP_UP: refuse before any money moves. REQUIRE_STEP_UP is where an MFA
+        // challenge would go; today it maps to the same 422 as DENY (ADR-0007).
+        log.warn("Send refused, the daily Pix limit would be exceeded, returning 422 | "
+                        + "debtorAccountId={} amountCents={} dailyLimitCents={} day={} decision={}",
+                accountId, amountCents, dailyLimitCents, day, decision);
+        throw new LimitExceededException();
     }
 
     /** The acceptance itself: mint ids, stamp the clock, persist as {@code RECEIVED}. */

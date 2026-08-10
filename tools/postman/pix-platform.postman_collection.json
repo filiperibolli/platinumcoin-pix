@@ -646,6 +646,59 @@
           }
         },
         {
+          "name": "Send Pix — above daily limit (422 LIMIT_EXCEEDED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('code is LIMIT_EXCEEDED', () => pm.expect(pm.response.json().code).to.eql('LIMIT_EXCEEDED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"9000.00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "Step 20's daily-limit check (ADR-0007). The seeded daily limit is R$ 5,000.00, so a single R$ 9,000 send alone exceeds it and is refused with `422 LIMIT_EXCEEDED` **before any money moves** — no transaction is persisted. The limit is read server-side from account-service and reserved against a per-account, São-Paulo-calendar-day counter; the decision object carries the `REQUIRE_STEP_UP` MFA seam (today mapped to deny)."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",

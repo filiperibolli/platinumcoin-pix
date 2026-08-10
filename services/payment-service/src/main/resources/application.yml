@@ -29,6 +29,15 @@ jwt:
 pix:
   ispb: ${PIX_ISPB:12345678}
 
+# Service-to-service base URLs. payment-service reads the debtor's dailyLimitCents from account-service
+# before reserving daily-limit headroom (step 20). Default targets a locally-run account-service
+# (port 8082, docs/local-dev.md §2); compose overrides it to the service name on the shared network.
+# The internal endpoint is behind the JWT filter, so the caller's bearer token is forwarded (ADR-0007;
+# a service credential is the deployed posture, step-45 hardening).
+services:
+  account-service:
+    base-url: ${ACCOUNT_SERVICE_BASE_URL:http://localhost:8082}
+
 # AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
 # AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK
 # demands. ITs override these via LocalStackTestBase's @DynamicPropertySource (same aws.* keys).

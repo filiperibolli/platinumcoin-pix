@@ -1,9 +1,11 @@
 package com.platinumcoin.pix.payment.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
+import com.platinumcoin.pix.payment.domain.AccountLookupException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.RequestInProgressException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +34,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       (client bug).</li>
  *   <li>{@code 409 REQUEST_IN_PROGRESS} — a concurrent request with the same key is still in flight;
  *       carries {@code Retry-After: 2} so the client backs off and later replays the result.</li>
+ *   <li>{@code 422 LIMIT_EXCEEDED} — the send would breach the debtor's daily Pix limit (step 20,
+ *       ADR-0007). {@code 422}, not {@code 403}: the request is well-formed and authorized, it just
+ *       violates a business rule a later send or the next calendar day may satisfy.</li>
+ *   <li>{@code 502 ACCOUNT_LOOKUP_FAILED} — account-service could not supply the debtor's limit
+ *       (not found / unreachable); the fault is a dependency of ours, not the caller's request.</li>
  * </ul>
  *
  * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case/domain; this class logs
@@ -59,6 +66,18 @@ public class PaymentExceptionHandler {
     @ExceptionHandler(IdempotencyKeyReuseException.class)
     public ResponseEntity<ProblemDetail> handleKeyReuse(IdempotencyKeyReuseException ex) {
         return problem(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED", ex.getMessage());
+    }
+
+    @ExceptionHandler(LimitExceededException.class)
+    public ResponseEntity<ProblemDetail> handleLimitExceeded(LimitExceededException ex) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "LIMIT_EXCEEDED", ex.getMessage());
+    }
+
+    @ExceptionHandler(AccountLookupException.class)
+    public ResponseEntity<ProblemDetail> handleAccountLookup(AccountLookupException ex) {
+        // The debtor's limit could not be read; fail the send rather than guess a limit. The message
+        // is safe (no internals) — the cause chain is logged, not returned.
+        return problem(HttpStatus.BAD_GATEWAY, "ACCOUNT_LOOKUP_FAILED", ex.getMessage());
     }
 
     @ExceptionHandler(RequestInProgressException.class)

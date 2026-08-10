@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
+import com.platinumcoin.pix.payment.support.PaymentTestSupport;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -38,6 +39,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@org.springframework.context.annotation.Import(PaymentTestSupport.class)
 class IdempotencyIT extends LocalStackTestBase {
 
     private static final ObjectMapper JSON = new ObjectMapper();

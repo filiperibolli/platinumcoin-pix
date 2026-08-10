@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
+import com.platinumcoin.pix.payment.support.PaymentTestSupport;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,6 +29,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@org.springframework.context.annotation.Import(PaymentTestSupport.class)
 class SendSkeletonIT extends LocalStackTestBase {
 
     private static final ObjectMapper JSON = new ObjectMapper();

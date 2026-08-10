@@ -387,6 +387,12 @@
             body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '12.5' }, null, 2),
           },
           {
+            method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — above daily limit (422 LIMIT_EXCEEDED)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'Step 20\'s daily-limit check (ADR-0007). Before any money moves, the debtor\'s dailyLimitCents is read server-side from account-service and the amount is reserved against a per-account, São-Paulo-calendar-day counter. The seeded limit is R$ 5,000.00, so a single R$ 9,000 send alone exceeds it → 422 LIMIT_EXCEEDED and NO transaction is persisted. The check returns a decision object (ALLOW/DENY/REQUIRE_STEP_UP), not a boolean: REQUIRE_STEP_UP is the MFA seam — today it maps to deny, so adding a step-up challenge later changes one branch, not the flow. Usage is a maintained counter with reserve/release semantics, not a query-and-sum.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '9000.00' }, null, 2),
+          },
+          {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
             headers: {}, body: null,
