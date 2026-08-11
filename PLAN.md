@@ -66,7 +66,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 23](docs/steps/step-23.md) — docker-compose Redis + fraud-service skeleton
 - [x] [Step 24](docs/steps/step-24.md) — fraud-service: rule-based `POST /score` (velocity, amount, novelty, hours), p99 < 150ms
-- [ ] [Step 25](docs/steps/step-25.md) — payment-service integration: 200ms hard timeout, fail-open + `FRAUD_SKIPPED` flag & event
+- [x] [Step 25](docs/steps/step-25.md) — payment-service integration: 200ms hard timeout, fail-open + `FRAUD_SKIPPED` flag & event
 
 ## Sprint 6 — Send Pix (external, asynchronous settlement)
 **Flow delivered:** external Pix debits to clearing, settles via BACEN SPI, reaches SETTLED.

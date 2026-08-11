@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
+import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
@@ -8,6 +9,7 @@ import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
@@ -42,9 +44,11 @@ class SendPixUseCaseTest {
     private final FakePixKeyResolver pixKeys = new FakePixKeyResolver();
     private final FakeAccountLimitClient accountLimits = new FakeAccountLimitClient();
     private final FakeDailyLimitReservation dailyLimits = new FakeDailyLimitReservation();
+    private final FakeFraudScorer fraudScorer = new FakeFraudScorer();
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
-            transactions, idempotency, pixKeys, accountLimits, dailyLimits, ledger, endToEndIds, clock);
+            transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
+            endToEndIds, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -76,6 +80,9 @@ class SendPixUseCaseTest {
         assertThat(persisted.settledAt()).isEqualTo(NOW);
         assertThat(persisted.description()).isEqualTo("lunch");
         assertThat(persisted.createdAt()).isEqualTo(NOW);
+        // Fraud ran and cleared it (the fake defaults to APPROVE): the verdict is durable, not skipped.
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.APPROVE);
+        assertThat(persisted.fraudSkipped()).isFalse();
 
         // The ledger was commanded to debit the payer and credit the resolved payee, keyed by txId.
         FakeLedgerClient.Posting posting = ledger.only();
@@ -278,6 +285,68 @@ class SendPixUseCaseTest {
         assertThat(pixKeys.resolveCalls()).isEqualTo(1);
     }
 
+    // --- step 25: fraud in the path (resolve → limit → FRAUD → debit → persist) --------------------
+
+    @Test
+    void theFraudCheckReceivesTheJwtAccountTheKeyTheAmountAndTheClockInstant() {
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        // The debtor scored is the command's account (from the JWT), never anything in the payload
+        // (Domain Safety Rule #1); the amount is integer cents; the timestamp is the injected clock.
+        assertThat(fraudScorer.calls()).isEqualTo(1);
+        assertThat(fraudScorer.lastAccountId()).isEqualTo("acc-001");
+        assertThat(fraudScorer.lastPixKey()).isEqualTo("bob@platinum.com");
+        assertThat(fraudScorer.lastAmountCents()).isEqualTo(1_000L);
+        assertThat(fraudScorer.lastTimestamp()).isEqualTo(NOW);
+    }
+
+    @Test
+    void aReviewVerdictProceedsFlaggedNotBlockedAndPersistsTheReviewDecision() {
+        fraudScorer.returning(FraudDecision.REVIEW);
+
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        Transaction persisted = transactions.only();
+        // REVIEW proceeds (the money moved and it settled) but the verdict is recorded for an analyst.
+        assertThat(persisted.status()).isEqualTo(TransactionStatus.SETTLED);
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.REVIEW);
+        assertThat(persisted.fraudSkipped()).isFalse();
+        assertThat(ledger.postings()).hasSize(1);
+    }
+
+    @Test
+    void aDenyVerdictIs422FraudDeniedMovesNoMoneyAndReleasesTheReservation() {
+        accountLimits.setDailyLimitCents(50_000L);
+        fraudScorer.returning(FraudDecision.DENY);
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
+                .isInstanceOf(FraudDeniedException.class);
+
+        // DENY blocks before the debit: no transaction, no ledger posting. The reservation taken just
+        // before the fraud check is released, so the day's counter nets back to zero (reserve then
+        // release) — a denied send must leave the limit exactly as it found it.
+        assertThat(transactions.created()).isEmpty();
+        assertThat(ledger.postings()).isEmpty();
+        assertThat(dailyLimits.reserveCalls()).isEqualTo(1);
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isZero();
+    }
+
+    @Test
+    void aSkippedVerdictFailsOpenProceedsAndPersistsFraudSkippedTrue() {
+        // SKIPPED is exactly what the adapter returns on a timed-out/errored fraud call: the send must
+        // still go through, flagged — the core ADR-0005 behaviour, driven here without any HTTP.
+        fraudScorer.returning(FraudDecision.SKIPPED);
+
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        Transaction persisted = transactions.only();
+        assertThat(persisted.status()).isEqualTo(TransactionStatus.SETTLED);
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.SKIPPED);
+        assertThat(persisted.fraudSkipped()).isTrue();
+        // Money moved despite the skip: availability of payments wins at this layer.
+        assertThat(ledger.postings()).hasSize(1);
+    }
+
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
     private static LocalDate saoPauloDay() {
         return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();
@@ -288,8 +357,8 @@ class SendPixUseCaseTest {
         // Drive a first real accept under a throwaway key to capture the stored hash, then read it back.
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
         new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
-                new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeLedgerClient(),
-                endToEndIds, clock)
+                new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeFraudScorer(),
+                new FakeLedgerClient(), endToEndIds, clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
     }

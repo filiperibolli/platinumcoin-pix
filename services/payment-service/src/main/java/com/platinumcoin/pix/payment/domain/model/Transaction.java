@@ -17,9 +17,16 @@ import java.time.Instant;
  * DICT answer for {@code creditorKey} (the raw destination key as the client sent it), and
  * {@code settledAt} is stamped when the atomic ledger posting commits — for an internal send that is
  * the same instant the money moves. Both are {@code null} on a freshly {@code RECEIVED} transaction
- * that has not yet been resolved/settled. The fraud verdict (step 25) and the external settlement
- * fields (steps 27/31) remain deliberately absent. The debtor is the JWT {@code accountId} — there is
- * no source-account field here or on the wire (Domain Safety Rule #1).
+ * that has not yet been resolved/settled. The debtor is the JWT {@code accountId} — there is no
+ * source-account field here or on the wire (Domain Safety Rule #1).
+ *
+ * <p><b>Scored in the path (step 25):</b> {@code fraudDecision} is the verdict the in-path fraud check
+ * returned ({@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out or errored and
+ * the send failed open), and {@code fraudSkipped} is its boolean shorthand — {@code true} iff the score
+ * was skipped. A {@code DENY} never reaches here: it becomes a {@code 422} before the transaction is
+ * written. Both are the durable record that the {@code RECEIVED → FRAUD_CHECKED} stage ran; on a
+ * transaction minted before scoring they are {@code null}/{@code false}. The external settlement fields
+ * (steps 27/31) remain deliberately absent.
  */
 public record Transaction(
         String txId,
@@ -30,6 +37,8 @@ public record Transaction(
         long amountCents,
         TransactionStatus status,
         String description,
+        FraudDecision fraudDecision,
+        boolean fraudSkipped,
         Instant createdAt,
         Instant settledAt) {
 }

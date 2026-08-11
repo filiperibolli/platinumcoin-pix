@@ -29,6 +29,42 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- Fraud integration with a 200ms budget and fail-open (fraudSkipped flag), RECEIVED→FRAUD_CHECKED
+  transition (step 25)
+  payment-service now scores every send against fraud-service **between the limit reservation and the
+  ledger debit** (ARCHITECTURE §6.5), finalizing ADR-0005 — the project's single most debated design
+  call. The step is not about the engine (step 24 built that) but about **the caller's behaviour under a
+  deadline**. Pieces:
+  **(1) The 200ms hard budget lives in the adapter.** `HttpFraudScorer` (a `RestClient` to
+  `POST /internal/fraud/score`) sets connect 50ms + read 150ms = the ADR-0005 budget, so a hung
+  fraud-service surfaces as a timeout, never a pinned request thread. fraud-service targets p99 < 150ms,
+  leaving margin under the 200ms cap. The bearer token and correlation id are forwarded like the other
+  service-to-service hops.
+  **(2) Fail-open at the boundary, not in the use case.** The new `FraudScorer` port **never throws** for
+  a slow/broken fraud-service: the adapter catches any timeout/transport/5xx (and an empty 2xx body) and
+  returns a fourth verdict, `FraudDecision.SKIPPED`, minted only on this side. This is the deliberate
+  hexagonal split — "the call took too long / the host is down" is an infrastructure fact only the
+  boundary observes, so translating it into `SKIPPED` there keeps `SendPixUseCase` a straight-line policy
+  that knows nothing of HTTP: `DENY` blocks, `APPROVE`/`REVIEW`/`SKIPPED` all proceed.
+  **(3) The three outcomes.** `DENY` ⇒ `422 FRAUD_DENIED` and the daily-limit reservation taken moments
+  earlier is **released** (a denied send leaves the counter exactly as it found it, mirroring the
+  insufficient-funds release — Domain Safety Rules intact: no money moved, nothing persisted). `REVIEW` ⇒
+  proceed **flagged** for an analyst. `APPROVE` ⇒ proceed. On a timeout/error the send proceeds unscored,
+  flagged `fraudSkipped=true` / `fraudDecision=SKIPPED`, with a `// outbox: FraudCheckSkipped` seam for
+  async re-scoring (wired once the outbox exists, step 28/29) — availability of payments wins *at this
+  layer*, residual risk bounded by daily limits + async re-score.
+  **(4) The transition is recorded as durable fields, not a new status.** An internal send settles in one
+  atomic posting straight to `SETTLED`, so there is no intermediate item to stamp `FRAUD_CHECKED` on;
+  instead the verdict rides onto the transaction as `fraudDecision` + `fraudSkipped` (persisted in
+  `pix_transactions`, `fraudSkipped` always written since a boolean has no "absent"), which *is* the
+  durable record that the `RECEIVED → FRAUD_CHECKED` stage ran. A `DENY` never reaches the item.
+  Verified: `HttpFraudScorerTest` proves the budget against a **real** slow JDK `HttpServer` (a 2s server
+  delay still returns `SKIPPED` in < 1s), and 5xx/unreachable also fail open; `SendPixUseCaseTest` and
+  `FraudIntegrationIT` prove APPROVE proceeds, DENY ⇒ 422 + no debit + limit released, and the fail-open
+  skip proceeds flagged. `docs/data-model.md` corrected (the `fraud*` fields are written on internal
+  sends too, since fraud sits in the shared send path). Both `PaymentArchitectureTest` rules stay green.
+  `mvn verify` green (44 unit + 28 IT).
+  AI: est 2.5h / actual 1.4h / ~88% generated / 1 issues caught in human review
 - fraud-service rule-based `/score` (velocity, amount, novelty, hours) engineered for p99 < 150ms (step 24)
   The endpoint-less skeleton from step 23 grows its first business operation: `POST /internal/fraud/score`
   (authenticated, `/internal/**`), body `{accountId, pixKey, amountCents, timestamp?}` → `{decision:

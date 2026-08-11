@@ -1,11 +1,13 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
+import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
@@ -14,6 +16,7 @@ import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
+import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
@@ -93,6 +96,7 @@ public class SendPixUseCase {
     private final PixKeyResolver pixKeys;
     private final AccountLimitClient accountLimits;
     private final DailyLimitReservation dailyLimits;
+    private final FraudScorer fraudScorer;
     private final LedgerClient ledger;
     private final EndToEndIdGenerator endToEndIds;
     private final Clock clock;
@@ -103,6 +107,7 @@ public class SendPixUseCase {
             PixKeyResolver pixKeys,
             AccountLimitClient accountLimits,
             DailyLimitReservation dailyLimits,
+            FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
             Clock clock) {
@@ -111,6 +116,7 @@ public class SendPixUseCase {
         this.pixKeys = pixKeys;
         this.accountLimits = accountLimits;
         this.dailyLimits = dailyLimits;
+        this.fraudScorer = fraudScorer;
         this.ledger = ledger;
         this.endToEndIds = endToEndIds;
         this.clock = clock;
@@ -128,6 +134,7 @@ public class SendPixUseCase {
      * @throws com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException      the destination key does not
      *                                                                       resolve to an internal account
      * @throws LimitExceededException          the send would breach the debtor's daily Pix limit
+     * @throws FraudDeniedException            the in-path fraud check returned {@code DENY} (limit released)
      * @throws InsufficientFundsException      the ledger refused the debit for lack of funds
      * @throws com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException the ledger was unreachable
      */
@@ -212,8 +219,9 @@ public class SendPixUseCase {
      * Do the acceptance work, memoize the response, and return the fresh outcome. This is the
      * money-moving core, run only inside a won idempotency claim so a double-tap or replay never
      * repeats it. The orchestration order is the one the external flow (Sprint 6) will extend —
-     * <b>resolve → (limit → fraud, soon) → debit → persist</b> — so an unknown destination is refused
-     * before any counter is touched and the debit is the last thing that can fail before we memoize.
+     * <b>resolve → limit → fraud → debit → persist</b> (ARCHITECTURE §6.5) — so an unknown destination is
+     * refused before any counter is touched, fraud sits between the limit reservation and the debit, and
+     * the debit is the last thing that can fail before we memoize.
      */
     private SendPixOutcome acceptAndComplete(
             SendPixCommand command, long amountCents, String accountId, String key, Instant now) {
@@ -229,10 +237,17 @@ public class SendPixUseCase {
         //    per idempotency key — a double-tap or a replay must never reserve twice. A DENY throws here.
         reserveDailyLimit(accountId, amountCents, now);
 
-        // 3) Move the money and persist the terminal state. An internal transfer settles the instant the
+        // 3) Screen for fraud BETWEEN the limit reservation and the debit (ADR-0005), under a hard 200ms
+        //    budget the adapter enforces. A DENY releases the reservation and throws here; APPROVE/REVIEW
+        //    proceed, and a timed-out/errored check proceeds fail-open as SKIPPED. The verdict is carried
+        //    onto the transaction so the RECEIVED→FRAUD_CHECKED stage is durably recorded.
+        FraudDecision fraudDecision = screenForFraud(accountId, command.pixKey(), amountCents, now);
+
+        // 4) Move the money and persist the terminal state. An internal transfer settles the instant the
         //    atomic ledger posting commits — there is no SPI leg — so this lands the transaction at
         //    SETTLED directly. INSUFFICIENT_FUNDS releases the reservation from step 2.
-        Transaction transaction = settleInternally(command, creditorAccountId, amountCents, accountId, now);
+        Transaction transaction =
+                settleInternally(command, creditorAccountId, amountCents, accountId, fraudDecision, now);
 
         Map<String, String> snapshot = new LinkedHashMap<>();
         snapshot.put("transactionId", transaction.txId());
@@ -273,6 +288,54 @@ public class SendPixUseCase {
     }
 
     /**
+     * Score the send against fraud rules and return the verdict to carry onto the transaction (ADR-0005).
+     * The fraud check sits between the limit reservation and the debit, so:
+     * <ul>
+     *   <li>{@code DENY} ⇒ <b>release the reservation</b> taken by {@link #reserveDailyLimit} and refuse
+     *       with {@link FraudDeniedException} ({@code 422}) — a denied send must leave the day's counter
+     *       exactly as it found it, mirroring the insufficient-funds release.</li>
+     *   <li>{@code SKIPPED} ⇒ the check timed out or errored and the adapter <b>failed open</b>; the send
+     *       proceeds unscored and flagged, and the skip is queued for async re-scoring (outbox seam).</li>
+     *   <li>{@code APPROVE}/{@code REVIEW} ⇒ proceed (a {@code REVIEW} is flagged, not blocked).</li>
+     * </ul>
+     * The port never throws for a slow/broken fraud-service — the fail-<i>open</i> lives in the adapter
+     * (it alone observes the timeout), so this method applies a single business rule to a four-valued
+     * result and advances the transaction to the {@code FRAUD_CHECKED} stage.
+     */
+    private FraudDecision screenForFraud(String accountId, String pixKey, long amountCents, Instant now) {
+        FraudDecision decision = fraudScorer.score(accountId, pixKey, amountCents, now);
+
+        if (decision == FraudDecision.DENY) {
+            LocalDate day = now.atZone(LIMIT_ZONE).toLocalDate();
+            dailyLimits.release(accountId, amountCents, day);
+            log.warn("Fraud screening denied the send, released the daily-limit reservation, returning "
+                            + "422 | debtorAccountId={} pixKey={} amountCents={} day={} decision={}",
+                    accountId, pixKey, amountCents, day, decision);
+            throw new FraudDeniedException();
+        }
+
+        if (decision == FraudDecision.SKIPPED) {
+            // The core ADR-0005 behaviour: availability of payments chosen at this layer. The send is
+            // unscored — bounded by daily limits + async re-scoring, which the skip marker below triggers.
+            log.warn("Fraud check skipped (timed out or errored past the 200ms budget), proceeding "
+                            + "fail-open, the send is unscored and flagged | debtorAccountId={} pixKey={} "
+                            + "amountCents={} fraudSkipped=true decision={}",
+                    accountId, pixKey, amountCents, decision);
+            // outbox: FraudCheckSkipped — the skip is not forgotten. Publishing the marker so async
+            // scoring picks it up is wired once the transactional outbox exists (step 28/29).
+        } else {
+            log.info("Fraud check scored the payment and cleared it to proceed | debtorAccountId={} "
+                            + "pixKey={} amountCents={} decision={}",
+                    accountId, pixKey, amountCents, decision);
+        }
+
+        log.info("Fraud stage advanced the transaction RECEIVED->FRAUD_CHECKED | debtorAccountId={} "
+                        + "pixKey={} decision={} fraudSkipped={}",
+                accountId, pixKey, decision, decision == FraudDecision.SKIPPED);
+        return decision;
+    }
+
+    /**
      * Mint the ids, command the atomic ledger debit/credit, and persist the settled transaction. For an
      * internal transfer the single {@code TransactWriteItems} <i>is</i> the settlement, so the terminal
      * state is {@code SETTLED} with {@code settledAt} stamped at the same instant the money moved
@@ -289,7 +352,7 @@ public class SendPixUseCase {
      */
     private Transaction settleInternally(
             SendPixCommand command, String creditorAccountId, long amountCents, String accountId,
-            Instant now) {
+            FraudDecision fraudDecision, Instant now) {
         String txId = "tx-" + UUID.randomUUID();
         String endToEndId = endToEndIds.generate(now);
         String description = command.description() == null ? "" : command.description();
@@ -308,7 +371,8 @@ public class SendPixUseCase {
             throw e;
         }
 
-        // Internal transfer: the posting committed, so it is settled now.
+        // Internal transfer: the posting committed, so it is settled now. The fraud verdict rides along
+        // (fraudSkipped is its boolean shorthand) so the FRAUD_CHECKED stage is durable on the item.
         Transaction transaction = new Transaction(
                 txId,
                 endToEndId,
@@ -318,6 +382,8 @@ public class SendPixUseCase {
                 amountCents,
                 TransactionStatus.SETTLED,
                 description,
+                fraudDecision,
+                fraudDecision == FraudDecision.SKIPPED,
                 now,
                 now);
         transactions.create(transaction);

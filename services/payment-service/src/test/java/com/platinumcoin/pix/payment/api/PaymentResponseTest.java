@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.api;
 
+import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
@@ -22,7 +23,7 @@ class PaymentResponseTest {
     void receivedMapsToProcessingWithNoSettlement() {
         Transaction received = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", null, 12_550L,
-                TransactionStatus.RECEIVED, "lunch", CREATED, null);
+                TransactionStatus.RECEIVED, "lunch", null, false, CREATED, null);
 
         PaymentResponse response = PaymentResponse.from(received);
 
@@ -35,7 +36,7 @@ class PaymentResponseTest {
     void settledMapsToSettledWithSettledAt() {
         Transaction settled = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", 12_550L,
-                TransactionStatus.SETTLED, "lunch", CREATED, SETTLED);
+                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
 
         PaymentResponse response = PaymentResponse.from(settled);
 
@@ -48,7 +49,7 @@ class PaymentResponseTest {
     void rendersIdentityAmountAndKeyFromTheTransaction() {
         Transaction settled = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", 12_550L,
-                TransactionStatus.SETTLED, "lunch", CREATED, SETTLED);
+                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
 
         PaymentResponse response = PaymentResponse.from(settled);
 
