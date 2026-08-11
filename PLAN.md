@@ -72,7 +72,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** external Pix debits to clearing, settles via BACEN SPI, reaches SETTLED.
 **Infra que sobe:** SNS `pix-events` + SQS `settlement-queue`(+DLQ) + mock-bacen-spi. · **Diagram:** ARCHITECTURE §6.6
 
-- [ ] [Step 26](docs/steps/step-26.md) — LocalStack init: SNS `pix-events` + `settlement-queue` (+DLQ, redrive, filter policy)
+- [x] [Step 26](docs/steps/step-26.md) — LocalStack init: SNS `pix-events` + `settlement-queue` (+DLQ, redrive, filter policy)
 - [ ] [Step 27](docs/steps/step-27.md) — external orchestration: ledger debit → `SPI_CLEARING`; status DEBITED
 - [ ] [Step 28](docs/steps/step-28.md) — transactional outbox: tx + outbox item in one TransactWriteItems
 - [ ] [Step 29](docs/steps/step-29.md) — outbox polling publisher: sparse GSI → SNS; `ProcessedEventStore` (consumer dedup)

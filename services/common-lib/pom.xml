@@ -122,6 +122,20 @@
             <artifactId>dynamodb</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- SNS + SQS SDKs, TEST scope only (step 26): MessagingInitIT asserts the messaging
+             backbone the init scripts create (topic, queues, redrive, filter policy). The
+             services that actually publish/consume declare these in their own compile scope —
+             common-lib stays THIN at runtime. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sns</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

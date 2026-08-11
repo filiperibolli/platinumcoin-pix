@@ -36,10 +36,22 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
   baseline of the conservation invariant (step 15). Unlike the account seed,
   every put is conditional on `attribute_not_exists(pk)`: re-running it against a
   table that already holds moved money must never reset a balance while its
-  `ENTRY` items survive. Its final log line
-  (`[seed] ledger ready: …`) is the readiness marker the Testcontainers harness
-  (`LocalStackTestBase`) waits on — **if you append a script that sorts after
-  this one, move that marker.**
+  `ENTRY` items survive.
+- **`06-messaging-core.sh`** (step 26) — the messaging backbone, the project's first
+  asynchronous infrastructure: SNS topic `pix-events`, `settlement-queue` and its
+  `settlement-queue-dlq`, and the SNS→SQS subscription. The queue carries a
+  **redrive policy** (`maxReceiveCount=5` → DLQ), `VisibilityTimeout=30s` (must
+  exceed the 12s SPI call of step 31; it doubles as the retry backoff in step 32),
+  `ReceiveMessageWaitTimeSeconds=20` (long polling) and an explicit `Policy`
+  allowing only `pix-events` to `sqs:SendMessage` — the API, unlike the console,
+  does not add that for you, and without it delivery fails *silently*. The
+  subscription is created **guarded** (no duplicate on restart) with
+  `FilterPolicy={"eventType":["PixDebited"]}` and `RawMessageDelivery=true`.
+  Its final log line (`[init] messaging ready: …`) is the readiness marker the
+  Testcontainers harness (`LocalStackTestBase`) waits on — **if you append a
+  script that sorts after this one, move that marker.** Asserted by
+  `MessagingInitIT` in common-lib (resources, redrive, and a real
+  publish→receive proof of the filter policy + raw delivery).
 
 Each later sprint that flips on a new AWS service adds its own resource script in
 the same directory, matching the vertical-delivery discipline (one flow's infra
@@ -51,3 +63,15 @@ at a time). The exact `create-table` commands are mirrored in `docs/local-dev.md
 - Use the in-container endpoint `http://localhost:4566` (the script runs *inside*
   the LocalStack container) with the dummy AWS credentials from `../../.env.example`.
 - Table names follow the `pix_*` convention (see `docs/data-model.md`).
+- **Messaging names** (set in step 26): one SNS topic, `pix-events`, for the whole
+  platform — fan-out happens at the *subscription*, never by adding topics. One SQS
+  queue **per consuming service**, named `<purpose>-queue`, and its dead-letter
+  queue is the same name plus `-dlq` (`settlement-queue` / `settlement-queue-dlq`).
+  Every queue has exactly one DLQ; queues carry a filter policy on the `eventType`
+  message attribute so a consumer only ever receives the event types it handles.
+- The LocalStack `SERVICES` list in `../../docker-compose.yml` is **enforced**, not a
+  hint: a call to an unlisted service answers `501 Service '<x>' is not enabled`. A
+  script that uses a new AWS service must land in the same change as the `SERVICES`
+  entry that enables it — and as the matching `withServices(...)` in
+  `LocalStackTestBase`, or every integration test in the repo hangs on the readiness
+  wait while the script dies under `set -e`.

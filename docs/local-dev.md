@@ -93,6 +93,14 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > its own startup on `redis` being healthy (`depends_on: service_healthy`), so a `redis` that fails to
 > boot keeps fraud-service out of the healthy set rather than letting it come up half-wired.
 
+> **Step 26 (messaging backbone).** LocalStack now runs `SERVICES=dynamodb,sns,sqs` and `up` creates the
+> SNS topic `pix-events`, `settlement-queue` + `settlement-queue-dlq` (redrive after 5 receives) and the
+> filtered subscription. Nothing publishes or consumes yet — the producer is the outbox publisher (step
+> 29) and the consumer is settlement-service (step 31) — so the queues come up **empty on purpose**.
+> Verify with `aws --endpoint-url=http://localhost:4566 sns list-topics | jq` and `… sqs list-queues | jq`
+> (the full command set is in §4, "Messaging"); the init log line to look for is
+> `[init] messaging ready: …`, which is also the readiness marker the test harness waits on.
+
 ### How the build works (there is no service image in git)
 
 The repo versions the **recipe** (each `services/<name>/Dockerfile`), never the built image. Service images
@@ -140,7 +148,7 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` at 0 — so Σ over every account is **zero** (step 12). Pix keys are registered via the API, not seeded.
 
-The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6) → `+s3` (Sprint 10).
+The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6, **already flipped** — step 26) → `+s3` (Sprint 10). The list is **enforced**: calling a service that is not on it answers `501 Service 'sqs' is not enabled`, so enabling the service and creating its resources always land in the same change (and so does the matching `withServices(...)` in `LocalStackTestBase`).
 
 #### Table DDL (mirror of `infra/localstack/init/*.sh`)
 
@@ -335,6 +343,66 @@ aws --endpoint-url=http://localhost:4566 dynamodb describe-table --table-name pi
 # {"AttributeName":"expiresAt","TimeToLiveStatus":"ENABLED"}
 aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-name pix_idempotency \
   | jq '.TimeToLiveDescription'
+```
+
+#### Messaging (mirror of `infra/localstack/init/06-messaging-core.sh`, step 26)
+
+**Naming convention** — one SNS topic for the whole platform, `pix-events`; fan-out happens at the
+*subscription*, never by adding topics. One SQS queue **per consuming service**, `<purpose>-queue`,
+whose dead-letter queue is the same name plus `-dlq`. Every queue has exactly one DLQ and a filter
+policy on the `eventType` message attribute, so a consumer only receives the event types it handles.
+
+```bash
+# the topic — create-topic is idempotent: same name ⇒ same ARN
+aws --endpoint-url=http://localhost:4566 sns create-topic --name pix-events
+
+# the DLQ first (the main queue needs its ARN), retention at the SQS maximum of 14 days
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name settlement-queue-dlq \
+  --attributes '{"MessageRetentionPeriod":"1209600"}'
+
+# the consumer queue: redrive to the DLQ after 5 receives; visibility 30s (must exceed the 12s SPI
+# call of step 31 — it is also the retry backoff of step 32); 20s long polling
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name settlement-queue \
+  --attributes '{"RedrivePolicy":"{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:settlement-queue-dlq\",\"maxReceiveCount\":\"5\"}","VisibilityTimeout":"30","ReceiveMessageWaitTimeSeconds":"20"}'
+# …plus a queue Policy allowing ONLY pix-events to sqs:SendMessage — the console adds this for you,
+# the API does not, and a missing policy fails SILENTLY (publish accepted, delivery denied).
+
+# subscribe, then scope it: only PixDebited reaches settlement, and the body is the event itself
+aws --endpoint-url=http://localhost:4566 sns subscribe --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --protocol sqs --notification-endpoint arn:aws:sqs:us-east-1:000000000000:settlement-queue
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name FilterPolicy --attribute-value '{"eventType":["PixDebited"]}'
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name RawMessageDelivery --attribute-value true
+```
+
+Verify what the init script created on `up`:
+
+```bash
+# the topic
+aws --endpoint-url=http://localhost:4566 sns list-topics | jq
+# both queues: settlement-queue + settlement-queue-dlq
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq
+# the redrive policy + timings on the consumer queue
+aws --endpoint-url=http://localhost:4566 sqs get-queue-attributes --attribute-names All \
+  --queue-url $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url \
+      --queue-name settlement-queue --query QueueUrl --output text) \
+  | jq '.Attributes | {RedrivePolicy, VisibilityTimeout, ReceiveMessageWaitTimeSeconds}'
+# exactly ONE subscription, and its filter policy
+SUB=$(aws --endpoint-url=http://localhost:4566 sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events --query 'Subscriptions[0].SubscriptionArn' --output text)
+aws --endpoint-url=http://localhost:4566 sns get-subscription-attributes --subscription-arn $SUB \
+  | jq '.Attributes | {FilterPolicy, RawMessageDelivery}'
+
+# end-to-end by hand: a PixDebited arrives, a PixSettled is filtered out (no consumer yet — step 31)
+aws --endpoint-url=http://localhost:4566 sns publish --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --message '{"eventId":"ev-manual-1","eventType":"PixDebited","txId":"tx-manual-1"}' \
+  --message-attributes '{"eventType":{"DataType":"String","StringValue":"PixDebited"}}'
+aws --endpoint-url=http://localhost:4566 sqs receive-message --wait-time-seconds 5 \
+  --queue-url $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url \
+      --queue-name settlement-queue --query QueueUrl --output text) | jq '.Messages[0].Body'
+# ⇒ the raw event JSON, NOT an SNS {"Type":"Notification",...} envelope.
+# Re-run with eventType=PixSettled ⇒ the queue stays empty: the filter policy dropped it at SNS.
 ```
 
 **Step 18 — sending a Pix (walking skeleton) through payment-service** (`:8084`). The endpoint

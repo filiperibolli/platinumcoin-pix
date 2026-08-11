@@ -29,6 +29,52 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- LocalStack init: SNS pix-events + settlement-queue with DLQ/redrive and filtered subscription (step 26)
+  `06-messaging-core.sh` brings up the platform's **first asynchronous infrastructure** — everything
+  through Sprint 5 was synchronous. LocalStack now runs `SERVICES=dynamodb,sns,sqs` and creates the SNS
+  topic `pix-events`, the `settlement-queue` + `settlement-queue-dlq`, and the SNS→SQS subscription.
+  Nothing publishes or consumes yet (producer = the outbox publisher, step 29; consumer =
+  settlement-service, step 31), so the queues come up **empty on purpose**.
+  **The naming convention set here** (documented in `infra/localstack/init/README.md` and
+  `docs/local-dev.md` §4): **one** topic for the whole platform, `pix-events` — fan-out happens at the
+  *subscription*, never by adding topics; one queue **per consuming service**, `<purpose>-queue`, whose
+  dead-letter queue is the same name plus `-dlq`. That shape is the SNS/SQS analogue of a Kafka topic
+  with one consumer group per service (`docs/messaging-kafka-appendix.md`).
+  **Four configuration decisions, each with a failure it prevents.** *(1) Redrive* — `maxReceiveCount=5`
+  → DLQ, native to SQS and the reason a DLQ costs nothing here (in Kafka it is application code). A
+  message in the DLQ is *flagged, not lost*: reconciliation (step 35) and the depth alert (step 44) own
+  it, and 14-day retention (the SQS maximum) means it survives a long weekend. *(2) `VisibilityTimeout=30s`*
+  — must exceed the settlement consumer's 12s SPI call (step 31); a shorter window would redeliver a
+  message still being worked on and race two workers on the same transaction. It doubles as the retry
+  backoff of step 32. *(3) `ReceiveMessageWaitTimeSeconds=20`* — long polling, so the consumer blocks
+  instead of hammering the queue with empty receives. *(4) An explicit queue `Policy`* allowing only
+  `pix-events` to `sqs:SendMessage`: the console adds this for you, the API does not, and its absence
+  fails **silently** — SNS accepts the publish and delivery is denied, so the message simply never arrives.
+  **Filter policy + raw delivery.** The subscription carries `FilterPolicy={"eventType":["PixDebited"]}`
+  — broker-side routing on the message attribute the publisher will set (ADR-0004), so settlement never
+  pays a receive for an event it does not handle (step 36 adds notification-queue with its own policy;
+  step 42 adds an unfiltered audit-queue — the topic itself never changes). `RawMessageDelivery=true`
+  delivers the event JSON as published rather than wrapped in the SNS notification envelope, so the
+  consumer parses the same envelope the publisher wrote and stays broker-agnostic.
+  **Idempotent and self-healing**: create-if-absent, then *always* converge attributes
+  (`set-queue-attributes` / `set-subscription-attributes`), so a re-run repairs drift instead of
+  failing; the subscription is created guarded, since a duplicate subscription would deliver a second
+  copy of every event — self-inflicted, on top of the at-least-once we already design for.
+  **Harness widened in the same change (required, not adjacent):** `06-` now sorts last, so
+  `LocalStackTestBase`'s readiness wait moves from `[seed] ledger ready` to `[init] messaging ready`,
+  and its `withServices(...)` gains SNS + SQS. LocalStack **enforces** `SERVICES` — an unlisted service
+  answers `501 Service 'sqs' is not enabled` — so without the widening the script would abort under
+  `set -e` and every IT in the repo would hang on the readiness wait.
+  **Tests.** New `MessagingInitIT` (5) in common-lib asserts the resources, the redrive policy
+  (`maxReceiveCount=5` → the DLQ ARN), the consumer timings, exactly one subscription with its filter
+  policy — and, end to end, that a `PixDebited` published to the topic arrives **raw** on the queue while
+  a `PixSettled` published *first* never does. The filter assertion was mutation-checked: widening the
+  policy to `["PixDebited","PixSettled"]` makes it fail. SNS/SQS SDKs added to common-lib in **test**
+  scope only (it stays THIN at runtime). Verified on the live compose container too: init log, the
+  step's `list-topics`/`list-queues`, a manual publish/filter drill, a redrive drill (6 receives ⇒ DLQ
+  depth 1), and the script re-run twice inside the running container ⇒ still 2 queues / 1 subscription.
+  Full `mvn verify` green (all modules, 263 tests).
+  AI: est 1.5h / actual 1.25h / ~90% generated / 0 issues caught in human review
 - Fraud integration with a 200ms budget and fail-open (fraudSkipped flag), RECEIVED→FRAUD_CHECKED
   transition (step 25)
   payment-service now scores every send against fraud-service **between the limit reservation and the

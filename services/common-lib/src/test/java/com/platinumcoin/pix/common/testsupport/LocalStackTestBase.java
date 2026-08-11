@@ -50,14 +50,18 @@ public abstract class LocalStackTestBase {
 
     static {
         LocalStackContainer container = new LocalStackContainer(LOCALSTACK_IMAGE)
-                // Only DynamoDB — matches SERVICES in compose; later sprints widen this as they land.
-                .withServices(Service.DYNAMODB)
-                // Ready only once the *last* init script has finished seeding. LocalStack opens port
-                // 4566 before ready.d runs, so waiting on the port alone would race the seed; we wait
-                // on the seed script's final log line instead, guaranteeing tables + seed are present.
-                // This pattern must track whichever script sorts last in ready.d — today
-                // 05-seed-ledger.sh (step 12); a new seed script appended after it moves the marker.
-                .waitingFor(Wait.forLogMessage(".*\\[seed\\] ledger ready.*", 1)
+                // Mirrors SERVICES in compose, widened per sprint as each flow lands: DynamoDB
+                // (Sprint 2) + SNS/SQS (Sprint 6, step 26). LocalStack ENFORCES this list — an
+                // unlisted service answers 501 — so an init script for a service missing here would
+                // abort under `set -e` and hang every IT on the readiness wait below.
+                .withServices(Service.DYNAMODB, Service.SNS, Service.SQS)
+                // Ready only once the *last* init script has finished. LocalStack opens port 4566
+                // before ready.d runs, so waiting on the port alone would race the init; we wait on
+                // the last script's final log line instead, guaranteeing tables, seed AND messaging
+                // resources are present. This pattern must track whichever script sorts last in
+                // ready.d — today 06-messaging-core.sh (step 26); appending a script after it moves
+                // the marker.
+                .waitingFor(Wait.forLogMessage(".*\\[init\\] messaging ready.*", 1)
                         .withStartupTimeout(Duration.ofMinutes(2)));
 
         // Mount each real init script into ready.d with the executable bit — LocalStack runs any
