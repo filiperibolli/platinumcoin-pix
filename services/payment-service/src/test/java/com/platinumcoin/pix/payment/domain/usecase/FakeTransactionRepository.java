@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
+import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import java.util.ArrayList;
@@ -14,10 +15,14 @@ import java.util.Optional;
 final class FakeTransactionRepository implements TransactionRepository {
 
     private final List<Transaction> created = new ArrayList<>();
+    private final List<OutboxEvent> outbox = new ArrayList<>();
 
     @Override
-    public void create(Transaction transaction) {
+    public void create(Transaction transaction, List<OutboxEvent> events) {
+        // The real adapter commits both in one TransactWriteItems; the fake simply records that the use
+        // case handed them over together, which is the part the use case is responsible for.
         created.add(transaction);
+        outbox.addAll(events);
     }
 
     @Override
@@ -32,6 +37,16 @@ final class FakeTransactionRepository implements TransactionRepository {
 
     List<Transaction> created() {
         return created;
+    }
+
+    /** Every outbox event the use case wrote, in write order. */
+    List<OutboxEvent> outbox() {
+        return outbox;
+    }
+
+    /** The event types written, in order — what the rest of the platform would see. */
+    List<String> outboxTypes() {
+        return outbox.stream().map(OutboxEvent::eventType).toList();
     }
 
     Transaction only() {

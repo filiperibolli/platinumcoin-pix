@@ -212,12 +212,41 @@ reaches the item: it becomes `422 FRAUD_DENIED` before the transaction is writte
   "sk": "OUTBOX#evt-7a2b",
   "eventId": "evt-7a2b",
   "eventType": "PixDebited",
-  "payload": "{...json...}",
-  "occurredAt": "2026-07-02T12:34:56Z",
+  "payload": "{\"amountCents\":12550,\"txId\":\"tx-9f1c\", ...}",
+  "occurredAt": "2026-07-02T12:34:56.789Z",
+  "correlationId": "3f9a...",
   "gsi3pk": "OUTBOX#UNPUBLISHED",
-  "gsi3sk": "2026-07-02T12:34:56Z"
+  "gsi3sk": "2026-07-02T12:34:56.789Z"
 }
 ```
+
+**The write (step 28).** The `META` item and its `OUTBOX#` siblings are written in **one
+`TransactWriteItems`** — never two writes. Persisting the state and announcing it are two systems, so a
+crash between them either loses the event (for an external send: money parked in `SPI_CLEARING` that no
+settlement flow will pick up) or announces a payment that never committed. Because the outbox items sit
+in the transaction's own partition, the store commits both atomically and the dual-write window does not
+exist. The `META` put is guarded by `attribute_not_exists(pk)`: a create never overwrites a transaction
+already on record, so no late or replayed write can regress a status a later step advanced (a `SETTLED`
+payment reset to `DEBITED` would be settled twice). When the guard fires, **nothing** is written — the
+outbox items roll back with it.
+
+**Which events an accepted send writes** (`PixOutboxEvents`, payment-service): an **external** send
+announces `PixDebited` (the trigger the settlement-queue's filter policy subscribes to); an **internal**
+send announces `PixSettled` — the atomic posting was the settlement, and `PixDebited` would ask BACEN to
+settle a transfer that never left the bank; a **fail-open fraud skip** (ADR-0005) adds a second
+`FraudCheckSkipped` item to the same transaction, so "an unscored payment was let through" is as durable
+as the payment. Money in a payload is always integer cents.
+
+`correlationId` carries the request's id into the asynchronous half, so one `grep` still reconstructs the
+whole path once the flow leaves the request thread (ADR-0012); it is absent for an event minted outside a
+request. `payload` is an **opaque JSON string** — DynamoDB never queries inside it, so a new event type
+needs no schema change and the publisher forwards it without parsing it.
+
+> **`occurredAt` is fixed-width milliseconds** (`uuuu-MM-dd'T'HH:mm:ss.SSS'Z'`), never
+> `Instant.toString()` — the same trap as the ledger's entry timestamps, and for the same reason: it is
+> the **sort key** the publisher drains oldest-first, so an event on a round second would render
+> `12:34:30Z`, sort *after* one 500 ms later (`'Z'` 0x5A > `'.'` 0x2E), and silently invert the drain
+> order.
 
 Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark ⇒ at-least-once; the item leaves the sparse index and the outbox history stays in the partition for audit). See ADR-0004.
 

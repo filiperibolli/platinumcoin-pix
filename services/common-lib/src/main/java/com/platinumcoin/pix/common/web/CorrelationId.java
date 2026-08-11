@@ -1,5 +1,7 @@
 package com.platinumcoin.pix.common.web;
 
+import org.slf4j.MDC;
+
 /**
  * Correlation-id constants shared across the platform.
  *
@@ -17,6 +19,19 @@ public final class CorrelationId {
 
     /** MDC key for the transaction id, populated by money-moving flows in later steps. */
     public static final String TX_ID_MDC_KEY = "txId";
+
+    /**
+     * The correlation id of the thread currently running, or {@code null} outside a request (a
+     * scheduler tick, a queue consumer before it restores the id from the event envelope).
+     *
+     * <p>Exposed so a flow that <b>leaves</b> the synchronous request — an outbox event written now and
+     * published seconds later, in another process — can carry the id along in its envelope. That is
+     * what keeps ADR-0012's promise alive across the asynchronous boundary: one {@code grep
+     * <correlationId>} still reconstructs the full path of a payment, request and settlement included.
+     */
+    public static String current() {
+        return MDC.get(MDC_KEY);
+    }
 
     private CorrelationId() {
     }

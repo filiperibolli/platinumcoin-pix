@@ -454,7 +454,8 @@ sequenceDiagram
     PAY->>LED: POST /postings (debit payer, credit payee, txId)
     LED->>DDB: TransactWriteItems (atomic debit+credit+entries)
     DDB-->>LED: OK
-    PAY->>DDB: tx = SETTLED (internal settles instantly — no SPI leg) + complete idempotency
+    PAY->>DDB: TransactWriteItems: tx = SETTLED + outbox(PixSettled) — internal settles instantly, no SPI leg
+    PAY->>DDB: complete idempotency (memoize the 202)
     PAY-->>App: 202 Accepted {transactionId, status}
     App->>PAY: GET /v1/payments/{id} → status
 ```
@@ -467,6 +468,14 @@ is itself idempotent by `txId` (Sprint 3).
 **Question 1 (source account):** the debited account is derived **exclusively** from the JWT `accountId`
 claim — the request body has no source-account field at all (the safest way to enforce "never from the
 payload" is to make it inexpressible; ADR-0007).
+
+**Why an internal send writes an outbox event too (step 28):** it emits `PixSettled` — never
+`PixDebited` — in the same `TransactWriteItems` as the transaction. The atomic posting *was* the
+settlement, so the terminal event is true at once; audit (§6.10) and notification (§6.8) consume it
+exactly like an external settlement's, which is the point — a consumer never learns where the payee
+banks. Announcing `PixDebited` instead would put an already-finished payment on the settlement-queue
+(whose subscription filters that type) and have BACEN asked to settle a transfer that never left the
+bank.
 
 ---
 

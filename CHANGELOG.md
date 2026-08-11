@@ -47,6 +47,65 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- Transactional outbox: status transition + event written atomically in one TransactWriteItems (step 28)
+  The send flow stops being able to lie. Until now the transaction was saved with a `PutItem` and
+  "announce it" was a future second write — the **dual-write problem** (ADR-0004): a crash between the
+  two either loses the event (for an external send, money parked in `SPI_CLEARING` that no settlement
+  flow will ever pick up) or announces a payment that never committed. The outbox pattern does not
+  shrink that window, it **deletes** it: the event is written as an *item next to the state it
+  describes*, in the same `TX#<txId>` partition, so `TX#<txId>/META` + one `TX#<txId>/OUTBOX#<eventId>`
+  per event commit in **one `TransactWriteItems`**. Delivery becomes a separate, retryable problem that
+  a lost publish cannot corrupt (step 29 drains it; consumers dedupe by `eventId`). Nothing publishes
+  yet — the sparse index only fills.
+  **The port carries the guarantee**: `TransactionRepository.create(Transaction, List<OutboxEvent>)`
+  makes "save the state without its events" unexpressible, rather than merely discouraged.
+  **Which events, and why it is a domain decision** (`domain/service/PixOutboxEvents`, not the adapter):
+  external ⇒ `PixDebited` (the type step 26's settlement-queue filter policy subscribes to); internal ⇒
+  `PixSettled`, **never** `PixDebited` — the atomic posting *was* the settlement (step 21), so
+  announcing a debit would put an already-finished payment on the settlement-queue and have BACEN asked
+  to settle a transfer that never left the bank; audit and notification consume that `PixSettled`
+  exactly like an external settlement's, which is the point — a consumer never learns where the payee
+  banks. A fail-open fraud skip (ADR-0005) adds a **second** event, `FraudCheckSkipped`, to the same
+  transaction, so "we let an unscored payment through" is as durable as the payment itself; step 25's
+  TODO seam is now wired.
+  **The envelope is broker-agnostic by construction**: `OutboxEvent(eventId, eventType, payload,
+  occurredAt, correlationId)` + `EventEnvelope` land in `common-lib` and name no broker (same precedent
+  as `CanonicalJson` — Jackson may not be imported from a service's `domain/`). `payload` is stored as
+  an **opaque JSON string**, so DynamoDB never queries inside it and a new event type needs no schema
+  change; money crosses it as integer cents. `correlationId` (new `CorrelationId.current()`, reading the
+  MDC) rides along, which is what keeps ADR-0012's promise alive **after the flow goes asynchronous**:
+  one `grep <correlationId>` still reconstructs request → debit → settlement across processes — verified
+  on the live stack.
+  **The fixed-width timestamp trap, a second time.** `gsi3sk = occurredAt` is a **sort key** the
+  publisher drains oldest-first, so it is formatted `uuuu-MM-dd'T'HH:mm:ss.SSS'Z'` and never
+  `Instant.toString()`: the latter drops trailing zeros, so an event on a round second renders
+  `12:34:30Z` and sorts *after* one 500 ms later (`'Z'` 0x5A > `'.'` 0x2E) — the exact defect the ledger's
+  entry timestamps document, here inverting the drain order of the outbox instead of a statement page.
+  **Two doc divergences recorded and fixed in `docs/steps/step-28.md`.** (1) Task 2 assumed step 27 had
+  left a *status transition* to guard; it had not — payment-service writes `META` **once**, already at
+  its final-for-now status, and the guarded `status = :expectedFrom` update is settlement-service's
+  write in step 31 (ARCHITECTURE §6.6). The atomic write built here is therefore a guarded **create**
+  (`ConditionExpression: attribute_not_exists(pk)`), which satisfies the DoD's *no out-of-order regress*
+  for this step's only write — a create can never overwrite a transaction a later step has advanced (a
+  `SETTLED` payment reset to `DEBITED` would be settled twice, i.e. the same money sent twice) — and no
+  `transition()` method was added without a caller. (2) The index is `gsi3`, not `GSI3`; the step's
+  verify command is corrected. `docs/data-model.md` §4 (outbox item shape, the atomic write, the guard,
+  the timestamp note), `ARCHITECTURE.md` §6.4 (an internal send's write now carries its outbox event)
+  and the payment-service README are updated in the same change.
+  **Tests.** New `OutboxWriteIT` (5) proves the pairs: state **and** exactly one unpublished
+  `PixDebited` in the same partition with `gsi3pk`/fixed-width `gsi3sk`/`correlationId`/integer-cents
+  payload; the event is reachable through the sparse `gsi3` query the publisher will use; an internal
+  send announces `PixSettled` instead; a skipped fraud check writes two events in one write; and the
+  **atomicity proof** — force the guard to fire and *neither* the regressed state nor its event lands
+  (one event in the partition, not two: had these been two writes, step 29 would publish a `PixDebited`
+  for a settled payment). Plus `OutboxEventTest` (6) / `EventEnvelopeTest` (5) in common-lib — including
+  the round-second ordering trap and money as an integral JSON number — `PixOutboxEventsTest` (6) and 5
+  new `SendPixUseCaseTest` cases (a refused send announces nothing; an idempotent replay announces no
+  second event). `mvn verify` green (common-lib 33 unit + 10 IT; payment-service 61 unit + 36 IT), and
+  verified on the live compose stack: an internal send left `META` + its `OUTBOX#` sibling in one
+  partition, the replay added no second event, and a real cold-start fraud timeout produced a genuine
+  `FraudCheckSkipped` alongside `PixSettled` — the fail-open, recorded durably, on the first try.
+  AI: est 3h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - External Pix orchestration: atomic debit payer / credit SPI_CLEARING, status DEBITED (step 27)
   The send flow gains its second destination. `PixKeyResolver` now answers **where** a key lives
   (`KeyResolution{internal, accountId, externalBank}`) instead of only "which internal account", and
