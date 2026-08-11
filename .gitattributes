@@ -1,0 +1,7 @@
+# Normalize line endings so a Windows checkout (core.autocrlf=true) never mangles a Unix
+# shebang. LocalStack's init runner execs infra/localstack/init/*.sh directly; a CRLF-corrupted
+# shebang ("#!/bin/bash\r") fails with ENOENT misreported against the script path, not the
+# interpreter — the fix is forcing these to LF at checkout, not a per-developer git config.
+* text=auto eol=lf
+
+*.sh text eol=lf
