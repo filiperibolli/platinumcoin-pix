@@ -62,6 +62,7 @@
         <module>services/account-service</module>
         <module>services/ledger-service</module>
         <module>services/payment-service</module>
+        <module>services/fraud-service</module>
     </modules>
 
     <dependencyManagement>

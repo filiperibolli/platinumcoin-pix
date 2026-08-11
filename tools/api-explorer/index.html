@@ -467,6 +467,17 @@
           },
         ],
       },
+      {
+        id: 'fraud', name: 'fraud-service', port: 8083, baseUrl: 'http://localhost:8083',
+        blurb: 'Synchronous fraud scoring in the send path, on a hard 200ms budget and FAIL-OPEN (ADR-0005): if fraud is slow or down the payment proceeds flagged, never blocked. Redis holds the velocity counters (ADR-0008 — its own container, the local stand-in for ElastiCache, which LocalStack does not emulate). Step 23 ships the skeleton (health only); the rule-based POST /internal/fraud/score arrives in step 24, and payment-service calls it with the 200ms timeout + fail-open flag in step 25.',
+        endpoints: [
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
     ];
 
     let activeService = SERVICES[0].id;

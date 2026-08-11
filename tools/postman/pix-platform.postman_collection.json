@@ -1283,6 +1283,30 @@
           }
         }
       ]
+    },
+    {
+      "name": "fraud-service",
+      "description": "Synchronous fraud scoring — port 8083. Backed by Redis (velocity counters; ADR-0008, the ElastiCache stand-in). Step 23 ships the skeleton (health only); POST /internal/fraud/score lands in step 24. See services/fraud-service/README.md.",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{fraudBaseUrl}}/actuator/health",
+              "host": [
+                "{{fraudBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
     }
   ],
   "variable": [

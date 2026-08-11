@@ -152,6 +152,58 @@ services:
       retries: 5
       start_period: 30s
 
+  # fraud-service — synchronous fraud scoring in the send path (Sprint 5). Step 23 ships the skeleton:
+  # JWT-validating, Redis-connected, health-reporting, no business endpoint yet (POST /score is step 24).
+  # Copies the auth-service "service in compose" block; it reads Redis (velocity counters), not DynamoDB,
+  # so it gates startup on `redis` being healthy rather than LocalStack.
+  fraud-service:
+    build:
+      context: ..
+      dockerfile: services/fraud-service/Dockerfile
+    image: platinumcoin/fraud-service
+    container_name: fraud-service
+    ports:
+      - "8083:8083"
+    environment:
+      # Must match auth-service's JWT_SECRET — fraud-service only validates tokens (step 25 forwards the
+      # caller's bearer token to it).
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # Reach Redis by service name on the shared network (velocity counters; ADR-0008 ElastiCache stand-in).
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    depends_on:
+      # The scoring flow (step 24) reads/writes Redis; gate startup on it being healthy.
+      redis:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis — its own container (ADR-0008), the local stand-in for ElastiCache for Redis, which LocalStack
+  # does NOT emulate. Comes up in Sprint 5 because fraud is the first flow that needs it (velocity
+  # counters); Sprint 9's balance cache reuses this same container. Data is ephemeral (a cache): no named
+  # volume, and `down -v` starts it clean. Version pinned (not `latest`) for reproducible local runs.
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"          # exposed so a host `redis-cli` / app run outside compose can reach it
+    networks:
+      - pix-net
+    healthcheck:
+      # The image ships redis-cli; `PING` returns PONG once the server accepts commands. Gates
+      # fraud-service's `depends_on: { redis: { condition: service_healthy } }`.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: this flow (Sprint 2,
   # Pix keys) needs DynamoDB and nothing else, so SERVICES pins DynamoDB ONLY. Each later
   # sprint flips on the next service (sns,sqs,s3) by extending this list — not before.

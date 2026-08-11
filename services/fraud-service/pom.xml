@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.platinumcoin.pix</groupId>
+        <artifactId>platinumcoin-pix-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>fraud-service</artifactId>
+    <packaging>jar</packaging>
+
+    <name>PlatinumCoin Pix — fraud-service</name>
+    <description>Synchronous fraud scoring in the send path (port 8083). Step 23 delivers the skeleton —
+        JWT-validating, Redis-connected, health-reporting — before step 24 adds the rule-based
+        POST /score (velocity/amount/novelty/hours) under a p99 &lt; 150ms budget. Redis holds the
+        velocity counters (ADR-0008; the ElastiCache stand-in).</description>
+
+    <!-- No <version> on any dependency: all versions come from the parent's BOMs. -->
+    <dependencies>
+        <!-- Shared library: error model, correlation-id filter + log pattern, JWT validation. -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Web + Actuator: the service owns port 8083 and reports health. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Redis client (Lettuce) via Spring Data Redis. Confined to infra/: the ArchUnit test fails
+             the build if a domain type imports a Spring package. This is the velocity-counter store
+             (INCR + EXPIRE) step 24 uses; Redis is its own container (ADR-0008, ElastiCache stand-in). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Context-load IT (*IT → failsafe, runs on `mvn verify`). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Reusable Redis harness (RedisTestBase) published by common-lib as a test-jar. Test-scope
+             deps of a test-jar are NOT transitive, so the Testcontainers dep below is re-declared here
+             (accepted trade-off, per common-lib/pom.xml). -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- ArchUnit: enforces ADR-0010 rule 1 + ADR-0011 rule 6 (see FraudArchitectureTest). -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into a runnable, layered fat jar so `java -jar target/*.jar` and the
+                 Dockerfile's layered extraction both work (same pattern as the other services). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

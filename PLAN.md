@@ -64,7 +64,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** synchronous fraud score inside the send flow, under a 200ms budget, fail-open.
 **Infra que sobe:** Redis (velocity counters). · **Diagram:** ARCHITECTURE §6.5
 
-- [ ] [Step 23](docs/steps/step-23.md) — docker-compose Redis + fraud-service skeleton
+- [x] [Step 23](docs/steps/step-23.md) — docker-compose Redis + fraud-service skeleton
 - [ ] [Step 24](docs/steps/step-24.md) — fraud-service: rule-based `POST /score` (velocity, amount, novelty, hours), p99 < 150ms
 - [ ] [Step 25](docs/steps/step-25.md) — payment-service integration: 200ms hard timeout, fail-open + `FRAUD_SKIPPED` flag & event
 

@@ -75,13 +75,23 @@ docker compose -f infra/docker-compose.yml logs localstack | grep '\[init\]'
 
 # health of everything that exists *so far* (vertical delivery — the list grows per
 # sprint; querying a port whose service hasn't been built yet just fails to connect)
-for p in 8081 8082; do
+for p in 8081 8082 8083 8084 8085; do
   echo -n "$p: "; curl -s localhost:$p/actuator/health | jq -r .status; done
 # full set, once the whole platform is built:
 #   8081 8082 8083 8084 8085 8086 8087 9090
+
+# Redis is up (Sprint 5, ADR-0008 — its own container, the ElastiCache stand-in):
+docker compose -f infra/docker-compose.yml exec redis redis-cli ping   # PONG
 ```
 
 Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes LocalStack/Redis data → next `up` reseeds a clean world).
+
+> **Step 23 (fraud-service skeleton + Redis).** fraud-service (8083) and `redis` (6379) now come up
+> with the stack. The service is a skeleton — only `GET /actuator/health` is reachable (the scoring
+> `POST /internal/fraud/score` is step 24). Verify: `curl -s localhost:8083/actuator/health | jq` ⇒
+> `{"status":"UP"}` and `docker compose ... exec redis redis-cli ping` ⇒ `PONG`. fraud-service gates
+> its own startup on `redis` being healthy (`depends_on: service_healthy`), so a `redis` that fails to
+> boot keeps fraud-service out of the healthy set rather than letting it come up half-wired.
 
 ### How the build works (there is no service image in git)
 
