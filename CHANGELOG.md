@@ -11,6 +11,24 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Changed
+- **ADR-0013 added** (2026-08-11): AWS credentials & IAM posture — local emulation vs. production.
+  Raised reviewing step 26: the SQS resource policy written there is correct for real AWS but
+  **unenforced by LocalStack**, and the same is true of every service's `StaticCredentialsProvider`
+  (`test`/`test` is a signing formality, not authentication — the emulator validates no signature and
+  only reads the access key to derive the account id). LocalStack *does* emulate the IAM/STS APIs but
+  enforces nothing by default (`ENFORCE_IAM` is off and gated as a paid feature), so locally one can
+  model IAM but never prove denial. The decision: no long-lived credential on the production path (the
+  `DefaultCredentialsProvider` chain resolves the ambient ECS/EKS/EC2 role), the local static
+  credentials isolated behind a `local` profile, and least-privilege policies committed as versioned
+  `infra/iam/<service>-policy.json` artifacts — small by construction thanks to the fan-out
+  (payment-service: `sns:Publish` on one topic and no SQS permission at all). Rejected: `assume-role`
+  ceremony on the local path (without enforcement the credential works regardless of the policy — it
+  proves nothing and adds a boot dependency), a paid tier for `ENFORCE_IAM`, and a real-AWS smoke test
+  (it would validate AWS rather than this design, and contradicts the 100%-local constraint).
+  **No code change in this release**: the sweep is scheduled as task 5 of step 45, deliberately done
+  across all services at once, and new clients — starting with step 29's `SnsClient` — copy the
+  current shape until then, since two competing shapes mid-migration is worse than one uniform shape
+  awaiting a single reviewable change.
 - Internal package layout standardized across all four services into role sub-packages (ADR-0010
   amendment 2026-08-10). `domain/` now groups into `model/` · `port/` · `exception/` · `service/` ·
   `usecase/`, and `infra/` into `persistence/` · `client/` · `security/` · `config/` — **one folder per
@@ -74,7 +92,12 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   step's `list-topics`/`list-queues`, a manual publish/filter drill, a redrive drill (6 receives ⇒ DLQ
   depth 1), and the script re-run twice inside the running container ⇒ still 2 queues / 1 subscription.
   Full `mvn verify` green (all modules, 263 tests).
-  AI: est 1.5h / actual 1.25h / ~90% generated / 0 issues caught in human review
+  **Human review raised two findings**, both about *posture rather than behaviour*, recorded as
+  **ADR-0013** and scheduled for step 45 (see `### Changed`): (1) the queue resource policy added here
+  is unenforced by LocalStack and was not marked as production-semantics-only, and (2) the AWS clients
+  carry static credentials in a shape indistinguishable from the production anti-pattern. Neither
+  changes what this step ships.
+  AI: est 1.5h / actual 1.25h / ~90% generated / 2 issues caught in human review
 - Fraud integration with a 200ms budget and fail-open (fraudSkipped flag), RECEIVED→FRAUD_CHECKED
   transition (step 25)
   payment-service now scores every send against fraud-service **between the limit reservation and the

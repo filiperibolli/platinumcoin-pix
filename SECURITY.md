@@ -71,6 +71,8 @@ decisions:
 | Secrets | `.env` / compose env vars (git-ignored) | Secrets manager / KMS | — |
 | Transport | Plain HTTP on localhost | TLS everywhere, mTLS between services | — |
 | Rate limiting | Not implemented locally | Edge rate limiting + per-account throttles | — |
+| AWS credentials | `test`/`test` static keys — a **signing formality**, not authentication: LocalStack validates no signature and only reads the key to derive the account id | No long-lived credential: the `DefaultCredentialsProvider` chain resolves the ambient ECS task role / EKS IRSA / EC2 instance profile, with STS credentials the SDK rotates | ADR-0013 |
+| IAM authorization | **Not enforced** — LocalStack emulates the IAM/STS *APIs* but authorizes everything by default (`ENFORCE_IAM` off, paid feature); the step-26 SQS resource policy is likewise accepted but unenforced | Least-privilege role per service, committed as `infra/iam/<service>-policy.json` with concrete ARNs + conditions; resource policies enforced by AWS | ADR-0013 |
 
 ## Secure-development practices in this repo
 
