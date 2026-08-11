@@ -47,6 +47,33 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- External Pix orchestration: atomic debit payer / credit SPI_CLEARING, status DEBITED (step 27)
+  The send flow gains its second destination. `PixKeyResolver` now answers **where** a key lives
+  (`KeyResolution{internal, accountId, externalBank}`) instead of only "which internal account", and
+  `SendPixUseCase` branches on it — **only at the last stage**: resolve → limit → fraud is byte-identical
+  for both, because authority, limits and fraud are properties of the *payer*, not of where the payee
+  banks. An external destination is debited `payer → ACCOUNT#SPI_CLEARING` (`entryType=PIX_OUT`, same
+  atomic `TransactWriteItems`, same `txId` guard) and persisted `status=DEBITED`, `creditorInternal=false`,
+  no `creditorAccountId`, no `settledAt`; the client still gets `202 PROCESSING`.
+  **Why a clearing account:** no ACID transaction can span PlatinumCoin and another PSP, so the money is
+  taken from the payer and *parked in flight* in an internal system account (exempt from the ledger's
+  non-negative rule). The posting stays balanced, so **Σ balances is invariant** — conservation holds
+  *during* the flight, not only at its ends, which is exactly what makes a mid-flight crash auditable.
+  **Why `DEBITED` and not `SETTLED`:** the payer's money is gone but the payee has not been paid, and only
+  BACEN can close that gap; `PaymentResponse` maps `DEBITED → PROCESSING` (the internal machine grows, the
+  client's vocabulary does not). The clearing id is **configuration** (`pix.clearing-account-id`, default
+  `SPI_CLEARING`) passed as an argument down to the ledger port, so step 52's write sharding
+  (`SPI_CLEARING#00..#15`) changes *which id is passed* and nothing else — proven by a test that wires the
+  use case with `SPI_CLEARING#07`. `creditorInternal` is written on **every** transaction, internal ones
+  included (a boolean has no "absent" state, and the settlement/reconciliation reads that filter on it
+  must not miss items lacking the attribute) — `docs/data-model.md` §4 updated accordingly.
+  Nothing is published or settled here: the outbox event is step 28, its publisher step 29, the consumer
+  step 31. **Doc divergence recorded:** the step's "Verify locally" curl cannot return `202` yet — external
+  keys only *resolve* once mock-bacen's DICT lands (step 30) — so `docs/steps/step-27.md` carries a note,
+  and the branch is proven on the resolver port by `ExternalSendIT` (payer debited **and** clearing
+  credited, DEBITED without `settledAt`, `gsi2pk=STATUS#DEBITED`, conservation, idempotent retry with no
+  second debit) plus 5 new `SendPixUseCaseTest` cases. `mvn verify` green (payment-service: 50 unit + 31 IT).
+  AI: est 2.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - LocalStack init: SNS pix-events + settlement-queue with DLQ/redrive and filtered subscription (step 26)
   `06-messaging-core.sh` brings up the platform's **first asynchronous infrastructure** — everything
   through Sprint 5 was synchronous. LocalStack now runs `SERVICES=dynamodb,sns,sqs` and creates the SNS

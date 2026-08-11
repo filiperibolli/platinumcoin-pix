@@ -33,11 +33,16 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *   <li>{@code 503 LEDGER_CONFLICT}, a connect/read timeout, or an unreachable host →
  *       {@link LedgerUnavailableException} — nothing debited, safe to retry the same {@code txId}.</li>
  *   <li>Any other ledger response ({@code 404}/{@code 409}/{@code 400}/{@code 422 INVALID_POSTING}) is
- *       unexpected for a well-formed internal transfer whose creditor was just resolved and whose
- *       {@code txId} is a fresh UUID. It is surfaced as {@link LedgerUnavailableException} with the real
- *       status/code logged, rather than guessed at — the operator sees the truth and the client is told
- *       to retry, which the {@code txId}-keyed idempotency makes safe.</li>
+ *       unexpected for a well-formed posting whose accounts were just resolved and whose {@code txId} is
+ *       a fresh UUID. It is surfaced as {@link LedgerUnavailableException} with the real status/code
+ *       logged, rather than guessed at — the operator sees the truth and the client is told to retry,
+ *       which the {@code txId}-keyed idempotency makes safe.</li>
  * </ul>
+ *
+ * <p><b>Two operations, one call site (step 27).</b> An internal transfer credits the payee
+ * ({@code PIX_INTERNAL}); an external send credits the clearing account the caller names
+ * ({@code PIX_OUT}, money in flight to BACEN). Both go through the same private {@code post}, so the
+ * atomicity, the {@code txId} guard and the error mapping cannot drift between the two flows.
  *
  * <p><b>Timeouts.</b> Connect and read timeouts are set so a hung ledger surfaces as a timeout (a
  * {@link ResourceAccessException}) → {@code 503}, rather than pinning the request thread. A deployed
@@ -54,6 +59,13 @@ public class HttpLedgerClient implements LedgerClient {
     private static final Logger log = LoggerFactory.getLogger(HttpLedgerClient.class);
 
     private static final String ENTRY_TYPE_PIX_INTERNAL = "PIX_INTERNAL";
+
+    /**
+     * Why an external send's money moves: out of the payer, into clearing, on its way to another PSP.
+     * The ledger's {@code entryType} vocabulary is an open string that grows with each flow, and it
+     * lives here — the domain expresses the intent, {@code infra/} speaks the ledger's language.
+     */
+    private static final String ENTRY_TYPE_PIX_OUT = "PIX_OUT";
 
     private final RestClient restClient;
 
@@ -89,11 +101,40 @@ public class HttpLedgerClient implements LedgerClient {
             String creditorAccountId,
             long amountCents,
             String description) {
+        post(txId, debtorAccountId, creditorAccountId, amountCents, ENTRY_TYPE_PIX_INTERNAL, description);
+    }
+
+    @Override
+    public void postExternalDebitToClearing(
+            String txId,
+            String debtorAccountId,
+            String clearingAccountId,
+            long amountCents,
+            String description) {
+        // Same endpoint, same atomic TransactWriteItems, same txId guard — only the credit account and
+        // the entryType differ. The clearing id arrives as an argument (step 52 shards it), never as a
+        // constant of this adapter.
+        post(txId, debtorAccountId, clearingAccountId, amountCents, ENTRY_TYPE_PIX_OUT, description);
+    }
+
+    /**
+     * The one place the posting call is made, for both flows: build the request, map the ledger's error
+     * contract onto the send flow's exceptions. Keeping it single means the debit of an external send
+     * cannot drift from the debit of an internal one — they are the same operation with a different
+     * credit leg.
+     */
+    private void post(
+            String txId,
+            String debitAccount,
+            String creditAccount,
+            long amountCents,
+            String entryType,
+            String description) {
         PostingRequest body = new PostingRequest(
-                txId, debtorAccountId, creditorAccountId, amountCents, ENTRY_TYPE_PIX_INTERNAL, description);
+                txId, debitAccount, creditAccount, amountCents, entryType, description);
         log.debug("POST /internal/ledger/postings | txId={} debitAccount={} creditAccount={} "
-                + "amountCents={} entryType={}", txId, debtorAccountId, creditorAccountId, amountCents,
-                ENTRY_TYPE_PIX_INTERNAL);
+                + "amountCents={} entryType={}", txId, debitAccount, creditAccount, amountCents,
+                entryType);
         try {
             restClient.post()
                     .uri("/internal/ledger/postings")
@@ -102,14 +143,15 @@ public class HttpLedgerClient implements LedgerClient {
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
-            log.info("Ledger committed the internal transfer | txId={} debitAccount={} creditAccount={} "
-                    + "amountCents={}", txId, debtorAccountId, creditorAccountId, amountCents);
+            log.info("Ledger committed the posting | txId={} debitAccount={} creditAccount={} "
+                    + "amountCents={} entryType={}", txId, debitAccount, creditAccount, amountCents,
+                    entryType);
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
             String code = problemCode(e);
             if (status == HttpStatus.UNPROCESSABLE_ENTITY.value() && "INSUFFICIENT_FUNDS".equals(code)) {
-                log.warn("Ledger refused the debit for insufficient funds | txId={} debtorAccountId={} "
-                        + "amountCents={}", txId, debtorAccountId, amountCents);
+                log.warn("Ledger refused the debit for insufficient funds | txId={} debitAccount={} "
+                        + "amountCents={} entryType={}", txId, debitAccount, amountCents, entryType);
                 throw new InsufficientFundsException();
             }
             if (status == HttpStatus.SERVICE_UNAVAILABLE.value()) {

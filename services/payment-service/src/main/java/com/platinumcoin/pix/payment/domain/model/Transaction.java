@@ -20,13 +20,20 @@ import java.time.Instant;
  * that has not yet been resolved/settled. The debtor is the JWT {@code accountId} — there is no
  * source-account field here or on the wire (Domain Safety Rule #1).
  *
+ * <p><b>Where the payee lives (step 27):</b> {@code creditorInternal} says whether the destination key
+ * resolved inside PlatinumCoin. It is what makes the two shapes of this record legible: an internal
+ * send carries {@code creditorInternal=true} with a {@code creditorAccountId} and settles at once,
+ * while an external one carries {@code false}, <b>no</b> {@code creditorAccountId} (the payee's account
+ * is at another bank), and rests at {@code DEBITED} with the money parked in the clearing account until
+ * the asynchronous settlement resolves it.
+ *
  * <p><b>Scored in the path (step 25):</b> {@code fraudDecision} is the verdict the in-path fraud check
  * returned ({@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out or errored and
  * the send failed open), and {@code fraudSkipped} is its boolean shorthand — {@code true} iff the score
  * was skipped. A {@code DENY} never reaches here: it becomes a {@code 422} before the transaction is
  * written. Both are the durable record that the {@code RECEIVED → FRAUD_CHECKED} stage ran; on a
- * transaction minted before scoring they are {@code null}/{@code false}. The external settlement fields
- * (steps 27/31) remain deliberately absent.
+ * transaction minted before scoring they are {@code null}/{@code false}. The settlement-confirmation
+ * fields (step 31) remain deliberately absent.
  */
 public record Transaction(
         String txId,
@@ -34,6 +41,7 @@ public record Transaction(
         String debtorAccountId,
         String creditorKey,
         String creditorAccountId,
+        boolean creditorInternal,
         long amountCents,
         TransactionStatus status,
         String description,

@@ -45,6 +45,12 @@ public class PaymentBeansConfig {
         return new EndToEndIdGenerator(ispb);
     }
 
+    /**
+     * The send use case, wired to its ports. {@code pix.clearing-account-id} is configuration rather
+     * than a constant in the domain: an external send parks the money in that ledger account, and step
+     * 52 shards it into {@code SPI_CLEARING#00..#15} to spread a hot partition — a change that must
+     * land here (and later in a selector), never in the orchestration.
+     */
     @Bean
     SendPixUseCase sendPixUseCase(
             TransactionRepository transactions,
@@ -55,10 +61,11 @@ public class PaymentBeansConfig {
             FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
+            @Value("${pix.clearing-account-id}") String clearingAccountId,
             Clock clock) {
         return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, clock);
+                endToEndIds, clearingAccountId, clock);
     }
 
     @Bean

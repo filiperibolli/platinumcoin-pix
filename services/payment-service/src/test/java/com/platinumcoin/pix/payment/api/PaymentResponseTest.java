@@ -22,7 +22,7 @@ class PaymentResponseTest {
     @Test
     void receivedMapsToProcessingWithNoSettlement() {
         Transaction received = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", null, 12_550L,
+                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", null, true, 12_550L,
                 TransactionStatus.RECEIVED, "lunch", null, false, CREATED, null);
 
         PaymentResponse response = PaymentResponse.from(received);
@@ -35,7 +35,7 @@ class PaymentResponseTest {
     @Test
     void settledMapsToSettledWithSettledAt() {
         Transaction settled = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", 12_550L,
+                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, 12_550L,
                 TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
 
         PaymentResponse response = PaymentResponse.from(settled);
@@ -46,9 +46,24 @@ class PaymentResponseTest {
     }
 
     @Test
+    void debitedMapsToProcessingBecauseTheMoneyHasNotReachedTheOtherBankYet() {
+        // The external send (step 27): debited to clearing, awaiting settlement. The client sees the
+        // same PROCESSING it saw at 202 — the internal DEBITED/SENT_TO_SPI distinction is ours, not its.
+        Transaction debited = new Transaction(
+                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, 20_000L,
+                TransactionStatus.DEBITED, "rent", FraudDecision.APPROVE, false, CREATED, null);
+
+        PaymentResponse response = PaymentResponse.from(debited);
+
+        assertThat(response.status()).isEqualTo("PROCESSING");
+        assertThat(response.settledAt()).isNull();
+        assertThat(response.failureReason()).isNull();
+    }
+
+    @Test
     void rendersIdentityAmountAndKeyFromTheTransaction() {
         Transaction settled = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", 12_550L,
+                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, 12_550L,
                 TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
 
         PaymentResponse response = PaymentResponse.from(settled);

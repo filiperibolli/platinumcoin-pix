@@ -30,22 +30,26 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  *       (GSI2); both key attributes are present so the item actually appears in the index.</li>
  *   <li>{@code creditorAccountId} + {@code settledAt} — the internal orchestration's outputs (step 21):
  *       the DICT-resolved creditor and the instant the atomic posting committed. Written only when
- *       present, so a not-yet-settled item never carries an empty attribute.</li>
+ *       present, so a not-yet-settled item never carries an empty attribute — an <b>external</b> send
+ *       (step 27) carries neither: its payee holds no account here and its money is still in flight.</li>
+ *   <li>{@code creditorInternal} — where the destination key resolved (step 27), written on
+ *       <b>every</b> transaction. A boolean has no "absent" state, and the settlement/reconciliation
+ *       queries that filter on it must not silently miss items that merely lack the attribute.</li>
  *   <li>{@code fraudDecision} + {@code fraudSkipped} — the in-path fraud verdict (step 25):
  *       {@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out/errored and the send
  *       failed open. {@code fraudDecision} is written only when set; {@code fraudSkipped} is always
  *       written (a boolean has no "absent" — {@code false} is the honest default for a scored send).</li>
  * </ul>
- * Fields a later step owns are deliberately not invented here: the {@code creditorInternal} flag (it
- * only means something once an <i>external</i> creditor exists, step 27), the external settlement fields
- * (steps 27/31) and the {@code OUTBOX#} sibling (step 28).
+ * Fields a later step owns are deliberately not invented here: the settlement-confirmation fields
+ * (step 31) and the {@code OUTBOX#} sibling (step 28).
  * {@code direction} is a constant {@code OUTBOUND}: every {@code /payments/pix} is an outbound send
  * (inbound Pix is a different writer, step 37).
  *
  * <p>The write is an unconditional {@code PutItem}: the {@code txId} is a fresh server-minted UUID, so
  * there is nothing to race, and request-level de-duplication (the {@code Idempotency-Key}) is step
- * 19's layer, not this write's. An internal send reaches this write only after the ledger posting has
- * already committed the money (Domain Safety Rule #4), so the persisted {@code SETTLED} is honest.
+ * 19's layer, not this write's. Either flow reaches this write only after the ledger posting has
+ * already committed the money (Domain Safety Rule #4), so the persisted state is honest: {@code SETTLED}
+ * when the payee already holds the money, {@code DEBITED} when it sits in clearing awaiting BACEN.
  */
 @Repository
 public class DynamoTransactionRepository implements TransactionRepository {
@@ -81,6 +85,10 @@ public class DynamoTransactionRepository implements TransactionRepository {
         item.put("amountCents", AttributeValue.fromN(Long.toString(transaction.amountCents())));
         item.put("status", AttributeValue.fromS(transaction.status().name()));
         item.put("description", AttributeValue.fromS(transaction.description()));
+        // Where the payee banks (step 27). Always written, like fraudSkipped: the settlement and
+        // reconciliation paths filter on it, and "attribute missing" is not a state they should have
+        // to reason about.
+        item.put("creditorInternal", AttributeValue.fromBool(transaction.creditorInternal()));
         item.put("createdAt", AttributeValue.fromS(transaction.createdAt().toString()));
         item.put("updatedAt", AttributeValue.fromS(updatedAt));
         // Step-21 fields, written only when set: a resolved-and-settled internal send carries both; a
@@ -100,10 +108,12 @@ public class DynamoTransactionRepository implements TransactionRepository {
 
         log.debug("DynamoDB PutItem of the transaction META item | table={} pk=TX#{} sk={} "
                         + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} "
-                        + "creditorAccountId={} amountCents={} settledAt={} fraudDecision={} fraudSkipped={}",
+                        + "creditorAccountId={} creditorInternal={} amountCents={} settledAt={} "
+                        + "fraudDecision={} fraudSkipped={}",
                 TABLE, transaction.txId(), META_SK, transaction.endToEndId(),
                 transaction.status().name(), transaction.debtorAccountId(), transaction.creditorKey(),
-                transaction.creditorAccountId(), transaction.amountCents(), transaction.settledAt(),
+                transaction.creditorAccountId(), transaction.creditorInternal(),
+                transaction.amountCents(), transaction.settledAt(),
                 transaction.fraudDecision(), transaction.fraudSkipped());
 
         dynamo.putItem(request -> request.tableName(TABLE).item(item));
@@ -141,8 +151,9 @@ public class DynamoTransactionRepository implements TransactionRepository {
     /**
      * Rebuild the domain {@link Transaction} from its stored item. The optional step-21 attributes
      * ({@code creditorAccountId}, {@code settledAt}) and the step-25 {@code fraudDecision} are absent on a
-     * transaction written before that stage, so they map back to {@code null}; {@code fraudSkipped}
-     * defaults to {@code false} when the boolean attribute is absent — the same shape the use case wrote.
+     * transaction written before that stage (and on every external send), so they map back to
+     * {@code null}; {@code fraudSkipped} defaults to {@code false} when the boolean attribute is absent —
+     * the same shape the use case wrote.
      */
     private static Transaction toTransaction(Map<String, AttributeValue> item) {
         return new Transaction(
@@ -151,6 +162,11 @@ public class DynamoTransactionRepository implements TransactionRepository {
                 item.get("debtorAccountId").s(),
                 item.get("creditorKey").s(),
                 item.containsKey("creditorAccountId") ? item.get("creditorAccountId").s() : null,
+                // Absent only on items written before step 27, which were internal sends by
+                // construction — so a resolved creditor account is the honest fallback.
+                item.containsKey("creditorInternal")
+                        ? Boolean.TRUE.equals(item.get("creditorInternal").bool())
+                        : item.containsKey("creditorAccountId"),
                 Long.parseLong(item.get("amountCents").n()),
                 TransactionStatus.valueOf(item.get("status").s()),
                 item.get("description").s(),

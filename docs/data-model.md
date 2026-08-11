@@ -187,15 +187,23 @@ example does not show:
 - `settledAt` — the instant the ledger posting committed; for an internal transfer that is the moment the
   money moved. Present once `SETTLED`.
 
-Both are written only when set, so a not-yet-settled item carries neither.
+Both are written only when set, so a not-yet-settled item carries neither — and an **external** send
+(step 27) carries neither at acceptance time: its payee holds no account here, and its money sits in
+`ACCOUNT#SPI_CLEARING` (in flight) rather than with the payee, so the item rests at `DEBITED` with
+`settledAt` absent until settlement (step 31) writes it.
+
+`creditorInternal` is written on **every** transaction (step 27), internal ones included — `true` when
+the destination key resolved inside PlatinumCoin, `false` when it belongs to another PSP. A boolean has
+no "absent" state, and the settlement/reconciliation reads that filter on it must not silently miss
+items that merely lack the attribute; items written before step 27 were all internal sends, so a reader
+treats a missing flag as "internal" (the presence of `creditorAccountId`).
 
 The `fraud*` fields are written on **every** send that reaches the fraud stage — internal ones included,
 since fraud scoring sits in the shared send path between the limit check and the debit (step 25,
 ADR-0005). `fraudDecision` is `APPROVE`/`REVIEW`, or `SKIPPED` when the 200ms check timed out or errored
 and the send failed open; it is written only when set. `fraudSkipped` is a boolean shorthand (`true` iff
 skipped) and is **always** written on a scored send — a boolean has no "absent" state. A `DENY` never
-reaches the item: it becomes `422 FRAUD_DENIED` before the transaction is written. `creditorInternal`
-still belongs to the external flow (step 27) and is absent on a pure internal send.
+reaches the item: it becomes `422 FRAUD_DENIED` before the transaction is written.
 
 **Outbox item (same table, same partition as its transaction):**
 ```json

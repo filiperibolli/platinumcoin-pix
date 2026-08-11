@@ -17,7 +17,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>It mirrors the two ledger behaviours the send flow depends on: it refuses a debit that would
  * overdraw ({@link InsufficientFundsException}, like the ledger's {@code 422}), and it is idempotent by
  * {@code txId} (a repeat of the same {@code txId} is a no-op that returns normally, like a replay).
- * System accounts are not modelled — a creditor is simply credited.
+ * <b>Both postings are the same move</b> — the external one simply names the clearing account as the
+ * credit leg (step 27), which is exactly the real contract: one balanced posting either way, so
+ * {@code Σ balances} is invariant in this stub too and a test can assert conservation.
  *
  * <p><b>Permissive by default</b>: an account whose balance a test has not set is treated as amply
  * funded ({@link #DEFAULT_BALANCE_CENTS}), so ITs unconcerned with funds (idempotency, limit, skeleton
@@ -33,19 +35,32 @@ public class StubLedgerClient implements LedgerClient {
     private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
 
     @Override
-    public synchronized void postInternalTransfer(
+    public void postInternalTransfer(
             String txId, String debtorAccountId, String creditorAccountId, long amountCents,
             String description) {
+        move(txId, debtorAccountId, creditorAccountId, amountCents);
+    }
+
+    @Override
+    public void postExternalDebitToClearing(
+            String txId, String debtorAccountId, String clearingAccountId, long amountCents,
+            String description) {
+        // Same balanced posting; only the credit leg's account differs (money in flight, not delivered).
+        move(txId, debtorAccountId, clearingAccountId, amountCents);
+    }
+
+    private synchronized void move(
+            String txId, String debitAccount, String creditAccount, long amountCents) {
         // Idempotent by txId: a replayed posting returns normally without moving money again.
         if (postedTxIds.contains(txId)) {
             return;
         }
-        long debtorBalance = balances.getOrDefault(debtorAccountId, DEFAULT_BALANCE_CENTS);
+        long debtorBalance = balances.getOrDefault(debitAccount, DEFAULT_BALANCE_CENTS);
         if (debtorBalance < amountCents) {
             throw new InsufficientFundsException();
         }
-        balances.put(debtorAccountId, debtorBalance - amountCents);
-        balances.merge(creditorAccountId, amountCents, Long::sum);
+        balances.put(debitAccount, debtorBalance - amountCents);
+        balances.merge(creditAccount, amountCents, Long::sum);
         postedTxIds.add(txId);
     }
 

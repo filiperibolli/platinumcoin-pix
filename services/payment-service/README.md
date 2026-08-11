@@ -9,15 +9,17 @@
 > **internal orchestration** — resolve the destination key → account-service's DICT, command the atomic
 > debit/credit in ledger-service, persist the terminal status **`SETTLED`** (an internal transfer settles
 > the instant the posting commits — no SPI leg). Step 25 inserts **fraud scoring in the path** — a hard
-> 200ms call to fraud-service between the limit check and the debit, **fail-open** on timeout/error. The
-> orchestration order `resolve → limit → fraud → debit → persist` is the shape the external, asynchronous
-> flow (Sprint 6) will extend.
+> 200ms call to fraud-service between the limit check and the debit, **fail-open** on timeout/error.
+> Step 27 opens the **external branch**: a key held at another PSP is debited to the clearing account
+> (`ACCOUNT#SPI_CLEARING`, `entryType=PIX_OUT`) and persisted **`DEBITED`** — money in flight, settled
+> asynchronously (steps 28-31). The orchestration order `resolve → limit → fraud → debit → persist` is
+> identical for both destinations; only the credit leg and the resulting status differ.
 
 - **Port:** `8084`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation); **account-service**
   (reads `dailyLimitCents` from `GET /internal/accounts/{id}`, and resolves the destination key via
-  `GET /internal/pix-keys/resolve`, step 21); **ledger-service** (commands the atomic debit/credit via
-  `POST /internal/ledger/postings`, step 21); **fraud-service** (scores the send via
+  `GET /internal/pix-keys/resolve`, steps 21/27); **ledger-service** (commands the atomic debit/credit via
+  `POST /internal/ledger/postings`, steps 21/27); **fraud-service** (scores the send via
   `POST /internal/fraud/score` under a 200ms budget, step 25 — a **soft** dependency: a slow/down
   fraud-service fails open and the send still proceeds, flagged)
 - **Infra:** LocalStack (DynamoDB, tables `pix_transactions` + `pix_idempotency`) — created by the
@@ -41,8 +43,8 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); the wire `status` stays `PROCESSING` — the honest terminal state is served by `GET /payments/{id}` (step 22). |
-| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
+| `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); an external one debits the payer into `SPI_CLEARING` and persists `DEBITED`, awaiting settlement (step 27). The wire `status` is `PROCESSING` either way — the honest state is served by `GET /payments/{id}` (step 22). |
+| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`) until settlement. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -53,7 +55,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `Idempotency-Key` header absent/blank | `400` | `IDEMPOTENCY_KEY_REQUIRED` |
 | same `Idempotency-Key` replayed with a different payload | `409` | `IDEMPOTENCY_KEY_REUSED` |
 | a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
-| the destination Pix key does not resolve to an internal account (step 21) | `422` | `KEY_NOT_FOUND` |
+| the destination Pix key does not resolve at all (unknown to the DICT; steps 21/27) | `422` | `KEY_NOT_FOUND` |
 | the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
 | the in-path fraud check returned `DENY` (step 25; limit reservation released) | `422` | `FRAUD_DENIED` |
 | the ledger refused the debit for lack of funds (step 21; limit reservation released) | `422` | `INSUFFICIENT_FUNDS` |
@@ -97,6 +99,23 @@ atomic transaction (Domain Safety Rule #4). `INSUFFICIENT_FUNDS` ⇒ `422` and t
 SPI leg, so the atomic posting *is* the settlement — it never dwells in an intermediate `DEBITED` that
 `GET /payments/{id}` would map to an eternal `PROCESSING`.
 
+**External orchestration (step 27).** The DICT answers *where* a key lives, and the send branches on it
+— only at the last stage, because authority, limits and fraud are properties of the **payer**, not of
+where the payee banks. For an external destination the debit is
+`debit payer / credit ACCOUNT#SPI_CLEARING` (`entryType=PIX_OUT`, same atomic posting, same `txId`
+guard): **no ACID transaction can span two banks**, so the money is taken from the payer and *parked in
+flight* in an internal clearing account. Double-entry symmetry holds — the posting is balanced and
+`Σ balances` is unchanged — which is what keeps the conservation invariant true mid-flight. The
+transaction is persisted **`DEBITED`** with **no** `settledAt` and `creditorInternal=false`: claiming
+`SETTLED` would be a lie the client could act on, since only BACEN can say whether the payee was paid.
+Nothing is published here — the outbox event that drives settlement is written atomically with the
+transaction in step 28, consumed in step 31, and reconciled in Sprint 7. The clearing account is
+**configuration** (`pix.clearing-account-id`, default `SPI_CLEARING`), never a literal, so step 52 can
+shard it into `SPI_CLEARING#00..#15` without touching the orchestration. Failure mapping is unchanged
+from the internal path (`INSUFFICIENT_FUNDS` ⇒ `422` + reservation released; ledger down ⇒ `503`,
+nothing debited). Note that an external key only resolves end-to-end once mock-bacen's DICT lands
+(**step 30**); until then the branch is proven on the resolver port by `ExternalSendIT`.
+
 **Fraud in the path (step 25, ADR-0005).** Between the limit reservation and the debit, the use case
 scores the send against fraud-service (`POST /internal/fraud/score`) under a **hard 200ms client budget**
 — connect 50ms + read 150ms. The verdict drives three outcomes: `DENY` ⇒ `422 FRAUD_DENIED` and the
@@ -131,8 +150,9 @@ straight to `SETTLED`.
   `gsi1pk = E2E#<endToEndId>` (reconciliation / inbound-dedup lookup) and `gsi2pk = STATUS#RECEIVED` +
   `gsi2sk = updatedAt` (the stuck-transaction scan), so later steps' access patterns work without a
   backfill. The fraud verdict (`fraudDecision` + `fraudSkipped`) is written once the send is scored
-  (step 25); fields a later step owns — `creditorInternal` and the settlement fields (steps 27/31) —
-  are deliberately not invented.
+  (step 25), and `creditorInternal` on every send (step 27 — `false` ⇒ the payee banks elsewhere and the
+  item rests at `STATUS#DEBITED` until settlement). Fields a later step owns — the settlement
+  confirmation fields (step 31) — are deliberately not invented.
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
@@ -141,7 +161,8 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         + bean validation), PaymentAcceptedResponse (internal state → external "PROCESSING"),
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/model/     Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
+domain/model/     Transaction (record), TransactionStatus (enum: RECEIVED, DEBITED, SETTLED),
+                  KeyResolution (where a destination key lives: internal | external PSP),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
                   FraudDecision (enum: APPROVE, REVIEW, DENY, SKIPPED),
                   Money (string → strictly-positive long cents)                       (plain Java)
@@ -160,7 +181,7 @@ infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → a
                    HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
                    — all forward the bearer token
 infra/config/      DynamoConfig, PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator,
-                   use case), AwsProperties, CorsConfig                    (outbound adapter + wiring)
+                   clearing account id, use cases), AwsProperties, CorsConfig  (outbound adapter + wiring)
 ```
 
 `Clock` is injected rather than read as `Instant.now()`: the transaction's instant, and the minute
@@ -179,6 +200,7 @@ mechanical rather than a review habit.
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/v1/payments/**` is **not** here — every send requires a token. |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
 | `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup **and** key resolution (step 21); compose overrides to `http://account-service:8082`. |
+| `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | The ledger account an **external** send parks its debited money in (step 27) — money in flight to BACEN, exempt from the ledger's non-negative rule. Config, not a constant, because step 52 shards it into `SPI_CLEARING#00..#15`. |
 | `LEDGER_SERVICE_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service base URL for the atomic debit/credit (step 21); compose overrides to `http://ledger-service:8085`. Connect/read timeouts default 2000/3000 ms (`services.ledger-service.*-timeout-ms`). |
 | `FRAUD_SERVICE_BASE_URL` / `services.fraud-service.base-url` | `http://localhost:8083` | fraud-service base URL for in-path scoring (step 25); compose overrides to `http://fraud-service:8083`. Connect/read timeouts default **50/150 ms** = the 200ms budget (`services.fraud-service.*-timeout-ms`); a slow/down fraud-service fails open (`SKIPPED`). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
@@ -247,6 +269,15 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
   -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"10.00"}' | head -1   # HTTP/1.1 202
 docker compose -f infra/docker-compose.yml start fraud-service
+
+# external send (step 27) ⇒ 202, tx persisted DEBITED, money parked in SPI_CLEARING.
+# NOTE: an external key only RESOLVES once mock-bacen's DICT lands (step 30); until then this returns
+# 422 KEY_NOT_FOUND from account-service's lookup, and the branch is covered by ExternalSendIT.
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1
+curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
+  -H "Authorization: Bearer $TOKEN" | jq   # credited by exactly the amount in flight
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the

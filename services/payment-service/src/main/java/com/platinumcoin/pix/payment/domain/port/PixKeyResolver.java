@@ -1,7 +1,10 @@
 package com.platinumcoin.pix.payment.domain.port;
 
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.model.KeyResolution;
+
 /**
- * Outbound port for resolving a Pix key to its creditor account — account-service's <b>DICT</b> role
+ * Outbound port for resolving a Pix key to its destination — account-service's <b>DICT</b> role
  * (ADR-0006: services read each other's data over HTTP, never by sharing a table). The send flow's
  * first step is "who is the money going to?" (step 21), and the answer is authoritative to
  * account-service, not to the payer's request.
@@ -9,20 +12,21 @@ package com.platinumcoin.pix.payment.domain.port;
  * <p>The domain declares the shape; {@code infra/} implements it against
  * {@code GET /internal/pix-keys/resolve?key=…} (so no HTTP type reaches the use case, ADR-0010).
  *
- * <p><b>Internal only, this step.</b> The internal-send flow (Sprint 4) can only pay a key that lives
- * inside PlatinumCoin, so this port returns just the creditor's internal {@code accountId}; an
- * unresolvable key is a {@link KeyNotFoundException}. External keys (another PSP) are out of scope
- * until the asynchronous settlement flow resolves them via mock-bacen's DICT (steps 27/30) — the
- * adapter treats a non-internal resolution as not-found for now, documented at the call site.
+ * <p><b>Internal or external (step 27).</b> The answer is a {@link KeyResolution}, not an account id,
+ * because <i>where</i> the key lives is exactly what the send flow branches on: an internal key settles
+ * in one atomic posting, an external one is debited to the clearing account and settled asynchronously.
+ * A key that resolves nowhere is a {@link KeyNotFoundException}, never a third value in the record.
+ *
+ * <p>Note that "external" only becomes reachable end-to-end once account-service delegates unknown keys
+ * to mock-bacen's DICT (step 30); until then that branch is exercised on this port, not over HTTP.
  */
 public interface PixKeyResolver {
 
     /**
-     * Resolve {@code key} to the internal account it belongs to.
+     * Resolve {@code key} to its destination — an internal creditor account, or the external PSP that
+     * holds it.
      *
-     * @return the creditor's internal {@code accountId}
-     * @throws KeyNotFoundException the key does not resolve to an internal account (unknown, or — until
-     *                              step 27/30 — external)
+     * @throws KeyNotFoundException the key does not resolve at all (unknown to the DICT)
      */
-    String resolveInternalCreditor(String key);
+    KeyResolution resolve(String key);
 }
