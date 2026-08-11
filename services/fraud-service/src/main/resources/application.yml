@@ -1,0 +1,43 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: fraud-service
+  # Redis connection (Lettuce, via spring-boot-starter-data-redis). Redis is its own container — the
+  # local stand-in for ElastiCache, which LocalStack does not emulate (ADR-0008). Defaults target a
+  # locally-run Redis; compose overrides REDIS_HOST to the `redis` service name on the shared network.
+  # This is where fraud-service will read/write velocity counters (INCR + EXPIRE) from step 24.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+# Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can
+# call this service from the browser. Permissive + credential-free by design (the token is a Bearer
+# header, never a cookie); a deployed posture pins these origins (step-45 hardening). The CorsFilter is
+# ordered ahead of the JWT auth filter so pre-flights aren't 401'd. See infra/config/CorsConfig.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
+# HS256 validation config (ADR-0007). The secret must match auth-service's JWT_SECRET — this service
+# only VALIDATES tokens, it never mints them. public-paths is the allow-list the shared JwtAuthFilter
+# skips: fraud-service has no /login, so only the actuator surface is public. The scoring endpoint (step
+# 24) is internal and authenticated — payment-service forwards the caller's bearer token to it (step 25).
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  public-paths:
+    - /actuator/**
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups the compose healthcheck probes.
+      probes:
+        enabled: true

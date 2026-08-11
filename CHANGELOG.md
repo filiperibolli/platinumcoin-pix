@@ -29,6 +29,53 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- Redis container (ElastiCache stand-in) + fraud-service skeleton + RedisTestBase harness (step 23)
+  Sprint 5 opens by bringing up the infrastructure fraud needs and scaffolding the service that will use
+  it — **no business endpoint yet** (the rule-based `POST /internal/fraud/score` is step 24; the 200ms
+  fail-open call from payment-service is step 25). Three pieces:
+  **(1) Redis as its own container (ADR-0008).** `redis:7-alpine` joins `infra/docker-compose.yml` with a
+  `redis-cli ping` healthcheck, on `pix-net`, no named volume (it is a cache — `down -v` starts it clean).
+  It comes up **now**, not earlier, because fraud is the first flow that needs it (per-account velocity
+  counters); Sprint 9's balance cache reuses the **same** container. The one-line rationale that justifies
+  a whole extra container: **LocalStack does not emulate ElastiCache**, so Redis cannot ride inside the
+  emulator the way DynamoDB/SNS/SQS/S3 do — in production this maps 1:1 to ElastiCache for Redis.
+  **(2) fraud-service skeleton (port 8083), full new-service checklist.** module + POM in the parent
+  `<modules>`, `Application`, `application.yml` (Redis via `spring.data.redis.*` ← `REDIS_HOST`/`REDIS_PORT`,
+  JWT validation, local-dev CORS, actuator probes), `Dockerfile`, a compose block that **gates its own
+  startup on `redis` being healthy** (`depends_on: service_healthy`) rather than LocalStack — it reads
+  Redis, not DynamoDB — `README.md`, a `FraudBeansConfig` composition root, `CorsConfig` ordered ahead of
+  the JWT filter, and `FraudArchitectureTest` carrying **both** ArchUnit rules from day one. The Redis
+  client is **Spring Data Redis** (Lettuce), confined to `infra/` — the ArchUnit domain rule now guards a
+  Spring dependency the way account/ledger/payment guard the AWS SDK.
+  **The interesting scaffold decision: the skeleton has no `api/` or `domain/` yet.** Every prior service
+  shipped its first endpoint in its scaffold step; fraud-service genuinely cannot, because step 23's spec
+  is infra-only and `/score` is step 24. Per ADR-0010 ("a service carries only the roles it actually has")
+  the honest skeleton therefore has **only** `infra/config/` — no invented placeholder use case, no empty
+  `domain/model|port|usecase`. Those layers (and the `ScoreFraudUseCase` + Redis-counter port + adapter)
+  arrive in step 24 with the real endpoint. Consequence handled: ArchUnit fails a rule that matches **zero**
+  classes (its typo'd-package guard), so both rules carry `allowEmptyShould(true)` **for the skeleton only**,
+  documented and droppable once step 24's `..api..`/`..domain..` classes make the match non-empty. The
+  rules still exist from day one — they catch step 24's first violation, not a reviewer's memory.
+  **(3) `RedisTestBase` in the common-lib harness.** Mirrors `LocalStackTestBase`: a singleton static
+  `GenericContainer("redis:7-alpine")` (Testcontainers ships no dedicated Redis module, and using
+  `GenericContainer` keeps common-lib THIN — **no** Redis client is added to the shared lib), reaped by
+  Ryuk on JVM exit, publishing `spring.data.redis.host`/`.port` via `@DynamicPropertySource` so any
+  service's `@SpringBootTest` IT connects with zero code. Waits on the `Ready to accept connections` log
+  line, not just the open port, so a `PING` succeeds the instant it is "started". Published in the
+  existing test-jar; consuming modules re-declare the Testcontainers test dep (test-jar test-deps are not
+  transitive, the accepted trade-off).
+  **Tests.** common-lib gains `RedisHarnessIT` (2, client-free — `execInContainer("redis-cli","ping")`
+  ⇒ `PONG`, and a `set`/`get` round-trip). fraud-service ships `FraudArchitectureTest` (2, both rules,
+  vacuous today) and `ApplicationContextIT` (1, extends `RedisTestBase` — proves the context boots **with
+  a live Redis connection** by round-tripping a key through the auto-configured `StringRedisTemplate`,
+  the DoD's "boots with a Redis connection"). `mvn -pl services/common-lib,services/fraud-service -am
+  verify` green — common-lib 22 unit + 5 IT, fraud-service 2 unit/arch + 1 IT.
+  No `docs/api/openapi.yaml` change (no public surface yet). `docs/local-dev.md` §2/§3 already listed port
+  8083 and `REDIS_HOST`/`REDIS_PORT` (written ahead); §4 gains the Redis `ping` + fraud health checks and
+  the health loop now spans 8081–8085. Postman gains a `fraud-service` folder (health) and the API explorer
+  a `fraud-service` section (health card) — the twin harnesses grow with the service even before its first
+  business endpoint, so step 24 only adds the `/score` entry.
+  AI: est 1.5h / actual 1h / ~90% generated / 0 issues caught in human review
 - `GET /payments/{id}` status endpoint with owner-only access and internal→external status mapping (step 22)
   The transaction's public read side, and the first place the platform **translates its internal state
   machine to the external status vocabulary**. Clients see `PROCESSING / SETTLED / FAILED / REVERSED /
