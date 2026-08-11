@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.payment.domain.exception.PaymentNotFoundException;
+import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
@@ -50,8 +51,9 @@ class GetPaymentStatusUseCaseTest {
     private static Transaction tx(String id, String debtor, TransactionStatus status, Instant createdAt) {
         Instant settledAt = status == TransactionStatus.SETTLED ? createdAt : null;
         String creditorAccountId = status == TransactionStatus.SETTLED ? "acc-bob" : null;
+        FraudDecision fraudDecision = status == TransactionStatus.SETTLED ? FraudDecision.APPROVE : null;
         return new Transaction(
                 id, "E2E-" + id, debtor, "bob@platinum.com", creditorAccountId, 12_550L, status,
-                "lunch", createdAt, settledAt);
+                "lunch", fraudDecision, false, createdAt, settledAt);
     }
 }

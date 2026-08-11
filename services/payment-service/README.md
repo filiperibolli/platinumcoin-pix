@@ -8,14 +8,18 @@
 > **daily-limit enforcement** (a calendar-day reservation counter with an MFA seam). Step 21 wires the
 > **internal orchestration** — resolve the destination key → account-service's DICT, command the atomic
 > debit/credit in ledger-service, persist the terminal status **`SETTLED`** (an internal transfer settles
-> the instant the posting commits — no SPI leg). The orchestration order `resolve → limit → debit →
-> persist` is the shape the external, asynchronous flow (Sprint 6) will extend.
+> the instant the posting commits — no SPI leg). Step 25 inserts **fraud scoring in the path** — a hard
+> 200ms call to fraud-service between the limit check and the debit, **fail-open** on timeout/error. The
+> orchestration order `resolve → limit → fraud → debit → persist` is the shape the external, asynchronous
+> flow (Sprint 6) will extend.
 
 - **Port:** `8084`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation); **account-service**
   (reads `dailyLimitCents` from `GET /internal/accounts/{id}`, and resolves the destination key via
   `GET /internal/pix-keys/resolve`, step 21); **ledger-service** (commands the atomic debit/credit via
-  `POST /internal/ledger/postings`, step 21)
+  `POST /internal/ledger/postings`, step 21); **fraud-service** (scores the send via
+  `POST /internal/fraud/score` under a 200ms budget, step 25 — a **soft** dependency: a slow/down
+  fraud-service fails open and the send still proceeds, flagged)
 - **Infra:** LocalStack (DynamoDB, tables `pix_transactions` + `pix_idempotency`) — created by the
   step-17 init script `infra/localstack/init/03-dynamodb-payment.sh` (no seed rows; transactions are
   born from the flow, not seeded). The daily-limit counter lives in `pix_transactions` as
@@ -51,6 +55,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
 | the destination Pix key does not resolve to an internal account (step 21) | `422` | `KEY_NOT_FOUND` |
 | the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
+| the in-path fraud check returned `DENY` (step 25; limit reservation released) | `422` | `FRAUD_DENIED` |
 | the ledger refused the debit for lack of funds (step 21; limit reservation released) | `422` | `INSUFFICIENT_FUNDS` |
 | the ledger was unreachable / timed out / lost to contention (step 21; carries `Retry-After: 5`) | `503` | `LEDGER_UNAVAILABLE` |
 | account-service could not supply the debtor's limit (not found / unreachable) | `502` | `ACCOUNT_LOOKUP_FAILED` |
@@ -80,7 +85,7 @@ idempotency claim, so a double-tap or a replay never reserves twice; `release` (
 provided for a later rejection/reversal to hand back exactly what it reserved (wired in steps 21/25/33).
 
 **Internal orchestration (step 21).** For an internal send, the won-claim path is `resolve → limit →
-debit → persist` — the shape the external flow (Sprint 6) extends. (1) **Resolve** the destination key
+fraud → debit → persist` — the shape the external flow (Sprint 6) extends. (1) **Resolve** the destination key
 against account-service's DICT (`GET /internal/pix-keys/resolve`) → the creditor's internal `accountId`;
 an unknown key is `422 KEY_NOT_FOUND` **before** the limit counter is touched, so there is nothing to
 unwind. (2) **Reserve** the daily limit. (3) **Debit**: command ledger-service
@@ -91,6 +96,21 @@ atomic transaction (Domain Safety Rule #4). `INSUFFICIENT_FUNDS` ⇒ `422` and t
 **Persist** `SETTLED` with `settledAt` and the resolved `creditorAccountId`: an internal transfer has no
 SPI leg, so the atomic posting *is* the settlement — it never dwells in an intermediate `DEBITED` that
 `GET /payments/{id}` would map to an eternal `PROCESSING`.
+
+**Fraud in the path (step 25, ADR-0005).** Between the limit reservation and the debit, the use case
+scores the send against fraud-service (`POST /internal/fraud/score`) under a **hard 200ms client budget**
+— connect 50ms + read 150ms. The verdict drives three outcomes: `DENY` ⇒ `422 FRAUD_DENIED` and the
+daily-limit reservation is **released** (a denied send leaves the counter as it found it); `REVIEW` ⇒
+proceed **flagged** (recorded for an analyst, not blocked); `APPROVE` ⇒ proceed. The single most debated
+call is the failure mode: on **timeout or error the check fails open** — the send proceeds unscored,
+flagged `fraudSkipped=true` / `fraudDecision=SKIPPED`, and (once the outbox lands, step 28/29) a
+`FraudCheckSkipped` event triggers async re-scoring. Availability of payments wins *at this layer*; the
+residual risk is bounded by daily limits and the async re-score. Crucially the **fail-open lives in the
+adapter** (`HttpFraudScorer`), not the use case: only the boundary observes a timeout, so it translates
+one into `SKIPPED` and the use case stays a straight-line policy — `DENY` blocks, everything else
+proceeds. The verdict rides onto the persisted transaction (`fraudDecision` + `fraudSkipped`), which is
+how the `RECEIVED → FRAUD_CHECKED` stage is durably recorded on an internal send that otherwise jumps
+straight to `SETTLED`.
 
 ### The send request
 
@@ -110,8 +130,9 @@ SPI leg, so the atomic posting *is* the settlement — it never dwells in an int
 - **The persisted item is index-consistent from the first write.** The `TX#<txId> / META` item carries
   `gsi1pk = E2E#<endToEndId>` (reconciliation / inbound-dedup lookup) and `gsi2pk = STATUS#RECEIVED` +
   `gsi2sk = updatedAt` (the stuck-transaction scan), so later steps' access patterns work without a
-  backfill. Fields a later step owns — the resolved creditor account + `creditorInternal` (step 21),
-  the fraud verdict (step 25), the settlement fields (steps 27/31) — are deliberately not invented.
+  backfill. The fraud verdict (`fraudDecision` + `fraudSkipped`) is written once the send is scored
+  (step 25); fields a later step owns — `creditorInternal` and the settlement fields (steps 27/31) —
+  are deliberately not invented.
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
@@ -122,19 +143,22 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
 domain/model/     Transaction (record), TransactionStatus (enum: RECEIVED, SETTLED),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
+                  FraudDecision (enum: APPROVE, REVIEW, DENY, SKIPPED),
                   Money (string → strictly-positive long cents)                       (plain Java)
 domain/port/      TransactionRepository, IdempotencyRepository, PixKeyResolver, LedgerClient,
-                  AccountLimitClient, DailyLimitReservation                    (outbound interfaces)
+                  AccountLimitClient, DailyLimitReservation, FraudScorer        (outbound interfaces)
 domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededException,
-                  InsufficientFundsException, LedgerUnavailableException, AccountLookupException,
-                  PaymentNotFoundException, IdempotencyKeyRequiredException,
+                  FraudDeniedException, InsufficientFundsException, LedgerUnavailableException,
+                  AccountLookupException, PaymentNotFoundException, IdempotencyKeyRequiredException,
                   IdempotencyKeyReuseException, RequestInProgressException            (plain Java)
 domain/service/   EndToEndIdGenerator (BACEN E2E id minting)                          (plain Java)
 domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase (plain Java)
 infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
                    DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter)
 infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
-                   HttpLedgerClient (RestClient → ledger-service, timeouts) — all forward the bearer token
+                   HttpLedgerClient (RestClient → ledger-service, timeouts),
+                   HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
+                   — all forward the bearer token
 infra/config/      DynamoConfig, PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator,
                    use case), AwsProperties, CorsConfig                    (outbound adapter + wiring)
 ```
@@ -156,6 +180,7 @@ mechanical rather than a review habit.
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
 | `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup **and** key resolution (step 21); compose overrides to `http://account-service:8082`. |
 | `LEDGER_SERVICE_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service base URL for the atomic debit/credit (step 21); compose overrides to `http://ledger-service:8085`. Connect/read timeouts default 2000/3000 ms (`services.ledger-service.*-timeout-ms`). |
+| `FRAUD_SERVICE_BASE_URL` / `services.fraud-service.base-url` | `http://localhost:8083` | fraud-service base URL for in-path scoring (step 25); compose overrides to `http://fraud-service:8083`. Connect/read timeouts default **50/150 ms** = the 200ms budget (`services.fraud-service.*-timeout-ms`); a slow/down fraud-service fails open (`SKIPPED`). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
@@ -214,6 +239,14 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
 # no token ⇒ 401 UNAUTHORIZED
 curl -si -X POST localhost:8084/v1/payments/pix -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"1.00"}' | head -1
+
+# fail-open proof (step 25): stop fraud-service, then send ⇒ STILL 202 (flagged fraudSkipped) — the
+# 200ms budget protects the send SLO, availability wins at this layer (ADR-0005)
+docker compose -f infra/docker-compose.yml stop fraud-service
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"10.00"}' | head -1   # HTTP/1.1 202
+docker compose -f infra/docker-compose.yml start fraud-service
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the
@@ -229,6 +262,9 @@ curl -si -X POST localhost:8084/v1/payments/pix -H 'Content-Type: application/js
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition;
   payment-service owns `pix_transactions` and orchestrates the send, calling ledger-service to move
   money.
+- [ADR-0005](../../docs/adr/0005-fraud-latency-budget-fail-open.md) — the fraud latency budget (200ms,
+  connect 50 / read 150) and **fail-open** trade-off; step 25 implements the caller side (DENY ⇒ 422 +
+  limit release, timeout/error ⇒ proceed flagged `fraudSkipped`).
 - [ADR-0007](../../docs/adr/0007-auth-service-jwt-no-mfa.md) — the JWT whose `accountId` claim is the
   debtor, never the payload.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.

@@ -2,6 +2,7 @@ package com.platinumcoin.pix.payment.infra.config;
 
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
+import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
@@ -51,11 +52,13 @@ public class PaymentBeansConfig {
             PixKeyResolver pixKeys,
             AccountLimitClient accountLimits,
             DailyLimitReservation dailyLimits,
+            FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
             Clock clock) {
         return new SendPixUseCase(
-                transactions, idempotency, pixKeys, accountLimits, dailyLimits, ledger, endToEndIds, clock);
+                transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
+                endToEndIds, clock);
     }
 
     @Bean

@@ -31,8 +31,9 @@ pix:
 
 # Service-to-service base URLs. payment-service reads the debtor's dailyLimitCents from account-service
 # before reserving daily-limit headroom (step 20), resolves the destination Pix key against
-# account-service's DICT seam, and commands the atomic debit/credit against ledger-service (step 21).
-# Defaults target locally-run services (ports 8082/8085, docs/local-dev.md §2); compose overrides them
+# account-service's DICT seam, scores the send against fraud-service under a 200ms budget (step 25), and
+# commands the atomic debit/credit against ledger-service (step 21).
+# Defaults target locally-run services (ports 8082/8083/8085, docs/local-dev.md §2); compose overrides them
 # to the service names on the shared network. Both internal endpoints are behind the JWT filter, so the
 # caller's bearer token is forwarded (ADR-0007; a service credential is the deployed posture, step-45).
 services:
@@ -44,6 +45,13 @@ services:
     # request thread. A deployed build adds a circuit breaker after repeated failures (step 32).
     connect-timeout-ms: ${LEDGER_CONNECT_TIMEOUT_MS:2000}
     read-timeout-ms: ${LEDGER_READ_TIMEOUT_MS:3000}
+  fraud-service:
+    base-url: ${FRAUD_SERVICE_BASE_URL:http://localhost:8083}
+    # The 200ms hard budget of ADR-0005, split connect 50ms + read 150ms. A slow or down fraud-service
+    # must surface as a timeout the client turns into a fail-open SKIPPED (send proceeds, flagged), never
+    # pin the request thread. fraud-service targets p99 < 150ms, leaving margin under this budget.
+    connect-timeout-ms: ${FRAUD_CONNECT_TIMEOUT_MS:50}
+    read-timeout-ms: ${FRAUD_READ_TIMEOUT_MS:150}
 
 # AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
 # AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK

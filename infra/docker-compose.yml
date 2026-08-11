@@ -128,6 +128,10 @@ services:
       # ledger-service base URL: payment-service commands the atomic debit/credit that settles an
       # internal Pix (step 21). Service name on the shared network; bearer token forwarded.
       LEDGER_SERVICE_BASE_URL: http://ledger-service:8085
+      # fraud-service base URL: payment-service scores the send under a hard 200ms budget between the
+      # limit check and the debit (step 25). A slow/down fraud-service fails open (SKIPPED), so this is
+      # a soft dependency at runtime; the URL is here so the happy path scores. Bearer token forwarded.
+      FRAUD_SERVICE_BASE_URL: http://fraud-service:8083
       # Reach LocalStack by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
       AWS_REGION: us-east-1
@@ -142,6 +146,12 @@ services:
         condition: service_healthy
       # The internal send debits via ledger-service; gate startup on it being healthy too (step 21).
       ledger-service:
+        condition: service_healthy
+      # fraud-service is a SOFT dependency (fail-open, ADR-0005): payment sends fine at runtime even if
+      # it is down. Gating startup on its health here is local-dev convenience only — so the happy path
+      # scores immediately — not a correctness requirement. The fail-open is proven at runtime by
+      # `docker compose stop fraud-service` after boot: the send still returns 202, flagged SKIPPED.
+      fraud-service:
         condition: service_healthy
     networks:
       - pix-net

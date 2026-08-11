@@ -2,6 +2,7 @@ package com.platinumcoin.pix.payment.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import com.platinumcoin.pix.payment.domain.exception.AccountLookupException;
+import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
@@ -44,6 +45,10 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>{@code 422 LIMIT_EXCEEDED} — the send would breach the debtor's daily Pix limit (step 20,
  *       ADR-0007). {@code 422}, not {@code 403}: the request is well-formed and authorized, it just
  *       violates a business rule a later send or the next calendar day may satisfy.</li>
+ *   <li>{@code 422 FRAUD_DENIED} — the in-path fraud check returned {@code DENY} (step 25, ADR-0005).
+ *       {@code 422}, not {@code 403}: the request is well-formed and authorized, refused by a risk
+ *       decision. The daily-limit reservation is released by the use case before this maps; no money
+ *       moved. A fraud-service <i>timeout or error</i> never reaches here — that path fails open.</li>
  *   <li>{@code 422 INSUFFICIENT_FUNDS} — the ledger refused the debit for lack of funds (step 21). The
  *       daily-limit reservation is released by the use case before this maps; no money moved.</li>
  *   <li>{@code 503 LEDGER_UNAVAILABLE} — the ledger was unreachable, timed out, or lost to contention
@@ -79,6 +84,11 @@ public class PaymentExceptionHandler {
     @ExceptionHandler(KeyNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleKeyNotFound(KeyNotFoundException ex) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "KEY_NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(FraudDeniedException.class)
+    public ResponseEntity<ProblemDetail> handleFraudDenied(FraudDeniedException ex) {
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "FRAUD_DENIED", ex.getMessage());
     }
 
     @ExceptionHandler(InsufficientFundsException.class)

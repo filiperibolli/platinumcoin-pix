@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.infra.persistence;
 
+import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
@@ -30,10 +31,14 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  *   <li>{@code creditorAccountId} + {@code settledAt} — the internal orchestration's outputs (step 21):
  *       the DICT-resolved creditor and the instant the atomic posting committed. Written only when
  *       present, so a not-yet-settled item never carries an empty attribute.</li>
+ *   <li>{@code fraudDecision} + {@code fraudSkipped} — the in-path fraud verdict (step 25):
+ *       {@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out/errored and the send
+ *       failed open. {@code fraudDecision} is written only when set; {@code fraudSkipped} is always
+ *       written (a boolean has no "absent" — {@code false} is the honest default for a scored send).</li>
  * </ul>
  * Fields a later step owns are deliberately not invented here: the {@code creditorInternal} flag (it
- * only means something once an <i>external</i> creditor exists, step 27), the fraud verdict (step 25),
- * the external settlement fields (steps 27/31) and the {@code OUTBOX#} sibling (step 28).
+ * only means something once an <i>external</i> creditor exists, step 27), the external settlement fields
+ * (steps 27/31) and the {@code OUTBOX#} sibling (step 28).
  * {@code direction} is a constant {@code OUTBOUND}: every {@code /payments/pix} is an outbound send
  * (inbound Pix is a different writer, step 37).
  *
@@ -86,13 +91,20 @@ public class DynamoTransactionRepository implements TransactionRepository {
         if (transaction.settledAt() != null) {
             item.put("settledAt", AttributeValue.fromS(transaction.settledAt().toString()));
         }
+        // Step-25 fraud verdict: the enum name only when scored; the skipped flag always (a boolean's
+        // honest default is false, not absent).
+        if (transaction.fraudDecision() != null) {
+            item.put("fraudDecision", AttributeValue.fromS(transaction.fraudDecision().name()));
+        }
+        item.put("fraudSkipped", AttributeValue.fromBool(transaction.fraudSkipped()));
 
         log.debug("DynamoDB PutItem of the transaction META item | table={} pk=TX#{} sk={} "
                         + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} "
-                        + "creditorAccountId={} amountCents={} settledAt={}",
+                        + "creditorAccountId={} amountCents={} settledAt={} fraudDecision={} fraudSkipped={}",
                 TABLE, transaction.txId(), META_SK, transaction.endToEndId(),
                 transaction.status().name(), transaction.debtorAccountId(), transaction.creditorKey(),
-                transaction.creditorAccountId(), transaction.amountCents(), transaction.settledAt());
+                transaction.creditorAccountId(), transaction.amountCents(), transaction.settledAt(),
+                transaction.fraudDecision(), transaction.fraudSkipped());
 
         dynamo.putItem(request -> request.tableName(TABLE).item(item));
 
@@ -128,8 +140,9 @@ public class DynamoTransactionRepository implements TransactionRepository {
 
     /**
      * Rebuild the domain {@link Transaction} from its stored item. The optional step-21 attributes
-     * ({@code creditorAccountId}, {@code settledAt}) are absent on a not-yet-settled item, so they map
-     * back to {@code null} — the same shape the use case wrote.
+     * ({@code creditorAccountId}, {@code settledAt}) and the step-25 {@code fraudDecision} are absent on a
+     * transaction written before that stage, so they map back to {@code null}; {@code fraudSkipped}
+     * defaults to {@code false} when the boolean attribute is absent — the same shape the use case wrote.
      */
     private static Transaction toTransaction(Map<String, AttributeValue> item) {
         return new Transaction(
@@ -141,6 +154,9 @@ public class DynamoTransactionRepository implements TransactionRepository {
                 Long.parseLong(item.get("amountCents").n()),
                 TransactionStatus.valueOf(item.get("status").s()),
                 item.get("description").s(),
+                item.containsKey("fraudDecision")
+                        ? FraudDecision.valueOf(item.get("fraudDecision").s()) : null,
+                item.containsKey("fraudSkipped") && Boolean.TRUE.equals(item.get("fraudSkipped").bool()),
                 Instant.parse(item.get("createdAt").s()),
                 item.containsKey("settledAt") ? Instant.parse(item.get("settledAt").s()) : null);
     }
