@@ -214,9 +214,11 @@ services:
       retries: 5
       start_period: 10s
 
-  # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: this flow (Sprint 2,
-  # Pix keys) needs DynamoDB and nothing else, so SERVICES pins DynamoDB ONLY. Each later
-  # sprint flips on the next service (sns,sqs,s3) by extending this list — not before.
+  # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: each sprint flips on ONLY the
+  # services its flow needs. Sprint 2 (Pix keys) pinned `dynamodb`; Sprint 6 adds `sns,sqs` — the
+  # first asynchronous flow, external Pix settlement (step 26). `s3` follows in Sprint 10.
+  # SERVICES is enforced, not a hint: calling a service that is not listed answers
+  # `501 Service 'sqs' is not enabled`, which is exactly what keeps the discipline honest.
   # The version is pinned (not `latest`) for reproducible local runs.
   localstack:
     image: localstack/localstack:3
@@ -224,7 +226,7 @@ services:
     ports:
       - "4566:4566"          # single edge port for every emulated AWS service
     environment:
-      SERVICES: dynamodb     # enable ONLY DynamoDB for now
+      SERVICES: dynamodb,sns,sqs   # DynamoDB (Sprint 2) + the messaging backbone (Sprint 6)
       DEBUG: "1"             # verbose logs — this is a dev-only emulator
     volumes:
       # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);

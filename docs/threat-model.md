@@ -173,7 +173,11 @@ documented in the referenced ADR.
 - Seeded demo credentials are non-secret by design.
 - The mock SPI is adversary-neutral: it injects latency/failures, not attacks.
 - Threat categories about the cloud control plane (IAM, VPC, KMS) are out of local
-  scope and tracked only as production-hardening notes.
+  scope and tracked only as production-hardening notes. The credential/authorization
+  half of that is now written down in [ADR-0013](adr/0013-aws-credentials-and-iam-posture.md):
+  LocalStack emulates the IAM/STS APIs but **enforces nothing by default**, so no local
+  test can prove a denial — the per-service least-privilege policies and the profile-isolated
+  credential chain are reviewed as documents and swept in step 45.
 
 ## 7. Revisit triggers
 
