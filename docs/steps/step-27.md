@@ -22,6 +22,15 @@ Step 21 (internal orchestration), Step 14.
 - Idempotent retry replays; no double-debit.
 
 ## Verify locally
+
+> **Note (added while implementing).** The commands below only produce a `202` **once step 30 lands**:
+> external key resolution is account-service's step-11 seam delegating to mock-bacen's DICT, which does
+> not exist yet, so today `bob@otherbank.com` returns `404` there and the send is refused with
+> `422 KEY_NOT_FOUND`. That is the *resolution* half of the flow, upstream of what this step builds.
+> The branch introduced here (external ⇒ debit to `SPI_CLEARING`, status `DEBITED`) is proven on the
+> resolver **port** by `ExternalSendIT` + `SendPixUseCaseTest`; the curl below becomes the end-to-end
+> check the moment step 30 closes the seam.
+
 ```bash
 curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \

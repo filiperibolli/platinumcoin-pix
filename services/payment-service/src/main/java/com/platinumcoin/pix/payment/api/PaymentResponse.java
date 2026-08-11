@@ -45,15 +45,19 @@ public record PaymentResponse(
 
     /**
      * Map the internal status onto the external vocabulary. A {@code switch} expression with <b>no
-     * {@code default}</b> on purpose: when steps 27/33 add {@code DEBITED}/{@code SENT_TO_SPI}/{@code
-     * FAILED}/{@code REVERSED}/{@code REJECTED} to {@link TransactionStatus}, this stops compiling until
-     * each new state is given its external face — the mapping cannot silently fall through to a wrong
-     * default. Today's two states are exhaustive: {@code RECEIVED} is still processing, {@code SETTLED}
-     * is terminal.
+     * {@code default}</b> on purpose: when steps 31/33 add {@code SENT_TO_SPI}/{@code FAILED}/{@code
+     * REVERSED}/{@code REJECTED} to {@link TransactionStatus}, this stops compiling until each new state
+     * is given its external face — the mapping cannot silently fall through to a wrong default. It did
+     * exactly that when step 27 added {@code DEBITED}.
+     *
+     * <p>{@code DEBITED} maps to {@code PROCESSING} rather than to a name of its own: the payer has been
+     * debited but the payee has not been paid, and "the money is parked in our clearing account" is an
+     * internal fact a client can neither use nor act on. It keeps polling the same {@code PROCESSING}
+     * until settlement makes it {@code SETTLED} (or a reversal makes it {@code REVERSED}, step 33).
      */
     private static String externalStatusOf(TransactionStatus status) {
         return switch (status) {
-            case RECEIVED -> "PROCESSING";
+            case RECEIVED, DEBITED -> "PROCESSING";
             case SETTLED -> "SETTLED";
         };
     }

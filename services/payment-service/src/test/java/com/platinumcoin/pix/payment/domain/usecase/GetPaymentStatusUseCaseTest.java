@@ -53,7 +53,7 @@ class GetPaymentStatusUseCaseTest {
         String creditorAccountId = status == TransactionStatus.SETTLED ? "acc-bob" : null;
         FraudDecision fraudDecision = status == TransactionStatus.SETTLED ? FraudDecision.APPROVE : null;
         return new Transaction(
-                id, "E2E-" + id, debtor, "bob@platinum.com", creditorAccountId, 12_550L, status,
+                id, "E2E-" + id, debtor, "bob@platinum.com", creditorAccountId, true, 12_550L, status,
                 "lunch", fraudDecision, false, createdAt, settledAt);
     }
 }

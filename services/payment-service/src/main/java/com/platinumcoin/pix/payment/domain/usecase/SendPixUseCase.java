@@ -10,6 +10,7 @@ import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.model.KeyResolution;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
 import com.platinumcoin.pix.payment.domain.model.Money;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
@@ -45,7 +46,8 @@ import org.slf4j.LoggerFactory;
  * <ol>
  *   <li><b>claim</b> — a conditional put wins or loses atomically. Win ⇒ do the money-moving work
  *       (resolve the destination key, reserve the daily limit, command the atomic ledger debit/credit,
- *       persist {@code SETTLED}), memoize the response, return a fresh outcome.</li>
+ *       persist the state the money is actually in — {@code SETTLED} for an internal destination,
+ *       {@code DEBITED} for an external one), memoize the response, return a fresh outcome.</li>
  *   <li><b>lose</b> — a live record already exists; load it and decide from its hash and status:
  *       <ul>
  *         <li>different hash ⇒ {@link IdempotencyKeyReuseException} ({@code 409}).</li>
@@ -99,6 +101,7 @@ public class SendPixUseCase {
     private final FraudScorer fraudScorer;
     private final LedgerClient ledger;
     private final EndToEndIdGenerator endToEndIds;
+    private final String clearingAccountId;
     private final Clock clock;
 
     public SendPixUseCase(
@@ -110,6 +113,7 @@ public class SendPixUseCase {
             FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
+            String clearingAccountId,
             Clock clock) {
         this.transactions = transactions;
         this.idempotency = idempotency;
@@ -119,6 +123,7 @@ public class SendPixUseCase {
         this.fraudScorer = fraudScorer;
         this.ledger = ledger;
         this.endToEndIds = endToEndIds;
+        this.clearingAccountId = clearingAccountId;
         this.clock = clock;
     }
 
@@ -132,7 +137,7 @@ public class SendPixUseCase {
      * @throws IdempotencyKeyReuseException    the key was replayed with a different payload
      * @throws RequestInProgressException      a concurrent request with the same key is in flight
      * @throws com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException      the destination key does not
-     *                                                                       resolve to an internal account
+     *                                                                       resolve at all (unknown to the DICT)
      * @throws LimitExceededException          the send would breach the debtor's daily Pix limit
      * @throws FraudDeniedException            the in-path fraud check returned {@code DENY} (limit released)
      * @throws InsufficientFundsException      the ledger refused the debit for lack of funds
@@ -218,19 +223,25 @@ public class SendPixUseCase {
     /**
      * Do the acceptance work, memoize the response, and return the fresh outcome. This is the
      * money-moving core, run only inside a won idempotency claim so a double-tap or replay never
-     * repeats it. The orchestration order is the one the external flow (Sprint 6) will extend —
-     * <b>resolve → limit → fraud → debit → persist</b> (ARCHITECTURE §6.5) — so an unknown destination is
-     * refused before any counter is touched, fraud sits between the limit reservation and the debit, and
-     * the debit is the last thing that can fail before we memoize.
+     * repeats it. The orchestration order is <b>resolve → limit → fraud → debit → persist</b>
+     * (ARCHITECTURE §6.5/§6.6) — an unknown destination is refused before any counter is touched, fraud
+     * sits between the limit reservation and the debit, and the debit is the last thing that can fail
+     * before we memoize.
+     *
+     * <p><b>The internal/external branch (step 27) is only in the last stage.</b> Everything up to the
+     * debit is identical for both destinations — that is the point: authority, limits and fraud are
+     * properties of the <i>payer</i>, not of where the payee banks. Only "who receives the credit leg"
+     * and "is this already final?" differ.
      */
     private SendPixOutcome acceptAndComplete(
             SendPixCommand command, long amountCents, String accountId, String key, Instant now) {
-        // 1) Resolve the destination FIRST. An unknown key is a 422 before the limit counter is touched
-        //    or any money moves — so a KEY_NOT_FOUND leaves no reservation to unwind.
-        String creditorAccountId = pixKeys.resolveInternalCreditor(command.pixKey());
-        log.info("Destination Pix key resolved to an internal creditor | creditorKey={} "
-                        + "creditorAccountId={} debtorAccountId={}",
-                command.pixKey(), creditorAccountId, accountId);
+        // 1) Resolve the destination FIRST. An unresolvable key is a 422 before the limit counter is
+        //    touched or any money moves — so a KEY_NOT_FOUND leaves no reservation to unwind.
+        KeyResolution destination = pixKeys.resolve(command.pixKey());
+        log.info("Destination Pix key resolved | creditorKey={} internal={} creditorAccountId={} "
+                        + "externalBank={} debtorAccountId={}",
+                command.pixKey(), destination.internal(), destination.accountId(),
+                destination.externalBank(), accountId);
 
         // 2) Reserve the daily-limit headroom BEFORE the debit (step 20). Inside the won-claim path on
         //    purpose: the reservation is a non-idempotent counter increment, so it must run exactly once
@@ -243,11 +254,14 @@ public class SendPixUseCase {
         //    onto the transaction so the RECEIVED→FRAUD_CHECKED stage is durably recorded.
         FraudDecision fraudDecision = screenForFraud(accountId, command.pixKey(), amountCents, now);
 
-        // 4) Move the money and persist the terminal state. An internal transfer settles the instant the
-        //    atomic ledger posting commits — there is no SPI leg — so this lands the transaction at
-        //    SETTLED directly. INSUFFICIENT_FUNDS releases the reservation from step 2.
-        Transaction transaction =
-                settleInternally(command, creditorAccountId, amountCents, accountId, fraudDecision, now);
+        // 4) Move the money and persist the state the money is actually in. An internal transfer settles
+        //    the instant the atomic ledger posting commits — there is no SPI leg — so it lands at
+        //    SETTLED; an external one only reaches the clearing account, so it rests at DEBITED until
+        //    settlement (steps 28-31). Either way INSUFFICIENT_FUNDS releases the reservation from step 2.
+        Transaction transaction = destination.internal()
+                ? settleInternally(
+                        command, destination.accountId(), amountCents, accountId, fraudDecision, now)
+                : debitToClearing(command, amountCents, accountId, fraudDecision, now);
 
         Map<String, String> snapshot = new LinkedHashMap<>();
         snapshot.put("transactionId", transaction.txId());
@@ -363,11 +377,7 @@ public class SendPixUseCase {
         try {
             ledger.postInternalTransfer(txId, accountId, creditorAccountId, amountCents, description);
         } catch (InsufficientFundsException e) {
-            LocalDate day = now.atZone(LIMIT_ZONE).toLocalDate();
-            dailyLimits.release(accountId, amountCents, day);
-            log.warn("Ledger refused the debit for insufficient funds, released the daily-limit "
-                            + "reservation, returning 422 | txId={} debtorAccountId={} amountCents={} day={}",
-                    txId, accountId, amountCents, day);
+            releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
             throw e;
         }
 
@@ -379,6 +389,7 @@ public class SendPixUseCase {
                 accountId,
                 command.pixKey(),
                 creditorAccountId,
+                true,
                 amountCents,
                 TransactionStatus.SETTLED,
                 description,
@@ -392,6 +403,92 @@ public class SendPixUseCase {
                         + "txId={} status={} settledAt={}",
                 txId, transaction.status(), transaction.settledAt());
         return transaction;
+    }
+
+    /**
+     * The <b>external</b> half of the branch (step 27): mint the ids, command the atomic posting
+     * <i>debit payer / credit the clearing account</i>, and persist the transaction as {@code DEBITED}.
+     *
+     * <p><b>Why the credit leg is an internal clearing account.</b> No ACID transaction can span
+     * PlatinumCoin and another PSP, so the money cannot be handed to the payee here. It is instead
+     * debited from the payer and parked in {@code ACCOUNT#SPI_CLEARING} — money in flight, owned by no
+     * user — which keeps double-entry symmetry intact: the posting is balanced, and {@code Σ balances}
+     * is exactly what it was a microsecond earlier (ARCHITECTURE §4). The clearing account is an
+     * <b>injected id</b>, never a literal, so step 52 can shard it ({@code SPI_CLEARING#00..#15}) without
+     * touching this orchestration.
+     *
+     * <p><b>Why the status is {@code DEBITED} and not {@code SETTLED}.</b> The payer's money is gone but
+     * the payee has not been paid; only BACEN can close that gap. Claiming {@code SETTLED} here would be
+     * a lie the client could act on. The transaction therefore rests in {@code DEBITED} — the state the
+     * settlement consumer (step 31) advances and the reconciliation scan (step 34) hunts for when it
+     * dwells too long. Nothing is published yet: the outbox event that triggers settlement is written
+     * atomically with this transaction in step 28.
+     *
+     * <p>Failure handling is identical to the internal path — the guards live inside the ledger's
+     * transaction, so an {@link InsufficientFundsException} means nothing moved (release the
+     * reservation, {@code 422}) and a {@code LedgerUnavailableException} means nothing was debited
+     * ({@code 503}, retry-safe under the same idempotency key).
+     */
+    private Transaction debitToClearing(
+            SendPixCommand command, long amountCents, String accountId, FraudDecision fraudDecision,
+            Instant now) {
+        String txId = "tx-" + UUID.randomUUID();
+        String endToEndId = endToEndIds.generate(now);
+        String description = command.description() == null ? "" : command.description();
+
+        log.info("Commanding the ledger to debit the payer and park the money in the clearing account "
+                        + "atomically (external destination, no ACID transaction spans two banks) | "
+                        + "txId={} endToEndId={} debtorAccountId={} clearingAccountId={} amountCents={} "
+                        + "creditorKey={}",
+                txId, endToEndId, accountId, clearingAccountId, amountCents, command.pixKey());
+        try {
+            ledger.postExternalDebitToClearing(
+                    txId, accountId, clearingAccountId, amountCents, description);
+        } catch (InsufficientFundsException e) {
+            releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
+            throw e;
+        }
+
+        // The money left the payer but has NOT reached the other PSP: DEBITED, and settledAt stays null
+        // until settlement confirms it (step 31). There is no creditorAccountId — the payee banks
+        // elsewhere — which is exactly what creditorInternal=false records.
+        Transaction transaction = new Transaction(
+                txId,
+                endToEndId,
+                accountId,
+                command.pixKey(),
+                null,
+                false,
+                amountCents,
+                TransactionStatus.DEBITED,
+                description,
+                fraudDecision,
+                fraudDecision == FraudDecision.SKIPPED,
+                now,
+                null);
+        transactions.create(transaction);
+
+        log.info("External Pix debited the payer to the clearing account, persisted as DEBITED awaiting "
+                        + "settlement, returning 202 Accepted | txId={} status={} clearingAccountId={} "
+                        + "endToEndId={}",
+                txId, transaction.status(), clearingAccountId, endToEndId);
+        return transaction;
+    }
+
+    /**
+     * Unwind the daily-limit reservation after the ledger refused the debit for lack of funds. The
+     * guard lives <i>inside</i> the ledger transaction (Domain Safety Rule #3), so a refusal means no
+     * money moved at all and the headroom this send reserved must go back — a rejected send has to leave
+     * the day's counter exactly as it found it. Shared by both destinations because the unwinding is a
+     * property of the payer's failed debit, not of where the payee banks.
+     */
+    private void releaseAfterInsufficientFunds(
+            String txId, String accountId, long amountCents, Instant now) {
+        LocalDate day = now.atZone(LIMIT_ZONE).toLocalDate();
+        dailyLimits.release(accountId, amountCents, day);
+        log.warn("Ledger refused the debit for insufficient funds, released the daily-limit "
+                        + "reservation, returning 422 | txId={} debtorAccountId={} amountCents={} day={}",
+                txId, accountId, amountCents, day);
     }
 
     /**

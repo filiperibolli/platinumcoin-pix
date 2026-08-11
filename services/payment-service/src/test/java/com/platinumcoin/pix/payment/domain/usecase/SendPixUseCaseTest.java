@@ -37,6 +37,9 @@ class SendPixUseCaseTest {
     private static final Instant NOW = Instant.parse("2026-07-02T12:34:56Z");
     private static final String KEY = "idem-key-1";
 
+    /** The clearing account money in flight is parked in (step 27); an id, injected, never hard-coded. */
+    private static final String CLEARING = "SPI_CLEARING";
+
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final EndToEndIdGenerator endToEndIds = new EndToEndIdGenerator("12345678");
     private final FakeTransactionRepository transactions = new FakeTransactionRepository();
@@ -48,7 +51,7 @@ class SendPixUseCaseTest {
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, clock);
+            endToEndIds, CLEARING, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -84,12 +87,16 @@ class SendPixUseCaseTest {
         assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.APPROVE);
         assertThat(persisted.fraudSkipped()).isFalse();
 
+        // An internal destination: the payee's own account is the credit leg, and the flag says so.
+        assertThat(persisted.creditorInternal()).isTrue();
+
         // The ledger was commanded to debit the payer and credit the resolved payee, keyed by txId.
         FakeLedgerClient.Posting posting = ledger.only();
         assertThat(posting.txId()).isEqualTo(persisted.txId());
         assertThat(posting.debtor()).isEqualTo("acc-001");
         assertThat(posting.creditor()).isEqualTo("acc-002");
         assertThat(posting.amountCents()).isEqualTo(12550L);
+        assertThat(posting.entryType()).isEqualTo(FakeLedgerClient.PIX_INTERNAL);
     }
 
     @Test
@@ -347,6 +354,98 @@ class SendPixUseCaseTest {
         assertThat(ledger.postings()).hasSize(1);
     }
 
+    // --- step 27: external orchestration (resolve → limit → fraud → debit to clearing → DEBITED) ----
+
+    @Test
+    void anExternalKeyDebitsThePayerCreditsTheClearingAccountAndPersistsDebited() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        SendPixOutcome outcome = accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        // One balanced posting, exactly like the internal case — only the credit leg differs: the money
+        // is parked in the clearing account (money in flight), because no ACID transaction can span two
+        // banks. Double-entry symmetry is preserved, so Σ balances is unchanged.
+        FakeLedgerClient.Posting posting = ledger.only();
+        assertThat(posting.debtor()).isEqualTo("acc-001");
+        assertThat(posting.creditor()).isEqualTo(CLEARING);
+        assertThat(posting.amountCents()).isEqualTo(20_000L);
+        assertThat(posting.entryType()).isEqualTo(FakeLedgerClient.PIX_OUT);
+
+        Transaction persisted = transactions.only();
+        assertThat(posting.txId()).isEqualTo(persisted.txId());
+        assertThat(outcome.transactionId()).isEqualTo(persisted.txId());
+        // DEBITED, not SETTLED: the money left the payer but has not reached the other PSP. Settlement
+        // is the asynchronous half (steps 28–31), so there is no settledAt yet.
+        assertThat(persisted.status()).isEqualTo(TransactionStatus.DEBITED);
+        assertThat(persisted.settledAt()).isNull();
+        assertThat(persisted.createdAt()).isEqualTo(NOW);
+        // The payee is at another bank: no internal creditor account exists to point at.
+        assertThat(persisted.creditorInternal()).isFalse();
+        assertThat(persisted.creditorAccountId()).isNull();
+        assertThat(persisted.creditorKey()).isEqualTo("bob@otherbank.com");
+        assertThat(persisted.debtorAccountId()).isEqualTo("acc-001");
+        assertThat(persisted.amountCents()).isEqualTo(20_000L);
+        // The fraud stage runs on the external path too — it is the shared send path.
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.APPROVE);
+    }
+
+    @Test
+    void theClearingAccountIsWhicheverIdWasInjectedSoItCanBeShardedLater() {
+        // Step 52 shards the clearing account into SPI_CLEARING#00..#15 to spread a hot partition. The
+        // id is an input to this use case, so that change is a configuration/selection concern — this
+        // orchestration does not name the account and needs no edit.
+        SendPixUseCase sharded = new SendPixUseCase(
+                transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
+                endToEndIds, "SPI_CLEARING#07", clock);
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        sharded.execute(command("bob@otherbank.com", "10.00", "x", KEY));
+
+        assertThat(ledger.only().creditor()).isEqualTo("SPI_CLEARING#07");
+    }
+
+    @Test
+    void insufficientFundsOnTheExternalPathIs422ReleasesTheReservationAndPersistsNothing() {
+        accountLimits.setDailyLimitCents(50_000L);
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+        ledger.failWith(new InsufficientFundsException());
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@otherbank.com", "125.50", "rent", KEY)))
+                .isInstanceOf(InsufficientFundsException.class);
+
+        // Nothing debited (the guard is inside the ledger transaction), nothing persisted, and the
+        // reservation this send took is released — identical unwinding to the internal path.
+        assertThat(transactions.created()).isEmpty();
+        assertThat(dailyLimits.reserveCalls()).isEqualTo(1);
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isZero();
+    }
+
+    @Test
+    void ledgerUnavailableOnTheExternalPathIs503AndPersistsNoTransaction() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+        ledger.failWith(new LedgerUnavailableException("ledger down", null));
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@otherbank.com", "125.50", "rent", KEY)))
+                .isInstanceOf(LedgerUnavailableException.class);
+
+        // Nothing was debited, so the same idempotency key is safe to retry (it re-drives this path).
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    @Test
+    void anIdenticalRetryOfAnExternalSendReplaysWithoutDebitingToClearingASecondTime() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+        SendPixOutcome first = accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        SendPixOutcome retry = useCase.execute(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        assertThat(retry.replayed()).isTrue();
+        assertThat(retry.transactionId()).isEqualTo(first.transactionId());
+        // The money left the payer exactly once — a double-tap must not double-debit to clearing.
+        assertThat(ledger.postings()).hasSize(1);
+        assertThat(transactions.created()).hasSize(1);
+    }
+
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
     private static LocalDate saoPauloDay() {
         return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();
@@ -358,7 +457,7 @@ class SendPixUseCaseTest {
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
         new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
                 new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeFraudScorer(),
-                new FakeLedgerClient(), endToEndIds, clock)
+                new FakeLedgerClient(), endToEndIds, CLEARING, clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
     }
