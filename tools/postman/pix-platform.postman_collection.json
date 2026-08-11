@@ -1286,8 +1286,59 @@
     },
     {
       "name": "fraud-service",
-      "description": "Synchronous fraud scoring — port 8083. Backed by Redis (velocity counters; ADR-0008, the ElastiCache stand-in). Step 23 ships the skeleton (health only); POST /internal/fraud/score lands in step 24. See services/fraud-service/README.md.",
+      "description": "Synchronous fraud scoring — port 8083. Backed by Redis (velocity counters; ADR-0008, the ElastiCache stand-in). POST /internal/fraud/score (step 24) scores a transfer with cheap in-path rules under a p99 < 150ms budget; payment-service calls it with the 200ms timeout + fail-open flag in step 25. See services/fraud-service/README.md.",
       "item": [
+        {
+          "name": "Score a transfer (APPROVE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('carries a decision band', () => pm.expect(body.decision).to.be.oneOf(['APPROVE', 'REVIEW', 'DENY']));",
+                  "pm.test('score and reasons are present', () => { pm.expect(body.score).to.be.a('number'); pm.expect(body.reasons).to.be.an('array'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"accountId\": \"acc-001\",\n  \"pixKey\": \"bob@platinum.com\",\n  \"amountCents\": 12550,\n  \"timestamp\": \"2026-07-07T12:00:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{fraudBaseUrl}}/internal/fraud/score",
+              "host": [
+                "{{fraudBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "fraud",
+                "score"
+              ]
+            },
+            "description": "Rule-based in-path score (step 24) → `{decision, score, reasons[]}` under a p99 < 150ms budget. Four cheap rules read pre-computed Redis features (no model, no DB): HIGH_AMOUNT (single value), VELOCITY_COUNT/VELOCITY_AMOUNT (rolling INCR/EXPIRE windows), NEW_PAYEE (persistent SADD set) and ODD_HOURS (São Paulo overnight window). A first small daytime transfer scores only NEW_PAYEE (15) → APPROVE.\n\n**Try DENY:** raise `amountCents` above R$5,000 (e.g. 5000000) — HIGH_AMOUNT alone (weight 70) hits the deny band. **Try REVIEW:** fire this request 5+ times in a minute with the same `accountId` — VELOCITY_COUNT crosses the threshold.\n\n`accountId` is a body field here (not the JWT) because this is an internal service-to-service seam: payment-service, which already took the account from *its* token (Domain Safety Rule #1), forwards it as data. `/internal/**` is authenticated, so a Bearer token is still required."
+          }
+        },
         {
           "name": "Health",
           "request": {

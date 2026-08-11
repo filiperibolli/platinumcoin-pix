@@ -20,11 +20,28 @@ rolling `INCR`/`EXPIRE` windows); Sprint 9's balance cache reuses the **same** c
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
+| `POST` | `/internal/fraud/score` | Bearer (internal) | Rule-based score → `{decision, score, reasons[]}` under a p99 < 150ms budget |
 | `GET`  | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
-> `POST /internal/fraud/score` (velocity/amount/novelty/hours → `{decision, score, reasons}`) lands in
-> **step 24**; payment-service calls it with the 200ms timeout + fail-open flag in **step 25**. The
-> skeleton deliberately has **no `api/` or `domain/` layer yet** — they arrive with that first endpoint.
+### `POST /internal/fraud/score`
+
+Body `{accountId, pixKey, amountCents, timestamp?}` (integer cents; `timestamp` optional — falls back
+to the server clock for the odd-hours rule). Returns `{decision: APPROVE|REVIEW|DENY, score, reasons[]}`.
+Four cheap, in-path rules, all read from pre-computed Redis features — **no model, no DB, no network hop
+beyond Redis** (heavy/ML scoring runs async off the event stream and feeds block-lists this check reads):
+
+| Reason | Fires when | Signal source |
+| ------ | ---------- | ------------- |
+| `HIGH_AMOUNT` | single transfer > `fraud.rules.high-amount-cents` (R$5,000) | request |
+| `VELOCITY_COUNT` | transfers this minute ≥ `velocity-count-threshold` (5) | Redis `INCR` + `EXPIRE 60s` |
+| `VELOCITY_AMOUNT` | money this hour > `velocity-amount-threshold-cents` (R$20,000) | Redis `INCRBY` + `EXPIRE 1h` |
+| `NEW_PAYEE` | this account never paid this key before | Redis `SADD` (persistent set) |
+| `ODD_HOURS` | transfer time in `[00:00, 05:00)` America/Sao_Paulo | request timestamp / clock |
+
+Each fired reason adds its configured weight to a 0–100 score; `score >= deny-band (70)` ⇒ DENY,
+`>= review-band (40)` ⇒ REVIEW, else APPROVE. A single huge amount (weight 70) denies on its own.
+`/internal/**` is **not** on the JWT allow-list, so the endpoint requires a Bearer token; payment-service
+forwards the caller's token with the 200ms timeout + fail-open flag in **step 25**.
 
 ## Configuration
 
@@ -38,18 +55,19 @@ rolling `INCR`/`EXPIRE` windows); Sprint 9's balance cache reuses the **same** c
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-infra/config/   FraudBeansConfig (composition root, empty until step 24), CorsConfig   (wiring)
+api/            FraudScoreController (1 use case + Micrometer timer), ScoreRequest (wire + validation)
+domain/model/   Decision, FraudReason, ScoreResult, FraudRules
+domain/port/    FraudSignalStore  (the outbound Redis-feature interface)
+domain/usecase/ ScoreFraudUseCase, ScoreCommand
+infra/persistence/ RedisFraudSignalStore  (@Repository — INCR/EXPIRE/SADD)
+infra/config/   FraudProperties (@ConfigurationProperties → FraudRules), FraudBeansConfig, CorsConfig
 ```
 
-The `api/` and `domain/` layers do not exist yet — per ADR-0010 a service carries **only the roles it
-has**, and the skeleton has no inbound operation. Step 24 adds `api/` (the scoring controller +
-request/response records + exception handler), `domain/` (`model/`, the Redis-counter `port/`, the
-`ScoreFraudUseCase` in `usecase/`) and `infra/persistence/` (the Redis adapter), and wires the use case
-in `FraudBeansConfig`.
-
-`FraudArchitectureTest` ships **both** ArchUnit rules from day one: `domain/` imports nothing outward
-(no Spring / Redis / servlet / JWT / Jackson), and `api/` never depends on an interface in `domain/` —
-so once step 24 lands, a controller cannot reach the Redis port itself.
+`FraudArchitectureTest` enforces **both** ArchUnit rules: `domain/` imports nothing outward (no Spring /
+Redis / servlet / JWT / Jackson — the Redis client stays behind the `FraudSignalStore` port in `infra/`),
+and `api/` never depends on an interface in `domain/` — so the controller cannot reach the Redis port
+itself, only the `ScoreFraudUseCase`. No exception handler of its own: bean-validation failures on the
+body become `400 VALIDATION_ERROR` via common-lib's shared `GlobalExceptionHandler`.
 
 ## Run
 
@@ -64,12 +82,19 @@ docker compose -f infra/docker-compose.yml up -d --build redis fraud-service
 ## Test
 
 ```bash
-mvn -pl services/fraud-service verify          # unit/architecture (*Test) + context IT (*IT, Testcontainers Redis)
+mvn -pl services/fraud-service verify          # unit/architecture (*Test) + ITs (*IT, Testcontainers Redis)
 
 # health (after `docker compose up`)
 curl -s localhost:8083/actuator/health | jq
 # Redis reachable from the stack
 docker compose -f infra/docker-compose.yml exec redis redis-cli ping   # PONG
+
+# score a transfer (the endpoint is authenticated — forge/borrow a Bearer token)
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+curl -s -X POST localhost:8083/internal/fraud/score \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"accountId":"acc-001","pixKey":"bob@platinum.com","amountCents":12550,"timestamp":"2026-07-07T12:00:00Z"}' | jq
 ```
 
 ## Related decisions
