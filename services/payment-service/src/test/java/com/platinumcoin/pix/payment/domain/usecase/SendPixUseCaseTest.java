@@ -446,6 +446,75 @@ class SendPixUseCaseTest {
         assertThat(transactions.created()).hasSize(1);
     }
 
+    // --- step 28: the transactional outbox (state + the events it announces, one atomic write) -------
+
+    @Test
+    void anExternalSendAnnouncesPixDebitedInTheSameWriteAsTheTransaction() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        assertThat(transactions.outboxTypes()).containsExactly("PixDebited");
+        // The event describes the transaction that was written with it — same txId, same money.
+        assertThat(transactions.outbox().get(0).payload())
+                .containsEntry("txId", transactions.only().txId())
+                .containsEntry("amountCents", 20_000L)
+                .containsEntry("status", "DEBITED");
+        assertThat(transactions.outbox().get(0).occurredAt()).isEqualTo(NOW);
+    }
+
+    @Test
+    void anInternalSendAnnouncesPixSettledBecauseThePostingAlreadySettledIt() {
+        pixKeys.map("bob@platinum.com", "acc-002");
+
+        accept(command("bob@platinum.com", "125.50", "lunch", KEY));
+
+        // PixDebited would put an already-finished payment on the settlement-queue (step 26's filter
+        // policy matches exactly that type) and have BACEN asked to settle a purely internal transfer.
+        assertThat(transactions.outboxTypes()).containsExactly("PixSettled");
+        assertThat(transactions.outbox().get(0).payload())
+                .containsEntry("creditorAccountId", "acc-002")
+                .containsEntry("amountCents", 12_550L);
+    }
+
+    @Test
+    void aFailOpenFraudSkipAnnouncesASecondEventAlongsideTheStateEvent() {
+        fraudScorer.returning(FraudDecision.SKIPPED);
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        // Both events are handed to the repository in one call, so the store commits them together with
+        // the payment: "we let an unscored payment through" is as durable as the payment (ADR-0005).
+        assertThat(transactions.outboxTypes()).containsExactly("PixDebited", "FraudCheckSkipped");
+    }
+
+    @Test
+    void aRefusedSendAnnouncesNothingAtAll() {
+        // A send that never reaches the ledger must leave no event behind — a consumer would otherwise
+        // act on a payment that does not exist.
+        dailyLimits.force(LimitDecision.DENY);
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "x", KEY)))
+                .isInstanceOf(LimitExceededException.class);
+
+        assertThat(transactions.outbox()).isEmpty();
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    @Test
+    void anIdempotentReplayDoesNotAnnounceASecondEvent() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+        accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        SendPixOutcome replay = useCase.execute(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        assertThat(replay.replayed()).isTrue();
+        // One payment, one PixDebited. A duplicated event would mean a second settlement attempt at
+        // BACEN for money that was only debited once.
+        assertThat(transactions.outboxTypes()).containsExactly("PixDebited");
+    }
+
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
     private static LocalDate saoPauloDay() {
         return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();

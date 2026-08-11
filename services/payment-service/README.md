@@ -109,7 +109,7 @@ flight* in an internal clearing account. Double-entry symmetry holds — the pos
 transaction is persisted **`DEBITED`** with **no** `settledAt` and `creditorInternal=false`: claiming
 `SETTLED` would be a lie the client could act on, since only BACEN can say whether the payee was paid.
 Nothing is published here — the outbox event that drives settlement is written atomically with the
-transaction in step 28, consumed in step 31, and reconciled in Sprint 7. The clearing account is
+transaction (step 28, below), consumed in step 31, and reconciled in Sprint 7. The clearing account is
 **configuration** (`pix.clearing-account-id`, default `SPI_CLEARING`), never a literal, so step 52 can
 shard it into `SPI_CLEARING#00..#15` without touching the orchestration. Failure mapping is unchanged
 from the internal path (`INSUFFICIENT_FUNDS` ⇒ `422` + reservation released; ledger down ⇒ `503`,
@@ -122,8 +122,8 @@ scores the send against fraud-service (`POST /internal/fraud/score`) under a **h
 daily-limit reservation is **released** (a denied send leaves the counter as it found it); `REVIEW` ⇒
 proceed **flagged** (recorded for an analyst, not blocked); `APPROVE` ⇒ proceed. The single most debated
 call is the failure mode: on **timeout or error the check fails open** — the send proceeds unscored,
-flagged `fraudSkipped=true` / `fraudDecision=SKIPPED`, and (once the outbox lands, step 28/29) a
-`FraudCheckSkipped` event triggers async re-scoring. Availability of payments wins *at this layer*; the
+flagged `fraudSkipped=true` / `fraudDecision=SKIPPED`, and a `FraudCheckSkipped` outbox event (step 28)
+triggers async re-scoring. Availability of payments wins *at this layer*; the
 residual risk is bounded by daily limits and the async re-score. Crucially the **fail-open lives in the
 adapter** (`HttpFraudScorer`), not the use case: only the boundary observes a timeout, so it translates
 one into `SKIPPED` and the use case stays a straight-line policy — `DENY` blocks, everything else
@@ -154,6 +154,23 @@ straight to `SETTLED`.
   item rests at `STATUS#DEBITED` until settlement). Fields a later step owns — the settlement
   confirmation fields (step 31) — are deliberately not invented.
 
+**Transactional outbox (step 28, ADR-0004).** The transaction and the events it announces are written in
+**one `TransactWriteItems`** — `TX#<txId> / META` plus one `TX#<txId> / OUTBOX#<eventId>` sibling per
+event. Persisting the state and publishing it are two systems: a crash between them either loses the
+event (money parked in `SPI_CLEARING` that nobody settles) or announces a payment that never committed.
+The outbox does not narrow that window, it removes it — the event is an *item next to the state it
+describes*, in the same partition, so the store's own atomicity covers both and delivery becomes a
+separate retryable problem (step 29's polling publisher; consumers dedupe by `eventId`). The `META` put
+is guarded by `attribute_not_exists(pk)`, so a late or replayed write can never regress a status a later
+step advanced. Which events are written is a **domain** decision (`PixOutboxEvents`), not the adapter's:
+external ⇒ `PixDebited` (the settlement-queue's filter policy subscribes to exactly that type), internal
+⇒ `PixSettled` (the atomic posting *was* the settlement — `PixDebited` would ask BACEN to settle a
+transfer that never left the bank), plus `FraudCheckSkipped` in the same write whenever the fraud check
+failed open. Each item carries `gsi3pk=OUTBOX#UNPUBLISHED` (the **sparse** publisher index — publishing
+is `REMOVE gsi3pk`, so the index stays O(in-flight)), a fixed-width millisecond `occurredAt` as its sort
+key, and the request's `correlationId`, so one `grep` still follows a payment after it goes asynchronous.
+The envelope itself (`OutboxEvent` + `EventEnvelope`) lives in `common-lib` and names no broker.
+
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
@@ -171,8 +188,10 @@ domain/port/      TransactionRepository, IdempotencyRepository, PixKeyResolver, 
 domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededException,
                   FraudDeniedException, InsufficientFundsException, LedgerUnavailableException,
                   AccountLookupException, PaymentNotFoundException, IdempotencyKeyRequiredException,
-                  IdempotencyKeyReuseException, RequestInProgressException            (plain Java)
-domain/service/   EndToEndIdGenerator (BACEN E2E id minting)                          (plain Java)
+                  IdempotencyKeyReuseException, RequestInProgressException,
+                  TransactionWriteConflictException                                   (plain Java)
+domain/service/   EndToEndIdGenerator (BACEN E2E id minting),
+                  PixOutboxEvents (which events an accepted send announces)           (plain Java)
 domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase (plain Java)
 infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
                    DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter)
@@ -278,6 +297,18 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
   -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1
 curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
   -H "Authorization: Bearer $TOKEN" | jq   # credited by exactly the amount in flight
+
+# outbox (step 28): every send left an UNPUBLISHED event on the sparse index, written in the same
+# transaction as the payment. Nothing drains it until step 29, so the count only grows.
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+  --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
+  --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' \
+  | jq '.Items[] | {eventType: .eventType.S, sk: .sk.S, occurredAt: .gsi3sk.S}'
+
+# ...and the event sits in its transaction's own partition — which is what let both commit at once
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+  --key-condition-expression 'pk = :p' \
+  --expression-attribute-values '{":p":{"S":"TX#<txId>"}}' | jq '.Items[].sk.S'
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the
@@ -290,6 +321,9 @@ curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — the three-layer idempotency strategy
   (API `Idempotency-Key`, ledger `txId`, SPI `endToEndId`); step 18 mints the `endToEndId`, step 19
   adds the API layer.
+- [ADR-0004](../../docs/adr/0004-transactional-outbox-with-polling-publisher.md) — the transactional
+  outbox and its polling publisher; step 28 implements the **guarantee** half (state + events in one
+  `TransactWriteItems`), step 29 the delivery half.
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition;
   payment-service owns `pix_transactions` and orchestrates the send, calling ledger-service to move
   money.

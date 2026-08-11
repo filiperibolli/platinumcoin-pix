@@ -1,11 +1,16 @@
 package com.platinumcoin.pix.payment.infra.persistence;
 
+import com.platinumcoin.pix.common.event.EventEnvelope;
+import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -13,13 +18,23 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.services.dynamodb.model.Put;
+import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
+import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 
 /**
  * The only place AWS SDK types touch payment persistence (ADR-0010). Implements
  * {@link TransactionRepository} against table {@code pix_transactions} (docs/data-model.md §4), whose
- * single-table layout keeps a transaction's {@code META} item and (later) its {@code OUTBOX#} events
- * in one {@code TX#<txId>} partition — which is what lets step 28 write the transaction and its outbox
- * event in one {@code TransactWriteItems}.
+ * single-table layout keeps a transaction's {@code META} item and its {@code OUTBOX#} events in one
+ * {@code TX#<txId>} partition — which is what lets the transaction and the events it announces commit
+ * in a single {@code TransactWriteItems} (step 28, ADR-0004).
+ *
+ * <h2>Why one transaction and not two writes</h2>
+ * Persisting the state and publishing the event are two systems: a crash between them either loses the
+ * event (money parked in clearing that nobody ever settles) or announces a state that never committed.
+ * The outbox pattern removes the window rather than narrowing it — the event is written <b>as an item</b>
+ * next to the state it describes, so the store's own atomicity covers both, and delivery becomes a
+ * separate, retryable concern (step 29's polling publisher). There is no dual write left to fail.
  *
  * <h2>The item this writes</h2>
  * The {@code TX#<txId> / META} item, filled with what the send flow now knows and made
@@ -41,15 +56,17 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  *       written (a boolean has no "absent" — {@code false} is the honest default for a scored send).</li>
  * </ul>
  * Fields a later step owns are deliberately not invented here: the settlement-confirmation fields
- * (step 31) and the {@code OUTBOX#} sibling (step 28).
+ * (step 31).
  * {@code direction} is a constant {@code OUTBOUND}: every {@code /payments/pix} is an outbound send
  * (inbound Pix is a different writer, step 37).
  *
- * <p>The write is an unconditional {@code PutItem}: the {@code txId} is a fresh server-minted UUID, so
- * there is nothing to race, and request-level de-duplication (the {@code Idempotency-Key}) is step
- * 19's layer, not this write's. Either flow reaches this write only after the ledger posting has
- * already committed the money (Domain Safety Rule #4), so the persisted state is honest: {@code SETTLED}
- * when the payee already holds the money, {@code DEBITED} when it sits in clearing awaiting BACEN.
+ * <p>The {@code META} write is guarded by {@code attribute_not_exists(pk)}. The {@code txId} is a fresh
+ * server-minted UUID and request-level de-duplication (the {@code Idempotency-Key}) is step 19's layer,
+ * so nothing legitimately collides — the guard is there against the failure that would actually hurt: a
+ * late or replayed write regressing a status a later step has advanced. Either flow reaches this write
+ * only after the ledger posting has already committed the money (Domain Safety Rule #4), so the
+ * persisted state is honest: {@code SETTLED} when the payee already holds the money, {@code DEBITED}
+ * when it sits in clearing awaiting BACEN.
  */
 @Repository
 public class DynamoTransactionRepository implements TransactionRepository {
@@ -59,6 +76,13 @@ public class DynamoTransactionRepository implements TransactionRepository {
     private static final String TABLE = "pix_transactions";
     private static final String META_SK = "META";
     private static final String OUTBOUND = "OUTBOUND";
+    private static final String OUTBOX_SK_PREFIX = "OUTBOX#";
+
+    /**
+     * The sparse index's single partition key: every unpublished event sits in one hot-by-design
+     * partition the publisher polls oldest-first, and leaves the index the moment it is published.
+     */
+    private static final String UNPUBLISHED = "OUTBOX#UNPUBLISHED";
 
     private final DynamoDbClient dynamo;
 
@@ -67,7 +91,85 @@ public class DynamoTransactionRepository implements TransactionRepository {
     }
 
     @Override
-    public void create(Transaction transaction) {
+    public void create(Transaction transaction, List<OutboxEvent> events) {
+        log.info("Writing the transaction and its outbox events in one atomic TransactWriteItems | "
+                        + "table={} pk=TX#{} status={} events={} eventIds={}",
+                TABLE, transaction.txId(), transaction.status().name(),
+                events.stream().map(OutboxEvent::eventType).toList(),
+                events.stream().map(OutboxEvent::eventId).toList());
+
+        List<TransactWriteItem> writes = new ArrayList<>(1 + events.size());
+        writes.add(TransactWriteItem.builder().put(metaPut(transaction)).build());
+        for (OutboxEvent event : events) {
+            writes.add(TransactWriteItem.builder().put(outboxPut(transaction.txId(), event)).build());
+        }
+
+        try {
+            dynamo.transactWriteItems(request -> request.transactItems(writes));
+        } catch (TransactionCanceledException e) {
+            // The only guard in this transaction is attribute_not_exists(pk) on META, so a cancellation
+            // means the transaction id already exists. Nothing was written — the outbox items were
+            // rolled back with it, which is the property this whole write exists to provide.
+            log.error("Atomic transaction write was cancelled, the transaction id already exists, "
+                            + "nothing was written (state and outbox both rolled back) | pk=TX#{} "
+                            + "reasons={}",
+                    transaction.txId(),
+                    e.cancellationReasons().stream().map(r -> r.code()).toList(), e);
+            throw new TransactionWriteConflictException(
+                    "transaction " + transaction.txId() + " already exists", e);
+        }
+
+        log.debug("DynamoDB TransactWriteItems stored the transaction and {} outbox event(s) | "
+                        + "pk=TX#{} sk={} status={}",
+                events.size(), transaction.txId(), META_SK, transaction.status().name());
+    }
+
+    /**
+     * The {@code OUTBOX#<eventId>} sibling item, in the <b>same partition</b> as its transaction — which
+     * is exactly what makes the one-transaction write possible (a DynamoDB transaction spans items, but
+     * co-locating them keeps it a single-partition commit).
+     *
+     * <p>{@code gsi3pk = OUTBOX#UNPUBLISHED} is what puts the item in the <b>sparse</b> publisher index.
+     * Because a GSI only holds items that carry its key attributes, step 29's publisher marks an event
+     * published by <i>removing</i> {@code gsi3pk} — the item drops out of the index while staying in the
+     * partition for audit, so the pending-work index stays O(in-flight) rather than O(history).
+     *
+     * <p>{@code gsi3sk = occurredAt} is the fixed-width millisecond form
+     * ({@link OutboxEvent#occurredAtKey()}), never {@code Instant.toString()}: the publisher drains
+     * oldest-first, and that ordering is lexicographic on this key.
+     */
+    private static Put outboxPut(String txId, OutboxEvent event) {
+        Map<String, AttributeValue> item = new LinkedHashMap<>();
+        item.put("pk", AttributeValue.fromS("TX#" + txId));
+        item.put("sk", AttributeValue.fromS(OUTBOX_SK_PREFIX + event.eventId()));
+        item.put("eventId", AttributeValue.fromS(event.eventId()));
+        item.put("eventType", AttributeValue.fromS(event.eventType()));
+        // The payload is an opaque JSON string: DynamoDB never queries inside it, so a new event type
+        // needs no schema change, and the publisher forwards it without parsing it.
+        item.put("payload", AttributeValue.fromS(EventEnvelope.payloadJson(event)));
+        item.put("occurredAt", AttributeValue.fromS(event.occurredAtKey()));
+        item.put("gsi3pk", AttributeValue.fromS(UNPUBLISHED));
+        item.put("gsi3sk", AttributeValue.fromS(event.occurredAtKey()));
+        if (event.correlationId() != null) {
+            item.put("correlationId", AttributeValue.fromS(event.correlationId()));
+        }
+
+        log.debug("DynamoDB Put of an outbox event | table={} pk=TX#{} sk={}{} eventType={} "
+                        + "gsi3pk={} gsi3sk={} correlationId={} payload={}",
+                TABLE, txId, OUTBOX_SK_PREFIX, event.eventId(), event.eventType(), UNPUBLISHED,
+                event.occurredAtKey(), event.correlationId(), EventEnvelope.payloadJson(event));
+
+        return Put.builder().tableName(TABLE).item(item).build();
+    }
+
+    /**
+     * The {@code META} put, guarded by {@code attribute_not_exists(pk)} — a create may never overwrite a
+     * transaction already on record. With a server-minted UUID nothing legitimately collides, so the
+     * guard is defense in depth against the failure that would actually hurt: a stale or replayed write
+     * regressing a status a later step has advanced (a {@code SETTLED} payment reset to {@code DEBITED}
+     * would be re-settled — the same money sent twice).
+     */
+    private static Put metaPut(Transaction transaction) {
         String updatedAt = transaction.createdAt().toString();
         Map<String, AttributeValue> item = new LinkedHashMap<>();
         item.put("pk", AttributeValue.fromS("TX#" + transaction.txId()));
@@ -106,20 +208,21 @@ public class DynamoTransactionRepository implements TransactionRepository {
         }
         item.put("fraudSkipped", AttributeValue.fromBool(transaction.fraudSkipped()));
 
-        log.debug("DynamoDB PutItem of the transaction META item | table={} pk=TX#{} sk={} "
+        log.debug("DynamoDB Put of the transaction META item | table={} pk=TX#{} sk={} "
                         + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} "
                         + "creditorAccountId={} creditorInternal={} amountCents={} settledAt={} "
-                        + "fraudDecision={} fraudSkipped={}",
+                        + "fraudDecision={} fraudSkipped={} condition=attribute_not_exists(pk)",
                 TABLE, transaction.txId(), META_SK, transaction.endToEndId(),
                 transaction.status().name(), transaction.debtorAccountId(), transaction.creditorKey(),
                 transaction.creditorAccountId(), transaction.creditorInternal(),
                 transaction.amountCents(), transaction.settledAt(),
                 transaction.fraudDecision(), transaction.fraudSkipped());
 
-        dynamo.putItem(request -> request.tableName(TABLE).item(item));
-
-        log.debug("DynamoDB PutItem stored the transaction | pk=TX#{} sk={} status={}",
-                transaction.txId(), META_SK, transaction.status().name());
+        return Put.builder()
+                .tableName(TABLE)
+                .item(item)
+                .conditionExpression("attribute_not_exists(pk)")
+                .build();
     }
 
     @Override

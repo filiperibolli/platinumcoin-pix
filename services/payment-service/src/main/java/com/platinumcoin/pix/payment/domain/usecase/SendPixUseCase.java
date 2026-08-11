@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
+import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
@@ -23,12 +24,14 @@ import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
+import com.platinumcoin.pix.payment.domain.service.PixOutboxEvents;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -335,8 +338,9 @@ public class SendPixUseCase {
                             + "fail-open, the send is unscored and flagged | debtorAccountId={} pixKey={} "
                             + "amountCents={} fraudSkipped=true decision={}",
                     accountId, pixKey, amountCents, decision);
-            // outbox: FraudCheckSkipped — the skip is not forgotten. Publishing the marker so async
-            // scoring picks it up is wired once the transactional outbox exists (step 28/29).
+            // The skip is not forgotten: it becomes a FraudCheckSkipped outbox event written in the
+            // same atomic transaction as the payment (step 28), so async re-scoring cannot miss it
+            // even if this process dies right after the debit.
         } else {
             log.info("Fraud check scored the payment and cleared it to proceed | debtorAccountId={} "
                             + "pixKey={} amountCents={} decision={}",
@@ -397,7 +401,7 @@ public class SendPixUseCase {
                 fraudDecision == FraudDecision.SKIPPED,
                 now,
                 now);
-        transactions.create(transaction);
+        persistWithOutbox(transaction, now);
 
         log.info("Internal Pix moved money and settled, persisted as SETTLED, returning 202 Accepted | "
                         + "txId={} status={} settledAt={}",
@@ -466,13 +470,38 @@ public class SendPixUseCase {
                 fraudDecision == FraudDecision.SKIPPED,
                 now,
                 null);
-        transactions.create(transaction);
+        persistWithOutbox(transaction, now);
 
         log.info("External Pix debited the payer to the clearing account, persisted as DEBITED awaiting "
                         + "settlement, returning 202 Accepted | txId={} status={} clearingAccountId={} "
                         + "endToEndId={}",
                 txId, transaction.status(), clearingAccountId, endToEndId);
         return transaction;
+    }
+
+    /**
+     * Persist the transaction <b>and the events it announces</b> in one atomic write (step 28,
+     * ADR-0004).
+     *
+     * <p>This is where the flow stops being purely synchronous. Announcing what happened cannot be a
+     * second step after saving it: a crash between the two would either lose the event — for an
+     * external send that means money sitting in the clearing account with nobody left to settle it — or
+     * announce a payment that never committed. Writing the events as items in the transaction's own
+     * partition makes both a single commit, and turns delivery into a separate, retryable problem that
+     * a lost publish cannot corrupt (step 29 drains the outbox; consumers dedupe by {@code eventId}).
+     *
+     * <p>Which events those are is {@link PixOutboxEvents}' decision, not this method's: an internal
+     * send is already settled and announces {@code PixSettled}, an external one announces
+     * {@code PixDebited}, and a fail-open fraud skip rides along in the same write.
+     */
+    private void persistWithOutbox(Transaction transaction, Instant now) {
+        List<OutboxEvent> events = PixOutboxEvents.forAcceptedSend(transaction, now);
+        transactions.create(transaction, events);
+
+        log.info("Transaction and its outbox events committed atomically, awaiting the publisher | "
+                        + "txId={} status={} events={}",
+                transaction.txId(), transaction.status(),
+                events.stream().map(OutboxEvent::eventType).toList());
     }
 
     /**
