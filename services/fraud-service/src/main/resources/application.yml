@@ -41,3 +41,26 @@ management:
       # Enables the liveness/readiness health groups the compose healthcheck probes.
       probes:
         enabled: true
+
+# Rule engine tuning (step 24). Bound by FraudProperties into a plain FraudRules the framework-free
+# ScoreFraudUseCase consumes. Thresholds decide which reasons fire; weights turn fired reasons into a
+# 0-100 score; the two bands turn the score into APPROVE/REVIEW/DENY (score>=deny → DENY,
+# score>=review → REVIEW). Amounts are integer cents. Deliberately generous defaults for a sandbox —
+# HIGH_AMOUNT alone (weight 70) reaches the deny band, so a huge single transfer is denied outright.
+fraud:
+  rules:
+    high-amount-cents: 500000            # R$5,000 single-transfer high-value line
+    velocity-count-threshold: 5          # transfers in count-window at/above this ⇒ VELOCITY_COUNT
+    velocity-amount-threshold-cents: 2000000  # R$20,000 moved in amount-window ⇒ VELOCITY_AMOUNT
+    count-window: 60s                    # short (per-minute) velocity window TTL (Redis INCR+EXPIRE)
+    amount-window: 1h                    # long (per-hour) rolling-sum window TTL
+    odd-hours-start-hour: 0              # overnight window [start, end) in the zone below
+    odd-hours-end-hour: 5
+    zone: America/Sao_Paulo             # Pix is domestic: read the transfer time in São Paulo
+    high-amount-weight: 70
+    velocity-count-weight: 40
+    velocity-amount-weight: 40
+    new-payee-weight: 15
+    odd-hours-weight: 10
+    review-band: 40
+    deny-band: 70

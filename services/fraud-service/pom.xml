@@ -47,6 +47,14 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- Bean Validation for the /score request body (accountId/pixKey NotBlank, amountCents Positive).
+             common-lib ships validation only in test scope, so a service that validates its own request
+             bodies declares the starter itself (same as payment-service). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
         <!-- Context-load IT (*IT → failsafe, runs on `mvn verify`). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

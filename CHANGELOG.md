@@ -29,6 +29,43 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- fraud-service rule-based `/score` (velocity, amount, novelty, hours) engineered for p99 < 150ms (step 24)
+  The endpoint-less skeleton from step 23 grows its first business operation: `POST /internal/fraud/score`
+  (authenticated, `/internal/**`), body `{accountId, pixKey, amountCents, timestamp?}` → `{decision:
+  APPROVE|REVIEW|DENY, score, reasons[]}`. Four **cheap, in-path** rules read only pre-computed Redis
+  features — no model, no DB, no network hop beyond Redis — which is *the* design point: heavy/ML scoring
+  runs asynchronously off the event stream and feeds block-lists this check would read, so the in-path
+  cost stays a handful of sub-millisecond ops well inside the 150ms internal target (leaving margin under
+  the caller's 200ms budget, step 25). Pieces:
+  **(1) The rule engine as a framework-free use case.** `ScoreFraudUseCase` (plain Java, ArchUnit-guarded)
+  reads three features via the `FraudSignalStore` port then evaluates: HIGH_AMOUNT (single value >
+  `high-amount-cents`), VELOCITY_COUNT (per-minute count ≥ threshold), VELOCITY_AMOUNT (per-hour rolling
+  sum > threshold — the "vs the account's own recent profile" signal, since fraud-service has no DynamoDB),
+  NEW_PAYEE (this account never paid this key) and ODD_HOURS (00:00–05:00 America/Sao_Paulo, Pix being
+  domestic). Each fired reason adds its weight to a capped 0–100 score; `≥ deny-band (70)` ⇒ DENY,
+  `≥ review-band (40)` ⇒ REVIEW, else APPROVE — so a single huge amount (weight 70) denies on its own.
+  All knobs live in `fraud.rules.*` bound by `FraudProperties` and handed to the domain as a plain
+  `FraudRules`, keeping `@ConfigurationProperties` out of `domain/`; the `Clock` is injected (odd-hours
+  fallback when the caller omits the timestamp — no `Instant.now()` in the use case, ADR-0011).
+  **(2) Redis velocity as `INCR`/`INCRBY` + `EXPIRE`, novelty as one `SADD`.** `RedisFraudSignalStore`
+  (`@Repository`, confined to `infra/`) arms each window's TTL only on the first increment, making it a
+  **tumbling** window — the accepted cheap-signal simplification over a sorted-set sliding window, a
+  drop-in upgrade behind the same port if ever needed. `SADD` returns whether the payee was newly added,
+  so novelty is a single round-trip with no read-then-write race; the payee set is persistent ("never
+  paid before", the chosen semantics). **Chosen order: record-then-decide** — this transfer counts itself
+  into velocity, so the N-th of a burst sees `count == N`; the trade-off is that scoring is *not*
+  idempotent (a retried `/score` double-counts), acceptable because velocity is a soft signal and the
+  caller fails open (revisited in step 25).
+  **(3) The latency budget as a standing metric.** The controller records every call through a dedicated
+  Micrometer `Timer` (`fraud.score`, with p50/p95/p99), so the target is observable in `/actuator/metrics`
+  (scraped by Prometheus in step 44) — not just a one-off test assertion. Tests: `ScoreFraudUseCaseTest`
+  (7 pure-domain cases against an in-memory fake — each rule and band in isolation), `FraudScoreIT`
+  (7 cases over a real Redis via Testcontainers — the four rule families, 400 on a non-positive amount,
+  401 without a token, plus a warm-p99-under-150ms sanity check). The `allowEmptyShould(true)` skeleton
+  crutches on `FraudArchitectureTest` were dropped now that `..api..`/`..domain..` match real classes.
+  Postman + API-explorer both gained a `Score a transfer` entry; README documents the endpoint, the rule
+  table and the tuning knobs. `mvn verify` green.
+  AI: est 3h / actual 2h / ~88% generated / 1 issue caught in human review
 - Redis container (ElastiCache stand-in) + fraud-service skeleton + RedisTestBase harness (step 23)
   Sprint 5 opens by bringing up the infrastructure fraud needs and scaffolding the service that will use
   it — **no business endpoint yet** (the rule-based `POST /internal/fraud/score` is step 24; the 200ms
