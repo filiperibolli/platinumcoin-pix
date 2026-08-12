@@ -23,9 +23,36 @@ Steps 11 (resolution seam), 26 (messaging), and needed by 31.
 - `ExternalDictIT` (account-service) — unknown internal key now resolves via mock-bacen; still-unknown ⇒ KEY_NOT_FOUND.
 
 ## Verify locally
+
+> **Correction (made while implementing).** The resolve command below needs a **token**: `/internal/**` is
+> deliberately not on the public allow-list (step-09 posture), so as originally written it answers `401`.
+> Mint one first, exactly as step 11's verify block does. mock-bacen's own endpoints need no token — BACEN
+> is outside PlatinumCoin's trust domain.
+
 ```bash
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+
 curl -s -X POST localhost:9090/admin/config -d '{"latencyMs":2000,"failureRate":0.0}' -H 'Content-Type: application/json'
-curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" | jq   # {internal:false, externalBank:...}
+curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" \
+  -H "Authorization: Bearer $TOKEN" | jq   # {internal:false, externalBank:"99999999", keyType:"EMAIL"}
+
+# the SPI rail: settle, then retry — same recordedAt ⇒ ONE settlement
+E2E=E12345678202608121000abc123
+curl -s -X POST localhost:9090/spi/settlements -H 'Content-Type: application/json' \
+  -d "{\"endToEndId\":\"$E2E\",\"creditorKey\":\"bob@otherbank.com\",\"amountCents\":20000}" | jq
+curl -s "localhost:9090/spi/settlements/$E2E" | jq        # SETTLED
+curl -s localhost:9090/spi/settlements/E-never-sent | jq  # 200 {status:"UNKNOWN"} — never a 404
+
+# fail closed: with BACEN down, an external key answers 503 DIRECTORY_UNAVAILABLE, not a misleading 404
+docker compose -f infra/docker-compose.yml stop mock-bacen-spi
+curl -si "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -3
+docker compose -f infra/docker-compose.yml start mock-bacen-spi
+
+# and the payoff: an EXTERNAL send now works end to end (202, money parked in SPI_CLEARING)
+curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1
 ```
 
 ## Definition of Done

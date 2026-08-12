@@ -42,9 +42,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * as <b>deltas</b>, because the stub ledger lives in the shared (cached) Spring context and the clearing
  * account is credited by more than one test.
  *
- * <p><b>Why the destination is stubbed as external.</b> account-service only knows internal keys until
- * mock-bacen's DICT lands (step 30), so end-to-end an external key still 404s there today; the branch
- * this step introduces is downstream of that resolution and is proven here on the resolver port.
+ * <p><b>Why the destination is stubbed as external.</b> Real external resolution needs account-service and
+ * mock-bacen's DICT running (step 30 wired that for the live stack), which no payment-service IT may depend
+ * on. The branch this step introduces is downstream of the resolution anyway, so it is proven here on the
+ * resolver port — hermetic, and unaffected by whether BACEN is up.
  */
 @SpringBootTest
 @AutoConfigureMockMvc

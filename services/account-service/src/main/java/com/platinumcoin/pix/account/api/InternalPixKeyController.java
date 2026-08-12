@@ -16,9 +16,14 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>Returns the {@link KeyResolution} record directly — the wire shape
  * {@code {internal, accountId?, externalBank?, keyType}} is identical to the domain result, so no
- * mirror DTO (ADR-0010). An unresolvable key becomes {@code 404 KEY_NOT_FOUND} via
- * {@link AccountExceptionHandler}; the external-delegation branch is a stub until step 30 (see
- * {@code ResolvePixKeyUseCase#resolveExternal}).
+ * mirror DTO (ADR-0010).
+ *
+ * <p><b>Three answers since step 30</b>, and telling them apart is the whole value of this endpoint:
+ * {@code 200 {internal:true, accountId}} for a key held here, {@code 200 {internal:false, externalBank}}
+ * for one held at another participant (BACEN's DICT answered), {@code 404 KEY_NOT_FOUND} only when
+ * <i>neither</i> directory knows it. A fourth case is deliberately kept out of that {@code 404}: if the
+ * external DICT cannot be reached, the answer is {@code 503 DIRECTORY_UNAVAILABLE} — see
+ * {@link AccountExceptionHandler} and {@code ExternalDirectoryUnavailableException}.
  */
 @RestController
 @RequestMapping("/internal/pix-keys")

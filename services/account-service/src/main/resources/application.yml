@@ -31,6 +31,18 @@ aws:
   access-key-id: ${AWS_ACCESS_KEY_ID:test}
   secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
 
+# Outbound dependencies. mock-bacen-spi plays BACEN's DICT: any Pix key NOT registered locally is
+# delegated to GET /spi/dict/{key} (step 30, closing the step-11 seam), and an answer turns the send into
+# its external branch. This lookup is on the SYNCHRONOUS send path with the payer waiting on it, so the
+# timeouts are tight — a container that is gone must surface as a timeout in well under a second, never as
+# a pinned request thread. A timeout (or any non-404 failure) becomes 503 DIRECTORY_UNAVAILABLE, never a
+# misleading 404: "I could not ask" and "it does not exist" are different facts (see HttpExternalDirectory).
+services:
+  bacen:
+    base-url: ${BACEN_BASE_URL:http://localhost:9090}
+    connect-timeout-ms: ${BACEN_CONNECT_TIMEOUT_MS:500}
+    read-timeout-ms: ${BACEN_READ_TIMEOUT_MS:1500}
+
 # Actuator: expose only what compose healthchecks and the runbook rely on.
 management:
   endpoints:

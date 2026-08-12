@@ -56,8 +56,18 @@ services:
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # mock-bacen-spi plays BACEN's DICT: a Pix key NOT registered locally is delegated to
+      # GET /spi/dict/{key} (step 30), which is what makes bob@otherbank.com resolve and the external
+      # send branch reachable. No bearer token is forwarded on this hop — BACEN is outside our trust
+      # domain. Unreachable/slow ⇒ 503 DIRECTORY_UNAVAILABLE, never a misleading 404.
+      BACEN_BASE_URL: http://mock-bacen-spi:9090
     depends_on:
       localstack:
+        condition: service_healthy
+      # Local-dev convenience only, NOT a correctness requirement: internal keys resolve with the SPI
+      # down, and an external lookup fails closed per request (503 + Retry-After) rather than poisoning
+      # the service. Gating startup here just means the first external send in a demo works immediately.
+      mock-bacen-spi:
         condition: service_healthy
     networks:
       - pix-net
@@ -193,6 +203,37 @@ services:
       - pix-net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8083/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # mock-bacen-spi — the controllable external dependency (Sprint 6, step 30). Two roles in one stub: the
+  # SPI rail (POST /spi/settlements, idempotent by endToEndId, with runtime-armable latency / failure /
+  # timeout injection) and the DICT (GET /spi/dict/{key}), which is what finally lets an external key
+  # resolve. Copies the auth-service "service in compose" block; it depends on nothing at all — no AWS, no
+  # Redis, no token — because it is deliberately outside PlatinumCoin (a real participant would reach it
+  # over mTLS with an ICP-Brasil certificate). Settlements are held IN MEMORY: restarting this container
+  # wipes BACEN's memory, which is a useful drill rather than a defect.
+  mock-bacen-spi:
+    build:
+      context: ..
+      dockerfile: services/mock-bacen-spi/Dockerfile
+    image: platinumcoin/mock-bacen-spi
+    container_name: mock-bacen-spi
+    ports:
+      - "9090:9090"
+    environment:
+      # The boot values of the dial; POST /admin/config moves them while the stack runs, which is the only
+      # way to express a drill like "fail the next five attempts" (docs/local-dev.md §5.5).
+      BACEN_LATENCY_MS: "2000"          # the real SPI settles within 10s; 2s keeps a demo honest but brisk
+      BACEN_FAILURE_RATE: "0.0"         # fraction answered 503, recording NOTHING (transient ⇒ retryable)
+      BACEN_TIMEOUT_RATE: "0.0"         # fraction that SETTLE and then hang — the query-before-retry case
+      BACEN_TIMEOUT_HANG_MS: "15000"    # must exceed the client's 12s timeout (step 31) to mean anything
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9090/actuator/health/readiness"]
       interval: 10s
       timeout: 5s
       retries: 5

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.platinumcoin.pix</groupId>
+        <artifactId>platinumcoin-pix-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>mock-bacen-spi</artifactId>
+    <packaging>jar</packaging>
+
+    <name>PlatinumCoin Pix — mock-bacen-spi</name>
+    <description>Stub of BACEN's SPI + DICT (port 9090): idempotent settlement by endToEndId with
+        configurable latency, failure and timeout injection, a status endpoint for reconciliation, a
+        runtime admin-config endpoint, and external-PSP key resolution. Not a domain service — it is
+        the controllable external dependency that makes the resilience work (Sprint 7) testable, so
+        ADR-0010's scope note grants it a thinner structure (no ports, no use cases, no ArchUnit).</description>
+
+    <!-- No <version> on any dependency: all versions come from the parent's BOMs. -->
+    <dependencies>
+        <!-- Shared library. A stub does not need the error model or JWT validation for its own sake —
+             it is here for ONE property: common-lib's logback config puts [cid=… tx=…] on every log
+             record and its RestClient customizer propagates the header. The SPI is a hop on the money
+             path, so `grep <correlationId>` must reconstruct it too (ADR-0012). The inherited
+             JwtAuthFilter is switched off by `jwt.public-paths: /**` — see application.yml. -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Web + Actuator: the service owns port 9090 and reports health. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Bean Validation: the settlement request (endToEndId, creditorKey, positive amountCents) and
+             the admin-config ranges (rates in [0,1], latency in [0,10000]) are guarded on the wire. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- MockMvc-based ITs (*IT → failsafe, runs on `mvn verify`). No Testcontainers: the stub
+             touches no AWS service and keeps its settlements in memory. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Repackage into a runnable, layered fat jar so `java -jar target/*.jar` and the
+                 Dockerfile's layered extraction both work (same pattern as the other services). -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -51,10 +51,12 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds |
 | `JWT_SECRET` | dev-only value in compose | HS256 signing/validation |
 | `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Balance cache |
-| `BACEN_BASE_URL` | `http://mock-bacen-spi:9090` | SPI stub |
-| `BACEN_LATENCY_MS` | `2000` | Simulated SPI latency (0–10000) |
-| `BACEN_FAILURE_RATE` | `0.0` | Fraction of SPI calls that 500 |
-| `BACEN_TIMEOUT_RATE` | `0.0` | Fraction of SPI calls that hang |
+| `BACEN_BASE_URL` | `http://mock-bacen-spi:9090` | SPI stub. Read by account-service (the DICT lookup for keys not held locally, step 30) and later by settlement-service |
+| `BACEN_CONNECT_TIMEOUT_MS` / `BACEN_READ_TIMEOUT_MS` | `500` / `1500` | account-service's budget for the DICT call — it is on the **synchronous** send path, so a gone SPI must surface as a timeout (→ `503 DIRECTORY_UNAVAILABLE`), never a pinned request thread |
+| `BACEN_LATENCY_MS` | `2000` | Simulated **settlement** latency (0–10000). Not applied to the DICT lookup, on purpose (see `services/mock-bacen-spi/README.md`) |
+| `BACEN_FAILURE_RATE` | `0.0` | Fraction of settlement calls answered `503` with **nothing recorded** — transient, so the same `endToEndId` can still settle on a retry |
+| `BACEN_TIMEOUT_RATE` | `0.0` | Fraction of settlement calls that **settle and then hang** — BACEN moved the money, the caller never heard. The query-before-retry case (step 32) |
+| `BACEN_TIMEOUT_HANG_MS` | `15000` | How long such a call hangs; must exceed the client's own 12s timeout (step 31) or a "timeout" is just a slow success. Boot-time only — `POST /admin/config` cannot lower it mid-drill |
 | `SPI_WEBHOOK_TOKEN` | dev-only value in compose | Authenticates mock-bacen's inbound webhook calls to settlement-service |
 | `FRAUD_TIMEOUT_MS` | `200` | Fraud budget in payment-service |
 | `SNS_TOPIC_ARN` | `arn:aws:sns:us-east-1:000000000000:pix-events` | Topic the outbox publisher drains into (injected, never looked up by name — ADR-0013) |
@@ -104,6 +106,29 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > Verify with `aws --endpoint-url=http://localhost:4566 sns list-topics | jq` and `… sqs list-queues | jq`
 > (the full command set is in §4, "Messaging"); the init log line to look for is
 > `[init] messaging ready: …`, which is also the readiness marker the test harness waits on.
+
+> **Step 30 (mock-bacen-spi).** `mock-bacen-spi` (9090) now comes up with the stack — the SPI rail
+> (`POST /spi/settlements`, idempotent by `endToEndId`, with runtime-armable latency/failure/timeout) plus
+> BACEN's DICT (`GET /spi/dict/{key}`). It depends on nothing: no AWS, no Redis, no token (BACEN is outside
+> PlatinumCoin's trust domain — a real participant would present mTLS + an ICP-Brasil certificate). Its
+> settlements live **in memory**, so restarting it wipes BACEN's memory — a drill, not a defect.
+>
+> Two things become true here. First, an **external key finally resolves**: account-service delegates any key
+> it does not hold to the DICT, so `bob@otherbank.com` answers `{internal:false, externalBank:"99999999"}`
+> and the external send path is live end to end (it had been the one gap left open by steps 27–29). Second,
+> the SPI is **armable at runtime** (`POST /admin/config`), which is what makes §5.5's drill expressible at
+> all — a boot-time-only configuration cannot say "fail the next five attempts".
+>
+> ```bash
+> curl -s localhost:9090/actuator/health | jq                      # {"status":"UP"}
+> curl -s localhost:9090/spi/dict/bob@otherbank.com | jq           # ispb 99999999, Banco OtherBank S.A.
+> curl -s localhost:9090/admin/config | jq                         # what is armed right now
+> curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" \
+>   -H "Authorization: Bearer $TOKEN" | jq                         # {internal:false, externalBank:"99999999"}
+> ```
+>
+> Nothing consumes `POST /spi/settlements` yet — settlement-service is step 31 — so the rail comes up idle
+> **on purpose**; it is exercised by hand (`services/mock-bacen-spi/README.md`) until then.
 
 ### How the build works (there is no service image in git)
 
@@ -636,6 +661,22 @@ curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
 curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
 ```
 
+**Resolution — the DICT role, and its four answers (steps 11 + 30).** The interesting one is the last:
+
+```bash
+# 1. held here (local table first — no network hop for a key we already own)
+curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $TOKEN" | jq
+# 2. held at another PSP — delegated to mock-bacen's DICT ⇒ the external send branch
+curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | jq
+# 3. nowhere at all ⇒ 404 KEY_NOT_FOUND (the only honest not-found)
+curl -si "localhost:8082/internal/pix-keys/resolve?key=nobody@nowhere.com" -H "Authorization: Bearer $TOKEN" | head -1
+# 4. FAIL CLOSED: with the DICT unreachable the answer is 503 DIRECTORY_UNAVAILABLE + Retry-After —
+#    NOT a 404, which would tell the payer their payee's key is invalid because OUR dependency is down.
+docker compose -f infra/docker-compose.yml stop mock-bacen-spi
+curl -si "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -3
+docker compose -f infra/docker-compose.yml start mock-bacen-spi
+```
+
 ### 5.3 Send Pix (internal: alice → bob's key)
 
 ```bash
@@ -648,6 +689,19 @@ curl -si -X POST localhost:8084/v1/payments/pix \
 
 # idempotency replay: run the SAME command again → same 202, SAME transactionId
 # tamper test: same $IDEM, different amount → 409 Conflict
+```
+
+**External send (live since step 30).** Same endpoint, a key held at another PSP: the destination now
+resolves through mock-bacen's DICT, so the send debits to `SPI_CLEARING` and answers `202 PROCESSING`
+without waiting for BACEN. It stays `DEBITED` until settlement-service consumes the event (step 31).
+
+```bash
+curl -si -X POST localhost:8084/v1/payments/pix \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" \
+  -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1     # 202
+curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
+  -H "Authorization: Bearer $TOKEN" | jq   # credited by exactly the amount in flight
 ```
 
 ### 5.4 Status + settlement observation
