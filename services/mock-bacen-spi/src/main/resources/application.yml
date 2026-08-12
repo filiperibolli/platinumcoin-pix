@@ -1,0 +1,77 @@
+server:
+  port: 9090
+
+spring:
+  application:
+    name: mock-bacen-spi
+
+# Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can arm
+# and disarm the failure injection from the browser. Permissive + credential-free by design; the CorsFilter
+# is ordered ahead of the JWT filter so pre-flights aren't 401'd. See config/CorsConfig.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
+# BACEN is an EXTERNAL party — it does not validate PlatinumCoin's JWTs. A real participant authenticates
+# to the SPI with mTLS and an ICP-Brasil certificate, which is a whole trust domain away from our HS256
+# token (ADR-0007). So every path here is on the public allow-list: the JwtAuthFilter is inherited from
+# common-lib (the dependency is there for the [cid=… tx=…] log pattern, ADR-0012) and neutralised by
+# configuration rather than removed — the shape stays identical to the real services, and the reason it is
+# open is written down instead of implied by a missing dependency. The secret is only present because the
+# filter builds its key eagerly; nothing here ever verifies a signature.
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  public-paths:
+    - /**
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups the compose healthcheck probes.
+      probes:
+        enabled: true
+
+# ── The dial the resilience work (Sprint 7) is tested against ─────────────────────────────────────────
+# These three are only the BOOT values; POST /admin/config moves them at runtime, because a failure drill
+# has to be armed while the stack is already running (docs/local-dev.md §5.5). They apply to
+# POST /spi/settlements ONLY — never to the DICT lookup, which sits on the synchronous send path where the
+# payer is waiting (p99 < 2s) and where slowness would prove nothing about settlement resilience.
+bacen:
+  # The real SPI settles within 10s in business hours; 2s is a default that makes the asynchronous
+  # nature of the flow visible in a demo without making it tedious.
+  latency-ms: ${BACEN_LATENCY_MS:2000}
+  # Fraction of settlement calls answered 503 with NOTHING recorded — a transient transport failure, so
+  # the same endToEndId can still settle on a retry (step 32 depends on exactly that).
+  failure-rate: ${BACEN_FAILURE_RATE:0.0}
+  # Fraction of settlement calls that SETTLE and then hang: BACEN moved the money, the caller never hears
+  # about it. The worst real failure mode, and the one query-before-retry exists for (step 32).
+  timeout-rate: ${BACEN_TIMEOUT_RATE:0.0}
+  # How long such a call hangs. Must sit past the client's own timeout (settlement-service allows 12s,
+  # step 31) or a "timeout" is just a slow success. Boot-time only, on purpose.
+  timeout-hang-ms: ${BACEN_TIMEOUT_HANG_MS:15000}
+  # The DICT: Pix keys held at OTHER participants. account-service delegates any key it does not hold
+  # locally to GET /spi/dict/{key} (step 30) and surfaces the ispb as `externalBank`. Keys need the
+  # [bracket] form because they contain dots and @ — Spring's relaxed binding would otherwise read them
+  # as nested property paths. bob@otherbank.com is the value every doc and runbook example uses.
+  dict:
+    "[bob@otherbank.com]":
+      ispb: "99999999"
+      participant: Banco OtherBank S.A.
+      key-type: EMAIL
+    "[carol@otherbank.com]":
+      ispb: "99999999"
+      participant: Banco OtherBank S.A.
+      key-type: EMAIL
+    "[+5511977776666]":
+      ispb: "88888888"
+      participant: Banco Segundo S.A.
+      key-type: PHONE
+    "[98765432100]":
+      ispb: "88888888"
+      participant: Banco Segundo S.A.
+      key-type: CPF

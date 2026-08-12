@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.account.infra.config;
 
 import com.platinumcoin.pix.account.domain.port.AccountRepository;
+import com.platinumcoin.pix.account.domain.port.ExternalDirectory;
 import com.platinumcoin.pix.account.domain.port.PixKeyRepository;
 import com.platinumcoin.pix.account.domain.usecase.DeletePixKeyUseCase;
 import com.platinumcoin.pix.account.domain.usecase.GetAccountUseCase;
@@ -57,7 +58,7 @@ public class AccountBeansConfig {
     }
 
     @Bean
-    ResolvePixKeyUseCase resolvePixKeyUseCase(PixKeyRepository keys) {
-        return new ResolvePixKeyUseCase(keys);
+    ResolvePixKeyUseCase resolvePixKeyUseCase(PixKeyRepository keys, ExternalDirectory externalDirectory) {
+        return new ResolvePixKeyUseCase(keys, externalDirectory);
     }
 }

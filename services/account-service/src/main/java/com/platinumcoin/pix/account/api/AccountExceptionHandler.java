@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.account.api;
 
 import com.platinumcoin.pix.account.domain.exception.AccountNotFoundException;
+import com.platinumcoin.pix.account.domain.exception.ExternalDirectoryUnavailableException;
 import com.platinumcoin.pix.account.domain.exception.InvalidPixKeyException;
 import com.platinumcoin.pix.account.domain.exception.PixKeyAlreadyExistsException;
 import com.platinumcoin.pix.account.domain.exception.PixKeyNotFoundException;
@@ -8,6 +9,7 @@ import com.platinumcoin.pix.account.domain.exception.PixKeyNotOwnedException;
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
@@ -31,6 +33,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>{@code 404 KEY_NOT_FOUND} — no key answers for the value (delete, and DICT resolve).</li>
  *   <li>{@code 403 KEY_FORBIDDEN} — the key exists but belongs to another account. Deliberately not
  *       a 404: Pix keys are globally resolvable, so their existence is not secret.</li>
+ *   <li>{@code 503 DIRECTORY_UNAVAILABLE} — BACEN's DICT could not be consulted for a key we do not hold
+ *       locally (step 30). Carries {@code Retry-After}, and is deliberately <b>not</b> collapsed into the
+ *       {@code 404} above: "we could not ask" must never be reported as "the key does not exist".</li>
  * </ul>
  *
  * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case, where the business stage
@@ -42,6 +47,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class AccountExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(AccountExceptionHandler.class);
+
+    /** Seconds a caller should wait before re-asking a key the external directory could not answer for. */
+    private static final String RETRY_AFTER_DIRECTORY_SECONDS = "5";
 
     @ExceptionHandler(AccountNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleAccountNotFound(AccountNotFoundException ex) {
@@ -66,6 +74,22 @@ public class AccountExceptionHandler {
     @ExceptionHandler(PixKeyNotOwnedException.class)
     public ResponseEntity<ProblemDetail> handleKeyNotOwned(PixKeyNotOwnedException ex) {
         return problem(HttpStatus.FORBIDDEN, "KEY_FORBIDDEN", ex.getMessage());
+    }
+
+    @ExceptionHandler(ExternalDirectoryUnavailableException.class)
+    public ResponseEntity<ProblemDetail> handleDirectoryUnavailable(
+            ExternalDirectoryUnavailableException ex) {
+        // Retry-After is the whole difference between this and a 404: nothing about the key was decided, so
+        // the caller is told to ask again rather than to believe the key is invalid. The cause chain is
+        // logged by the adapter, never returned.
+        log.warn("Mapped a domain failure to the client response | status={} code={} detail={} retryAfter={}",
+                HttpStatus.SERVICE_UNAVAILABLE.value(), "DIRECTORY_UNAVAILABLE", ex.getMessage(),
+                RETRY_AFTER_DIRECTORY_SECONDS);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, RETRY_AFTER_DIRECTORY_SECONDS)
+                .contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(ProblemDetailFactory.of(
+                        HttpStatus.SERVICE_UNAVAILABLE, "DIRECTORY_UNAVAILABLE", ex.getMessage()));
     }
 
     private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code, String detail) {

@@ -32,9 +32,18 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * refused here: a {@code 404} (the DICT knows no such key) and a malformed <i>internal</i> resolution
  * that names no account, both {@link KeyNotFoundException} ⇒ {@code 422}.
  *
- * <p>account-service can only answer {@code internal=false} once it delegates unknown keys to
- * mock-bacen's DICT (step 30); until then the external branch is unreachable over HTTP, which is why
- * the step-27 tests drive it on the port.
+ * <p>Since step 30 account-service does answer {@code internal=false}: it delegates keys it does not hold
+ * to mock-bacen's DICT, so the external branch is now reachable over real HTTP. The step-27 tests still
+ * drive it on the port, which keeps them hermetic.
+ *
+ * <p><b>Known gap, noted in step 30 and left for the step-45 error-contract audit.</b> A non-404 from that
+ * lookup is rethrown here unmapped, so it reaches the payer as a generic {@code 500}. Step 30 made one such
+ * answer newly reachable: account-service replies {@code 503 DIRECTORY_UNAVAILABLE} when BACEN's DICT cannot
+ * be consulted, and the payer sees {@code 500} instead of the {@code 503 + Retry-After} the ledger-unavailable
+ * path already gets right. It is a contract wart, not a money bug: resolution runs <b>first</b> in the
+ * orchestration (resolve → limit → fraud → debit), so nothing is reserved and nothing is debited, and the
+ * in-progress idempotency claim it leaves behind is the ordinary claim-crash window ADR-0002 already covers
+ * (a retry 409s until the claim goes stale, then re-claims).
  */
 @Component
 public class HttpPixKeyResolver implements PixKeyResolver {

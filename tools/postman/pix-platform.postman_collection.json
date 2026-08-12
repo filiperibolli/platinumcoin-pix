@@ -426,7 +426,7 @@
                   "pm.test('internal key', () => pm.expect(body.internal).to.be.true);",
                   "pm.test('resolves to an account', () => pm.expect(body.accountId).to.be.a('string'));",
                   "// Register `alice@platinum.com` first (Register Pix key) so this resolves; an unknown",
-                  "// key ⇒ 404 KEY_NOT_FOUND (external-PSP delegation is deferred to step 30)."
+                  "// key ⇒ 404 KEY_NOT_FOUND only when BACEN's DICT does not hold it either (step 30)."
                 ]
               }
             }
@@ -456,7 +456,51 @@
                 }
               ]
             },
-            "description": "account-service's DICT role (ADR-0006 internal seam): resolve a Pix key to its destination. An internal key ⇒ `{internal:true, accountId, keyType}` (register it first via `Register Pix key`); an unknown key ⇒ 404 problem+json (`code: KEY_NOT_FOUND`). The final `{internal, accountId?, externalBank?, keyType}` shape is fixed now — external-PSP delegation lands in step 30. Requires a valid token (`/internal/**` is not public); the incoming key is lowercase-normalized to mirror registration."
+            "description": "account-service's DICT role (ADR-0006 internal seam): resolve a Pix key to its destination. An internal key ⇒ `{internal:true, accountId, keyType}` (register it first via `Register Pix key`). The local `pix_keys` table is tried **first** and BACEN's DICT is not consulted at all for a key we already hold — this is the hottest read on the send path, so it must not pay a network hop.\n\nSince step 30 a key we do *not* hold is delegated to BACEN's DICT (see the sibling request `Resolve Pix key (external / BACEN DICT)`); `404 KEY_NOT_FOUND` now means unknown to **both** directories, and a DICT that cannot be reached answers `503 DIRECTORY_UNAVAILABLE` instead. Requires a valid token (`/internal/**` is not public); the incoming key is lowercase-normalized to mirror registration."
+          }
+        },
+        {
+          "name": "Resolve Pix key (external / BACEN DICT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('resolved as EXTERNAL', () => pm.expect(body.internal).to.eql(false));",
+                  "pm.test('carries the holder ISPB and no local account', () => { pm.expect(body.externalBank).to.eql('99999999'); pm.expect(body.accountId).to.be.oneOf([null, undefined]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{accountBaseUrl}}/internal/pix-keys/resolve?key=bob@otherbank.com",
+              "host": [
+                "{{accountBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "pix-keys",
+                "resolve"
+              ],
+              "query": [
+                {
+                  "key": "key",
+                  "value": "bob@otherbank.com"
+                }
+              ]
+            },
+            "description": "The step-11 seam, closed in step 30. `bob@otherbank.com` is registered nowhere in PlatinumCoin, so account-service delegates the lookup to BACEN's DICT (`GET /spi/dict/{key}` on mock-bacen) and answers `{internal:false, externalBank:\"99999999\"}` — which is what makes the **external** send branch reachable (debit to `SPI_CLEARING`, settle asynchronously).\n\n**Four answers, and telling them apart is the point:** held here → `{internal:true, accountId}`; held elsewhere → this response; known to **neither** directory → `404 KEY_NOT_FOUND`; and the DICT **unreachable** → `503 DIRECTORY_UNAVAILABLE` + `Retry-After`, deliberately not a 404 — telling a payer their payee's key does not exist because *our* dependency is down is a lie that also discourages the retry that would work. Try it: `docker compose stop mock-bacen-spi` and re-send.\n\nThe local table is tried **first**, so an internal key costs zero network hops — this is the hottest read on the send path."
           }
         },
         {
@@ -1358,11 +1402,341 @@
           }
         }
       ]
+    },
+    {
+      "name": "mock-bacen-spi",
+      "description": "BACEN's **SPI** (the instant-payment rail) and **DICT** (key directory), stubbed — port 9090. The one component whose job is to *misbehave on demand*: latency, failure and timeout are armable at runtime (`POST /admin/config`), which is what makes Sprint 7's retries, DLQ and reconciliation testable at all. **No token on any request here**: BACEN is outside PlatinumCoin's trust domain (a real participant presents mTLS + an ICP-Brasil certificate), so `jwt.public-paths` is `/**`. Settlements are held in memory — restarting the container wipes BACEN's memory, which is a drill, not a defect. See services/mock-bacen-spi/README.md.",
+      "item": [
+        {
+          "name": "Settle a Pix (200 SETTLED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('settled', () => pm.expect(body.status).to.eql('SETTLED'));",
+                  "pm.test('money stays integer cents', () => pm.expect(body.amountCents).to.eql(20000));",
+                  "pm.collectionVariables.set('spiRecordedAt', body.recordedAt);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endToEndId\": \"E12345678202608121000abc123\",\n  \"creditorKey\": \"bob@otherbank.com\",\n  \"amountCents\": 20000,\n  \"debtorIspb\": \"12345678\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/spi/settlements",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "spi",
+                "settlements"
+              ]
+            },
+            "description": "Settle one Pix over the rail. **Idempotent by `endToEndId`** — the first terminal outcome for an id wins forever and a replay is byte-for-byte the original answer, `recordedAt` included. That indistinguishability is what makes retrying after a timeout *safe* rather than merely likely to work: the caller needs no special case for \"maybe it already happened\".\n\nSend this request twice and compare `recordedAt` — it does not move. Money is integer cents on the wire (`amountCents`), never a decimal string. A creditor key no participant holds ⇒ `422 SPI_REJECTED` (permanent — step 33 reverses on it); with `failureRate` armed ⇒ `503 SPI_UNAVAILABLE` (transient — **nothing recorded**, so the same id can still settle)."
+          }
+        },
+        {
+          "name": "Settle a Pix — replay the same endToEndId (one settlement)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('replays the FIRST settlement, not a second one', () => pm.expect(body.recordedAt).to.eql(pm.collectionVariables.get('spiRecordedAt')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endToEndId\": \"E12345678202608121000abc123\",\n  \"creditorKey\": \"bob@otherbank.com\",\n  \"amountCents\": 20000,\n  \"debtorIspb\": \"12345678\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/spi/settlements",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "spi",
+                "settlements"
+              ]
+            },
+            "description": "Run *Settle a Pix* first, then this: same `endToEndId`, and the answer carries the original `recordedAt`. One settlement, not two — the third layer of the platform's idempotency (ADR-0002: API key → ledger `txId` → SPI `endToEndId`), and the layer that makes step 32's retry loop safe.\n\nTry changing `amountCents` here: the **recorded** amount is replayed and the mismatch is logged loudly. An `endToEndId` identifies one transfer; a second amount is not a correction."
+          }
+        },
+        {
+          "name": "Settlement status (SETTLED / FAILED / UNKNOWN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK — even for an id the SPI never saw', () => pm.response.to.have.status(200));",
+                  "pm.test('carries one of the three answers', () => pm.expect(pm.response.json().status).to.be.oneOf(['SETTLED','FAILED','UNKNOWN']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{bacenBaseUrl}}/spi/settlements/E12345678202608121000abc123",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "spi",
+                "settlements",
+                "E12345678202608121000abc123"
+              ]
+            },
+            "description": "What became of an `endToEndId` — the lookup reconciliation lives on (ADR-0003), and the one a caller must make **before** retrying a settlement that timed out (step 32).\n\n**Always `200`, never `404`.** \"I have never heard of this id\" is an answer the caller has to act on, and a `404` would be indistinguishable from a typo in the URL — so absence is reported in the body as `UNKNOWN`, with no amount (reporting `0` for a transfer the SPI never saw would be a lie reconciliation might act on). Edit the id in the path to `E-never-sent` to see it."
+          }
+        },
+        {
+          "name": "Arm a failure drill (failureRate = 1.0)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('failure injection armed', () => pm.expect(pm.response.json().failureRate).to.eql(1.0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"failureRate\": 1.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/admin/config",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "config"
+              ]
+            },
+            "description": "Break the rail **while the stack is running** — the drills this exists for are sequences, not states (\"send a payment, *then* break BACEN, watch the retries, un-break it\"), and restarting a container between those steps would reset the SPI's memory of every settlement.\n\n**Partial by design:** an absent field is left unchanged, so this arms one knob without resetting a latency set a moment earlier. Out-of-range values (a \"probability\" above 1, a latency beyond the real SPI's 10s SLA) are refused with `400 VALIDATION_ERROR` rather than clamped silently — a drill must not pass against a fiction. `0.0`/`1.0` are exact, never probabilistic."
+          }
+        },
+        {
+          "name": "Disarm (failureRate = 0.0, latency 2s)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('rail healthy again', () => { const b = pm.response.json(); pm.expect(b.failureRate).to.eql(0.0); pm.expect(b.timeoutRate).to.eql(0.0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latencyMs\": 2000,\n  \"failureRate\": 0.0,\n  \"timeoutRate\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/admin/config",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "config"
+              ]
+            },
+            "description": "Put the rail back to the compose defaults. Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.\n\n`timeoutRate` is the interesting knob to try instead: a rolled timeout **settles and then hangs** past the caller's timeout, manufacturing the nastiest state in distributed payments — the money moved and the caller believes it did not. That is the case *Settlement status* exists to reveal."
+          }
+        },
+        {
+          "name": "Current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{bacenBaseUrl}}/admin/config",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "config"
+              ]
+            },
+            "description": "What is armed right now, including the read-only `timeoutHangMs` — so a confusing run can be explained instead of guessed at. `timeoutHangMs` is boot-time configuration: a value lowerable mid-drill would turn a \"timeout\" into a slow success."
+          }
+        },
+        {
+          "name": "DICT — resolve an external key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('names the holding participant', () => { const b = pm.response.json(); pm.expect(b.ispb).to.eql('99999999'); pm.expect(b.keyType).to.eql('EMAIL'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{bacenBaseUrl}}/spi/dict/bob@otherbank.com",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "spi",
+                "dict",
+                "bob@otherbank.com"
+              ]
+            },
+            "description": "Which participant holds a Pix key → `{key, keyType, ispb, participant}`. This is what account-service calls for any key it does not hold locally (step 30), and the ISPB it surfaces as `externalBank`.\n\n**Deliberately outside the failure injection:** this lookup sits on the *synchronous* send path with the payer waiting on it (p99 < 2s), while settlement is the asynchronous half nobody waits for — slowing the directory would blow the send SLO and prove nothing about settlement resilience. Seeded keys: `bob@otherbank.com`, `carol@otherbank.com` (ISPB 99999999), `+5511977776666`, `98765432100` (ISPB 88888888). Anything else ⇒ `404 DICT_KEY_NOT_FOUND`."
+          }
+        },
+        {
+          "name": "DICT — unknown key (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('problem+json with a stable code', () => pm.expect(pm.response.json().code).to.eql('DICT_KEY_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{bacenBaseUrl}}/spi/dict/nobody@nowhere.com",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "spi",
+                "dict",
+                "nobody@nowhere.com"
+              ]
+            },
+            "description": "No participant holds this key — the **only** case in which a payer may be told the key does not exist. Every other outcome of this call (connection refused, timeout, `5xx`) means \"we could not ask\", which account-service refuses to translate into \"does not exist\": it answers `503 DIRECTORY_UNAVAILABLE` instead."
+          }
+        },
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{bacenBaseUrl}}/actuator/health",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
     }
   ],
   "variable": [
     {
       "key": "paymentTxId",
+      "value": ""
+    },
+    {
+      "key": "spiRecordedAt",
       "value": ""
     }
   ]

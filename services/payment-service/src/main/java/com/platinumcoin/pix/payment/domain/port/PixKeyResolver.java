@@ -17,8 +17,9 @@ import com.platinumcoin.pix.payment.domain.model.KeyResolution;
  * in one atomic posting, an external one is debited to the clearing account and settled asynchronously.
  * A key that resolves nowhere is a {@link KeyNotFoundException}, never a third value in the record.
  *
- * <p>Note that "external" only becomes reachable end-to-end once account-service delegates unknown keys
- * to mock-bacen's DICT (step 30); until then that branch is exercised on this port, not over HTTP.
+ * <p>"External" became reachable end-to-end in step 30, when account-service began delegating keys it does
+ * not hold to mock-bacen's DICT; the branch is still also exercised directly on this port, which keeps the
+ * payment-service tests hermetic.
  */
 public interface PixKeyResolver {
 

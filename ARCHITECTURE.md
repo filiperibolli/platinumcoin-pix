@@ -164,7 +164,7 @@ graph TB
 | **settlement-service** | settlement lifecycle | Consumes `settlement-queue`, calls BACEN SPI, retries with backoff, DLQ, confirms/reverses via ledger + payment status; **reconciliation job** (<5 min); receives inbound Pix from mock-bacen; writes immutable audit records to S3. |
 | **fraud-service** | fraud rules/state | Synchronous `/score` (rule-based: velocity, amount, new payee, odd hours) engineered for p99 < 150ms, leaving margin inside the 200ms budget. |
 | **notification-service** | client connections | Consumes `notification-queue`, pushes events over **SSE** to connected clients (SSE chosen over WebSocket: one-directional push, simpler, HTTP-native). |
-| **mock-bacen-spi** | nothing (stub) | Simulates SPI: `POST /spi/settlements` with configurable latency (0–10s) and failure/timeout rates; `GET /spi/settlements/{endToEndId}` for reconciliation; `POST /simulate/inbound-pix` to generate incoming Pix. |
+| **mock-bacen-spi** | nothing (stub; settlements in memory) | Simulates the SPI rail and the DICT: `POST /spi/settlements` (idempotent by `endToEndId`) with latency (0–10s), failure and timeout injection **armable at runtime** via `POST /admin/config`; `GET /spi/settlements/{endToEndId}` for reconciliation (`SETTLED`/`FAILED`/`UNKNOWN`, always `200`); `GET /spi/dict/{key}` for external-PSP key resolution (step 30); `POST /simulate/inbound-pix` to generate incoming Pix (step 37). Outside PlatinumCoin's trust domain — validates none of our tokens. |
 
 **Why this decomposition (summary of ADR-0006):** boundaries follow domain seams with different consistency, latency and scaling profiles — the ledger needs strict serializable-ish writes; fraud needs low-latency reads and can be scaled/replaced independently; settlement is IO-bound on a slow external system; notifications hold long-lived connections. Splitting them keeps failure domains small (fraud down ≠ payments down, thanks to fail-open) and matches team ownership at a real fintech. The cost — network hops, distributed debugging, eventual consistency between services — is accepted and mitigated with the outbox pattern and correlation ids.
 
@@ -351,7 +351,10 @@ and the Testcontainers harness lands in common-lib so integration tests never de
 **Global key uniqueness** is the critical invariant, enforced by a **conditional `PutItem`**
 (`attribute_not_exists(pk)`) — the DynamoDB equivalent of a `UNIQUE` constraint, with no read-then-write
 race. Internal key resolution (the hot lookup in every send) is served here; delegation to BACEN's DICT
-for *external* keys arrives in Sprint 6, when mock-bacen exists.
+for *external* keys arrives in Sprint 6 (step 30), when mock-bacen exists — and it is a *fall-through*, so an
+internal key never pays a network hop. When that DICT cannot be consulted the answer is
+`503 DIRECTORY_UNAVAILABLE`, never a `404`: "we could not ask" and "it does not exist" are different facts,
+and only one of them is worth telling a payer.
 
 ```mermaid
 sequenceDiagram

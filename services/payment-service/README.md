@@ -113,8 +113,9 @@ transaction (step 28, below), consumed in step 31, and reconciled in Sprint 7. T
 **configuration** (`pix.clearing-account-id`, default `SPI_CLEARING`), never a literal, so step 52 can
 shard it into `SPI_CLEARING#00..#15` without touching the orchestration. Failure mapping is unchanged
 from the internal path (`INSUFFICIENT_FUNDS` ⇒ `422` + reservation released; ledger down ⇒ `503`,
-nothing debited). Note that an external key only resolves end-to-end once mock-bacen's DICT lands
-(**step 30**); until then the branch is proven on the resolver port by `ExternalSendIT`.
+nothing debited). Since **step 30** an external key resolves end-to-end for real — account-service delegates
+keys it does not hold to mock-bacen's DICT — so `bob@otherbank.com` now takes this branch over live HTTP;
+`ExternalSendIT` continues to prove it hermetically on the resolver port.
 
 **Fraud in the path (step 25, ADR-0005).** Between the limit reservation and the debit, the use case
 scores the send against fraud-service (`POST /internal/fraud/score`) under a **hard 200ms client budget**
@@ -319,8 +320,8 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
 docker compose -f infra/docker-compose.yml start fraud-service
 
 # external send (step 27) ⇒ 202, tx persisted DEBITED, money parked in SPI_CLEARING.
-# NOTE: an external key only RESOLVES once mock-bacen's DICT lands (step 30); until then this returns
-# 422 KEY_NOT_FOUND from account-service's lookup, and the branch is covered by ExternalSendIT.
+# Live since step 30: bob@otherbank.com resolves via account-service → mock-bacen's DICT (ISPB 99999999).
+# (With mock-bacen stopped the send fails fast with 503 from the resolution, not a misleading 422.)
 curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H 'Idempotency-Key: '"$(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1

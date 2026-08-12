@@ -47,6 +47,100 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- mock-bacen-spi: settlement + status + admin-config endpoints and external DICT resolution (step 30)
+  The platform gains a dependency it can **break on purpose**, and with it the last missing piece of the
+  external send path. Two roles in one stub on port 9090: the **SPI rail** (`POST /spi/settlements`,
+  idempotent by `endToEndId`; `GET /spi/settlements/{endToEndId}`; `POST|GET /admin/config`) and **BACEN's
+  DICT** (`GET /spi/dict/{key}`), which closes the delegation seam step 11 left marked.
+  **Why a controllable dependency is a deliverable, not a test fixture.** Every reliability claim Sprint 7
+  will make — retries with backoff, DLQ redrive, query-before-retry, reconciliation inside 5 minutes — is a
+  claim about *what happens when BACEN misbehaves*. You cannot test that against something that always
+  works, and you cannot ask the real SPI to fail on cue. So the failure modes became first-class and
+  **armable while the stack runs**: the drills are sequences ("send a payment, *then* break BACEN, watch the
+  retries, un-break it"), and a boot-time-only configuration cannot express "fail the next five attempts" —
+  restarting the container to change a value would also wipe the SPI's memory of every settlement, which is
+  the very state the drill is about. `POST /admin/config` is deliberately **partial** (an absent field is
+  left unchanged, so arming one knob does not reset another) and refuses out-of-range values with a `400`
+  rather than clamping them: a rate above 1 or a latency past the real SPI's 10s SLA would let a drill pass
+  against a fiction. `0.0`/`1.0` are **exact**, short-circuited before any random draw — every drill and
+  every IT is written with those two values, so they must be guarantees, not near-certainties.
+  **The three failure injections are three different truths, and conflating any two would break Sprint 7.**
+  An injected `503` records **nothing** (transient: the *transport* failed, not the transfer — so the same
+  `endToEndId` still settles on a retry; recording it as `FAILED` would make step 32's retry drill
+  structurally impossible). A rejection — creditor key held by no participant in the DICT — is **terminal**
+  `422 SPI_REJECTED` recorded as `FAILED`, because retrying cannot change a business refusal and the payer
+  must be made whole by a compensating posting (step 33). And a rolled **timeout settles first and then
+  hangs**, manufacturing the nastiest state in distributed payments: BACEN moved the money and the caller
+  believes nothing happened. That third one is the whole reason step 32's *query-before-retry* rule exists,
+  and it cannot be written against a dependency that does not lie in exactly this way.
+  **Idempotency by `endToEndId`, made observable.** The first terminal outcome for an id wins forever and a
+  replay is **byte-for-byte** the original response, `recordedAt` included — indistinguishability is what
+  makes "retry after a timeout" *safe* rather than merely likely to work, since the caller needs no special
+  case for "maybe it already happened". A retry carrying a *different* amount replays the amount actually
+  settled and logs the mismatch loudly (an `endToEndId` identifies one transfer; a second amount is not a
+  correction). The outcome is computed inside `computeIfAbsent` so 32 concurrent retries settle **once**
+  (proven by a storm test that counts decisions, not reads) — while the configured latency is slept
+  *outside* the store, since a 2s sleep holding a map bin would serialise unrelated ids under load.
+  **`GET /spi/settlements/{id}` always answers `200`, never `404`.** "I have never heard of this id" is an
+  answer reconciliation must be able to act on, and a `404` is indistinguishable from a wrong URL or the
+  wrong service; so absence is reported in the body as `UNKNOWN`, carrying **no** amount — a fabricated `0`
+  for a transfer the SPI never saw is exactly the kind of lie reconciliation must not act on.
+  **The DICT is deliberately outside the injection.** Key resolution sits on the *synchronous* send path
+  with the payer waiting on it (p99 < 2s); settlement is the asynchronous half nobody waits for. Slowing the
+  directory would blow the send SLO and prove nothing about settlement resilience.
+  **account-service now delegates, and fails closed (the step-11 seam, closed).** `ExternalDirectory` (a new
+  outbound port) + `HttpExternalDirectory` turn an unknown key into a DICT lookup, so
+  `bob@otherbank.com` finally answers `{internal:false, externalBank:"99999999"}` and the **external send
+  works end to end** — the one gap steps 27–29 had left open. The local table is tried **first**: the
+  hottest read on the send path pays zero network hops for a key we already hold, and a key registered here
+  is authoritatively ours. Resolution now has *four* answers, and the fourth is the interesting decision: a
+  DICT that cannot be consulted (unreachable / timeout / `5xx`) is **`503 DIRECTORY_UNAVAILABLE` +
+  `Retry-After`**, never the tempting `404`. No money moves either way, so this is an honesty decision, and
+  the deliberate **opposite** of the fraud fail-*open* (ADR-0005): there, proceeding unscored carries
+  bounded, quantified risk and blocking every payment would be worse; here there is no destination to
+  proceed to, so the only question left is what to tell the caller — and a `404` would say "your payee's key
+  does not exist" on the strength of *our* outage, reading as final and discouraging the one action that
+  helps. The client carries a hard budget (connect 500ms / read 1500ms) for the same reason, and forwards
+  **no** bearer token: BACEN is outside PlatinumCoin's trust domain (a real participant presents mTLS + an
+  ICP-Brasil certificate), which is also why the stub neutralises the inherited `JwtAuthFilter` by
+  configuration (`jwt.public-paths: /**`) instead of dropping the dependency — the reason it is open is then
+  written down rather than implied by an absence. It keeps common-lib for one property that matters: the
+  `[cid=… tx=…]` pattern (ADR-0012), verified live — one `grep <correlationId>` now spans payment →
+  account → **the SPI** → back.
+  **ADR-0010's stub exemption, used deliberately:** `api/` + a thin `spi/` core + `config/`, with no ports,
+  no `domain/`, no use-case layer and no ArchUnit test. Those layers exist to protect money invariants and
+  there are none here; inventing a hexagonal domain for a fake would be ceremony that makes the codebase
+  harder to read. The exemption is bounded — module + POM, Dockerfile, compose block, README, CORS, Postman
+  folder (9 requests) and API-explorer section (7 cards) all shipped as usual.
+  Tests: `SpiSettlementIT` (12 — settle then report SETTLED, byte-identical replay, a retry that changes the
+  amount, `UNKNOWN` without a `404`, the injected `503` recording nothing *and then settling*, the timeout
+  that settles-then-hangs, permanent rejection staying rejected, latency actually burned, partial admin
+  update, out-of-range refusal, a non-positive amount refused before any settlement, and the no-token trust
+  boundary stated as a decision), `SpiDictIT` (5 — including that the DICT ignores the settlement dial),
+  `SettlementStoreTest` (4 — incl. a 32-thread storm settling once), `SpiBehaviorTest` (4 — 500 draws proving
+  the exact extremes), and on the account side `ExternalDictIT` (5, driving the real adapter over a JDK
+  `HttpServer` stub: external resolution, normalised delegation, a foreign key kind degrading to `null`
+  rather than sinking a payable destination, `404` from both directories, and an internal key never touching
+  the DICT) plus `ResolvePixKeyUseCaseTest` (7, its step-11 red assertion now flipped green).
+  `KeyResolutionIT`'s unknown-key case **changed meaning rather than disappearing**: with the DICT
+  unreachable it is now the fail-closed test (`503`), while the `404` case moved to `ExternalDictIT` where a
+  directory is actually running — two contexts, two distinct truths. `mvn verify` green across all six
+  modules, and verified on the live stack: external key resolved, R$200 parked in `SPI_CLEARING` from a real
+  `202`, the failure/rejection/unknown paths and the BACEN-down `503` all reproduced by hand.
+  **Known gap, noted not fixed (CLAUDE.md: don't fix adjacent things silently):** payment-service rethrows
+  any non-`404` from the resolve lookup unmapped, so the new `503 DIRECTORY_UNAVAILABLE` reaches the payer as
+  a generic `500` instead of a `503 + Retry-After`. A contract wart, not a money bug — resolution runs first
+  (resolve → limit → fraud → debit), so nothing is reserved and nothing is debited, and the in-progress
+  idempotency claim left behind is the ordinary claim-crash window ADR-0002 already covers. Filed against the
+  step-45 error-contract audit. Also still idle by design: nothing consumes `POST /spi/settlements` until
+  settlement-service lands in step 31.
+  **Doc drift closed in the same change:** the "external keys do not resolve until step 30" notes in
+  payment-service's README and three javadocs, account-service's README (four answers + the new config), the
+  `mock-bacen-spi` row and the Sprint-2 note in `ARCHITECTURE.md`, `docs/local-dev.md` (§3 env table incl. the
+  corrected `503`-not-`500` behaviour and the new `BACEN_TIMEOUT_HANG_MS`, a §4 step-30 note, §5.2's four
+  resolution answers, §5.3's external send), and `docs/steps/step-30.md` itself — whose verify command
+  omitted the bearer token and therefore answered `401` as written (`/internal/**` is not public).
+  AI: est 3.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - Outbox polling publisher (sparse GSI → SNS) with publish-then-mark and a ProcessedEventStore consumer-dedup table (step 29)
   The events step 28 made *durable* now become *delivered* — ADR-0004 is complete. `OutboxPublisher`
   (`@Scheduled` 1s) asks `PublishOutboxEventsUseCase` for a bounded batch off the sparse `gsi3`

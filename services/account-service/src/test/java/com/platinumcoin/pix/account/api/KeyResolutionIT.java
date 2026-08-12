@@ -12,6 +12,7 @@ import static org.hamcrest.Matchers.is;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -19,11 +20,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * HTTP behaviour of the internal DICT resolution endpoint over the real seeded {@code pix_keys} table.
  * account-service plays BACEN's DICT for keys living inside PlatinumCoin: a registered internal key
  * resolves to its owning account in the final {@code {internal, accountId?, externalBank?, keyType}}
- * shape; an unknown key is {@code 404 KEY_NOT_FOUND} (external delegation deferred to step 30). The
- * endpoint sits behind the shared {@code JwtAuthFilter} ({@code /internal/**} is not public), so it
- * requires a valid token.
+ * shape. The endpoint sits behind the shared {@code JwtAuthFilter} ({@code /internal/**} is not public),
+ * so it requires a valid token.
+ *
+ * <p><b>This class deliberately runs with the external DICT unreachable</b> ({@code services.bacen.base-url}
+ * points at a port nothing listens on), which since step 30 makes it the home of a different question:
+ * <i>what does resolution answer when BACEN cannot be asked?</i> The answer is {@code 503
+ * DIRECTORY_UNAVAILABLE}, not {@code 404} — failing closed with the truth. The other half, an unknown key
+ * with the DICT <i>up</i> and answering {@code 404}, lives in {@link ExternalDictIT} where a stub directory
+ * is actually running. Two contexts, two distinct truths; neither is a duplicate of the other.
  */
-@SpringBootTest
+@SpringBootTest(properties = "services.bacen.base-url=http://127.0.0.1:1")
 @AutoConfigureMockMvc
 class KeyResolutionIT extends LocalStackTestBase {
 
@@ -62,13 +69,19 @@ class KeyResolutionIT extends LocalStackTestBase {
     }
 
     @Test
-    void unknownKeyReturns404KeyNotFound() throws Exception {
-        // External delegation is deferred to step 30, so an unknown key is a not-found today.
+    void whenTheExternalDictCannotBeReachedResolutionFailsClosedInsteadOfLying() throws Exception {
+        // A key we do not hold locally, with BACEN unreachable. The tempting answer is 404 — and it would be
+        // a lie built on our own outage: the payer would be told their payee's key does not exist, and would
+        // reasonably give up or re-type a key that was correct. 503 + Retry-After says what is actually true
+        // ("we could not ask") and points at the one action that helps. No money moves either way, so this is
+        // an honesty decision, not a money-safety one — and the deliberate opposite of the fraud fail-open
+        // (ADR-0005), where proceeding without an answer carries bounded risk and blocking would be worse.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "someone@otherbank.com")
                         .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
-                .andExpect(status().isNotFound())
+                .andExpect(status().isServiceUnavailable())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.code", is("KEY_NOT_FOUND")));
+                .andExpect(jsonPath("$.code", is("DIRECTORY_UNAVAILABLE")))
+                .andExpect(header().string("Retry-After", is("5")));
     }
 
     @Test

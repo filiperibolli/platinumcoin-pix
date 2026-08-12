@@ -27,7 +27,7 @@ flow (Domain Safety Rule #1).
 | `POST` | `/v1/pix-keys` | Bearer | Register a Pix key (`CPF`/`EMAIL`/`PHONE`/`EVP`). EVP ⇒ server-generated UUID. `201` → `{keyType, keyValue, createdAt}`. Owner from the JWT. |
 | `GET` | `/v1/pix-keys` | Bearer | List the caller's Pix keys (scoped to the JWT account) → `[{keyType, keyValue, createdAt}]`. |
 | `DELETE` | `/v1/pix-keys/{keyValue}` | Bearer | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
-| `GET` | `/internal/pix-keys/resolve?key=…` | Bearer | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key; unknown ⇒ `404 KEY_NOT_FOUND` (external delegation deferred to step 30). |
+| `GET` | `/internal/pix-keys/resolve?key=…` | Bearer | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key, `{internal:false, externalBank:<ispb>}` for one held at another PSP (delegated to mock-bacen, step 30); unknown in **both** ⇒ `404 KEY_NOT_FOUND`; DICT unreachable ⇒ `503 DIRECTORY_UNAVAILABLE`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND`. No token ⇒ `401`
@@ -45,17 +45,29 @@ Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND
   (not `404`). Pix keys are globally resolvable identifiers, so their existence is not secret — unlike
   a foreign `transactionId`, which returns `404` (step 22) to avoid leaking that it exists.
 
-### Key resolution — the DICT role (step 11)
+### Key resolution — the DICT role (steps 11 + 30)
 
 `GET /internal/pix-keys/resolve?key=…` is account-service acting as BACEN's **DICT** for keys living
-inside PlatinumCoin — the hot lookup on the send path (every Pix resolves its destination key first,
-step 21). The answer uses the **final** shape now, even though the external branch is still a stub:
+inside PlatinumCoin, and delegating everything else to the real registry (mock-bacen locally) — the hot
+lookup on the send path (every Pix resolves its destination key first, step 21). Four answers:
 
-- **internal key found** ⇒ `200 {internal:true, accountId, keyType}` (`externalBank` omitted/null).
-- **unknown key** ⇒ `404 KEY_NOT_FOUND`. External-PSP delegation is deferred to **step 30**, when
-  mock-bacen exists — a `// TODO(step 30)` seam in `ResolvePixKeyUseCase.resolveExternal` marks it.
-  Designing `{internal, accountId?, externalBank?, keyType}` up front lets the send orchestration code
-  against the final contract; the external path slots in later without a reshape.
+- **internal key found** ⇒ `200 {internal:true, accountId, keyType}` (`externalBank` null). The local
+  `pix_keys` table is tried **first** and the external DICT is not consulted at all — a key we already hold
+  must not pay a network round-trip, and a key registered here is authoritatively ours.
+- **held at another PSP** ⇒ `200 {internal:false, externalBank:<ispb>}` (`accountId` null): the send takes
+  its external branch — debit to the clearing account, settle asynchronously (step 27).
+- **unknown in both directories** ⇒ `404 KEY_NOT_FOUND`. The only honest not-found.
+- **the external DICT could not be consulted** (unreachable, timeout, `5xx`) ⇒ `503 DIRECTORY_UNAVAILABLE`
+  with `Retry-After`. Deliberately **not** folded into the `404`: telling a payer their payee's key does not
+  exist on the strength of *our* outage is a lie, and one that discourages the retry that would work. No
+  money moves either way, so this is an honesty decision — and the exact opposite of the fraud
+  fail-**open** (ADR-0005), where proceeding without an answer carries bounded risk and blocking every
+  payment would be worse. Here there is no destination to proceed to, so the only question left is what to
+  tell the caller. The timeouts are tight (connect 500ms / read 1500ms) because this sits on the
+  synchronous send path.
+
+The step-11 bet paid off: fixing `{internal, accountId?, externalBank?, keyType}` before the external branch
+existed meant step 30 added a *factory*, not a migration — no caller reshaped, no contract renegotiated.
 
 The incoming key is **lowercase-normalized before lookup**, mirroring registration (EMAIL is stored
 lowercase). So a payer who typed `Alice@x.com` still resolves the registration stored as `alice@x.com`;
@@ -81,13 +93,15 @@ api/    AccountController (/v1/accounts/me), InternalAccountController (/interna
         PixKeyController (/v1/pix-keys), InternalPixKeyController (/internal/pix-keys/resolve),
         AccountResponse, InternalAccountResponse, RegisterPixKeyRequest, PixKeyResponse,
         AccountExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/model/     Account, PixKey, KeyResolution (records), PixKeyType (enum)          (plain Java)
-domain/port/      AccountRepository, PixKeyRepository                          (outbound interfaces)
-domain/exception/ AccountNotFound / InvalidPixKey / PixKeyAlreadyExists /
-                  PixKeyNotFound / PixKeyNotOwned exceptions                           (plain Java)
+domain/model/     Account, PixKey, KeyResolution, ExternalDirectoryEntry (records),
+                  PixKeyType (enum)                                                    (plain Java)
+domain/port/      AccountRepository, PixKeyRepository, ExternalDirectory       (outbound interfaces)
+domain/exception/ AccountNotFound / InvalidPixKey / PixKeyAlreadyExists / PixKeyNotFound /
+                  PixKeyNotOwned / ExternalDirectoryUnavailable exceptions             (plain Java)
 domain/usecase/   GetMyAccountUseCase, GetAccountUseCase, RegisterPixKeyUseCase,
                   ListPixKeysUseCase, DeletePixKeyUseCase, ResolvePixKeyUseCase         (plain Java)
 infra/persistence/ DynamoAccountRepository, DynamoPixKeyRepository (AWS SDK)
+infra/client/      HttpExternalDirectory (mock-bacen DICT, hard timeouts)       (outbound adapter)
 infra/config/      DynamoConfig, AccountBeansConfig (composition root + Clock),
                    AwsProperties, CorsConfig                                (outbound adapter + wiring)
 ```
@@ -111,6 +125,8 @@ interface in `domain/` — which is what makes "a controller may not reach a rep
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `BACEN_BASE_URL` / `services.bacen.base-url` | `http://localhost:9090` | mock-bacen's DICT, for keys not held locally (step 30). No bearer token is forwarded on this hop — BACEN is outside our trust domain. |
+| `BACEN_CONNECT_TIMEOUT_MS` / `BACEN_READ_TIMEOUT_MS` | `500` / `1500` | Hard budget for the DICT call; it is on the synchronous send path, so a gone container must surface as a timeout (→ `503`), never a pinned request thread. |
 
 ## Run
 
@@ -144,9 +160,16 @@ curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' | jq
 curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
 
-# key resolution / DICT role (step 11) — internal key resolves; unknown ⇒ 404 (external deferred to step 30)
+# key resolution / DICT role (steps 11 + 30)
 curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $TOKEN" | jq
-curl -si "localhost:8082/internal/pix-keys/resolve?key=someone@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -1
+# external: delegated to mock-bacen's DICT ⇒ {internal:false, externalBank:"99999999"}
+curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | jq
+# unknown in BOTH directories ⇒ 404 KEY_NOT_FOUND
+curl -si "localhost:8082/internal/pix-keys/resolve?key=nobody@nowhere.com" -H "Authorization: Bearer $TOKEN" | head -1
+# fail-closed: stop the SPI and the same call answers 503 DIRECTORY_UNAVAILABLE, never a misleading 404
+docker compose -f infra/docker-compose.yml stop mock-bacen-spi
+curl -si "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -1
+docker compose -f infra/docker-compose.yml start mock-bacen-spi
 
 curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorization: Bearer $TOKEN" -i
 ```

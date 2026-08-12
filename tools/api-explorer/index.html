@@ -356,8 +356,13 @@
             headers: {}, body: null,
           },
           {
-            method: 'GET', path: '/internal/pix-keys/resolve?key=alice@platinum.com', title: 'Resolve a Pix key (DICT)', auth: true, capturesToken: false,
-            desc: 'account-service\'s DICT role: resolve a Pix key to its destination. An internal key ⇒ {internal:true, accountId, keyType} — register alice@platinum.com first (Register a Pix key) so it resolves. An unknown key ⇒ 404 (code: KEY_NOT_FOUND): external-PSP delegation is deferred to step 30, but the {internal, accountId?, externalBank?, keyType} shape is final now. Requires a valid token (/internal/** is not public); the key is lowercase-normalized to mirror registration. Edit the ?key= value to try another.',
+            method: 'GET', path: '/internal/pix-keys/resolve?key=alice@platinum.com', title: 'Resolve a Pix key (internal / DICT)', auth: true, capturesToken: false,
+            desc: 'account-service\'s DICT role: resolve a Pix key to its destination. An internal key ⇒ {internal:true, accountId, keyType} — register alice@platinum.com first (Register a Pix key) so it resolves. The local pix_keys table is tried FIRST and BACEN\'s DICT is not consulted at all for a key we already hold: this is the hottest read on the send path, so it must not pay a network hop. Requires a valid token (/internal/** is not public); the key is lowercase-normalized to mirror registration. Edit the ?key= value to try another — and see the next card for a key held at another bank.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/pix-keys/resolve?key=bob@otherbank.com', title: 'Resolve a Pix key (external / BACEN DICT)', auth: true, capturesToken: false,
+            desc: 'The step-11 seam, closed in step 30. bob@otherbank.com is registered nowhere in PlatinumCoin, so account-service delegates the lookup to BACEN\'s DICT (mock-bacen, GET /spi/dict/{key}) and answers {internal:false, externalBank:"99999999"} with accountId null — no local account is named for a key held elsewhere. That verdict is what makes the EXTERNAL send branch reachable: debit to SPI_CLEARING, settle asynchronously. Four answers in total, and telling them apart is the whole value of this endpoint: held here, held elsewhere, known to NEITHER directory ⇒ 404 KEY_NOT_FOUND, and the DICT UNREACHABLE ⇒ 503 DIRECTORY_UNAVAILABLE + Retry-After. That last one is deliberately not a 404: telling a payer their payee\'s key does not exist because OUR dependency is down is a lie, and one that discourages the retry that would work. Prove it: `docker compose -f infra/docker-compose.yml stop mock-bacen-spi`, re-Send, then start it again.',
             headers: {}, body: null,
           },
           {
@@ -476,6 +481,50 @@
             desc: 'Rule-based in-path score → {decision, score, reasons[]} under a p99 < 150ms budget. Four cheap rules read pre-computed Redis features — no model, no DB, no hop beyond Redis (heavy/ML scoring runs async off the event stream and feeds block-lists this check reads): HIGH_AMOUNT (single value over R$5,000), VELOCITY_COUNT / VELOCITY_AMOUNT (rolling per-minute / per-hour INCR+EXPIRE windows), NEW_PAYEE (persistent SADD set — first time this account pays this key) and ODD_HOURS (00:00–05:00 São Paulo). Each fired reason adds its weight to a 0–100 score; ≥70 → DENY, ≥40 → REVIEW, else APPROVE. This first small daytime transfer scores only NEW_PAYEE (15) → APPROVE. Try DENY: set amountCents to 5000000 (HIGH_AMOUNT alone hits the deny band). Try REVIEW: Send this 5+ times quickly with the same accountId (VELOCITY_COUNT crosses the threshold). accountId is a body field here — this is an internal service-to-service seam, and payment-service (which took the account from ITS token) forwards it as data; /internal/** is still authenticated, so a token is attached. timestamp is optional (server clock used if omitted).',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ accountId: 'acc-001', pixKey: 'bob@platinum.com', amountCents: 12550, timestamp: '2026-07-07T12:00:00Z' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
+      {
+        id: 'bacen', name: 'mock-bacen-spi', port: 9090, baseUrl: 'http://localhost:9090',
+        blurb: 'BACEN\'s SPI (the instant-payment rail) and DICT (key directory), stubbed — the one component whose job is to MISBEHAVE ON DEMAND. Latency, failure and timeout are armable while the stack runs (POST /admin/config), which is what makes Sprint 7\'s retries, DLQ and reconciliation testable instead of merely hoped for. No token on any card here: BACEN is outside PlatinumCoin\'s trust domain (a real participant presents mTLS + an ICP-Brasil certificate), so every path is public by configuration. Settlements live in memory — restarting the container wipes BACEN\'s memory, which is a drill, not a defect. Since step 30 its DICT is what finally lets an EXTERNAL Pix key resolve, closing the seam step 11 left marked.',
+        endpoints: [
+          {
+            method: 'POST', path: '/spi/settlements', title: 'Settle a Pix (200 SETTLED)', auth: false, capturesToken: false,
+            desc: 'Settle one Pix over the rail. IDEMPOTENT BY endToEndId: the first terminal outcome for an id wins forever, and a replay is byte-for-byte the original answer — recordedAt included. Send this card twice and watch recordedAt NOT move: that indistinguishability is what makes retrying after a timeout safe rather than merely likely to work, because the caller needs no special case for "maybe it already happened". Money is integer cents on the wire (amountCents), never a decimal string. Change creditorKey to a key no participant holds (e.g. ghost@nowhere.com) ⇒ 422 SPI_REJECTED, recorded as FAILED and permanent — retrying cannot change it, so step 33 reverses instead. With failureRate armed ⇒ 503 SPI_UNAVAILABLE, which records NOTHING (transient), so the same id can still settle afterwards.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ endToEndId: 'E12345678202608121000abc123', creditorKey: 'bob@otherbank.com', amountCents: 20000, debtorIspb: '12345678' }, null, 2),
+          },
+          {
+            method: 'GET', path: '/spi/settlements/E12345678202608121000abc123', title: 'Settlement status (SETTLED / FAILED / UNKNOWN)', auth: false, capturesToken: false,
+            desc: 'What became of an endToEndId — the lookup reconciliation lives on (ADR-0003), and the one a caller MUST make before retrying a settlement that timed out (step 32). Always 200, never 404: "I have never heard of this id" is an answer the caller has to act on, and a 404 would be indistinguishable from a typo in the URL — so absence is reported in the body as UNKNOWN, carrying no amount (reporting 0 for a transfer the SPI never saw would be a lie reconciliation might act on). Edit the id in the path to E-never-sent to see it.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'POST', path: '/admin/config', title: 'Arm a failure drill (failureRate = 1.0)', auth: false, capturesToken: false,
+            desc: 'Break the rail WHILE THE STACK RUNS. The scenarios this exists for are sequences, not states — "send a payment, THEN break BACEN, watch the retries, un-break it, watch it settle" — and restarting the container between those steps would reset the SPI\'s memory of every settlement, destroying the state the drill is about. A configuration you can only set at boot cannot express "fail the next five attempts". Partial by design: an absent field is left unchanged, so this arms one knob without resetting a latency set a moment earlier. 0.0 and 1.0 are EXACT, never probabilistic. Out-of-range values (a "probability" above 1, a latency beyond the real SPI\'s 10s SLA) are refused 400 VALIDATION_ERROR rather than clamped silently — a drill must not pass against a fiction. Try {"timeoutRate":1.0} instead: a rolled timeout SETTLES and then hangs, manufacturing the nastiest state in payments (the money moved, the caller believes it did not) — which is exactly what the status card above reveals.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ failureRate: 1.0 }, null, 2),
+          },
+          {
+            method: 'POST', path: '/admin/config', title: 'Disarm (back to compose defaults)', auth: false, capturesToken: false,
+            desc: 'Put the rail back: 2s latency, no injected failures. Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latencyMs: 2000, failureRate: 0.0, timeoutRate: 0.0 }, null, 2),
+          },
+          {
+            method: 'GET', path: '/admin/config', title: 'Current config', auth: false, capturesToken: false,
+            desc: 'What is armed right now, including the read-only timeoutHangMs — so a confusing run can be explained instead of guessed at. timeoutHangMs is boot-time configuration: a value lowerable mid-drill would turn a "timeout" into a slow success, so it must sit past the client\'s own 12s timeout (step 31).',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/spi/dict/bob@otherbank.com', title: 'DICT — which bank holds this key', auth: false, capturesToken: false,
+            desc: 'Which participant holds a Pix key → {key, keyType, ispb, participant}. This is what account-service calls for any key it does not hold locally (step 30), and the ISPB it surfaces as externalBank — the answer that turns a send into its external branch. Seeded keys: bob@otherbank.com, carol@otherbank.com (ISPB 99999999), +5511977776666, 98765432100 (ISPB 88888888); anything else ⇒ 404 DICT_KEY_NOT_FOUND. The DICT is deliberately OUTSIDE the failure injection: this lookup sits on the synchronous send path with the payer waiting on it (p99 < 2s), while settlement is the asynchronous half nobody waits for — slowing the directory would blow the send SLO and prove nothing about settlement resilience.',
+            headers: {}, body: null,
           },
           {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
