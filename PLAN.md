@@ -75,7 +75,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 26](docs/steps/step-26.md) — LocalStack init: SNS `pix-events` + `settlement-queue` (+DLQ, redrive, filter policy)
 - [x] [Step 27](docs/steps/step-27.md) — external orchestration: ledger debit → `SPI_CLEARING`; status DEBITED
 - [x] [Step 28](docs/steps/step-28.md) — transactional outbox: tx + outbox item in one TransactWriteItems
-- [ ] [Step 29](docs/steps/step-29.md) — outbox polling publisher: sparse GSI → SNS; `ProcessedEventStore` (consumer dedup)
+- [x] [Step 29](docs/steps/step-29.md) — outbox polling publisher: sparse GSI → SNS; `ProcessedEventStore` (consumer dedup)
 - [ ] [Step 30](docs/steps/step-30.md) — mock-bacen-spi: settlement endpoint (latency/failure/timeout config) + external DICT resolve
 - [ ] [Step 31](docs/steps/step-31.md) — settlement-service: consume settlement-queue, call SPI, mark SETTLED (happy path)
 

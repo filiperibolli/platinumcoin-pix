@@ -29,7 +29,7 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@otherbank.com","amount":"12.00"}' | jq
 aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
-  --index-name GSI3 --key-condition-expression 'gsi3pk = :p' \
+  --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
   --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Items | length'
 # → briefly 1, then 0 once the 1s publisher drains it (gsi3pk removed = published)
 ```
@@ -44,7 +44,7 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
 ```bash
 # after traffic settles, the unpublished index length trends to 0:
 aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
-  --index-name GSI3 --key-condition-expression 'gsi3pk = :p' \
+  --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
   --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Count'
 ```
 

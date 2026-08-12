@@ -323,9 +323,24 @@ At-least-once delivery (outbox + SQS) means consumers **will** see duplicates. E
 |---|---|
 | PK | `CONSUMER#<name>#EVT#<eventId>` |
 | SK | `META` |
-| TTL | 7 days |
+| TTL | attribute `expiresAt` (epoch seconds, +7 days) |
 
-If the conditional put fails → duplicate → ack the message and skip. This one small table is what makes "at-least-once + idempotent consumer = effectively-once" real across the whole platform.
+```json
+{
+  "pk": "CONSUMER#settlement-service#EVT#evt-7a2b",
+  "sk": "META",
+  "consumer": "settlement-service",
+  "eventId": "evt-7a2b",
+  "processedAt": "2026-07-02T12:34:57.031Z",
+  "expiresAt": 1752150897
+}
+```
+
+If the conditional put fails → duplicate → ack the message and skip. This one small table is what makes "at-least-once + idempotent consumer = effectively-once" real across the whole platform. Created by `infra/localstack/init/07-processed-events.sh`; the shared implementation is `common-lib`'s `ProcessedEventStore.markProcessed(consumer, eventId)` (step 29).
+
+The consumer name is part of the **key**, not an attribute: settlement, notification and audit all consume the same event and each must see it exactly once — a shared key would let whichever consumed first silently starve the others.
+
+> **TTL, and which way it is safe to be wrong.** DynamoDB deletes expired items lazily, so an expired-but-still-present record keeps answering "duplicate" — the consumer *skips* a side effect rather than repeating one. That is the opposite of `pix_idempotency` (§5), where a read must treat an expired-but-present record as absent. The asymmetry is deliberate: here a false "duplicate" costs a skipped notification, while a false "new" could pay twice. Seven days is chosen to outlive every redelivery window that can still produce a duplicate (SQS retention, the DLQ, and the reconciliation loop of step 35 all close far sooner).
 
 ---
 

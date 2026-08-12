@@ -56,6 +56,19 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- DynamoDB SDK v2, OPTIONAL (step 29 promoted it from test scope): ProcessedEventStore —
+             the shared consumer-dedup gate every queue consumer must call before its side effect
+             (ADR-0004/ADR-0006) — is a DynamoDB adapter, so common-lib has to compile against the
+             SDK. `optional` keeps it OFF the transitive classpath, exactly like the web types
+             below: the consumers that dedupe (settlement, notification, audit) already declare the
+             SDK themselves, and auth-service, which touches no AWS at all, stays clean. common-lib
+             stays THIN. Version via the AWS SDK BOM in the parent. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Web types are OPTIONAL: common-lib compiles the filter, @RestControllerAdvice and
              RestClientCustomizer against them, but does NOT force web onto every consumer.
              Each service brings its own spring-boot-starter-web; the auto-configuration is
@@ -113,13 +126,6 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>localstack</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <!-- DynamoDB SDK v2 in test scope so the smoke IT can read a seeded item; version via the
-             AWS SDK BOM in the parent. Not a runtime dependency of common-lib. -->
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>dynamodb</artifactId>
             <scope>test</scope>
         </dependency>
         <!-- SNS + SQS SDKs, TEST scope only (step 26): MessagingInitIT asserts the messaging

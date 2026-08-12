@@ -171,20 +171,40 @@ is `REMOVE gsi3pk`, so the index stays O(in-flight)), a fixed-width millisecond 
 key, and the request's `correlationId`, so one `grep` still follows a payment after it goes asynchronous.
 The envelope itself (`OutboxEvent` + `EventEnvelope`) lives in `common-lib` and names no broker.
 
+**Outbox polling publisher (step 29, ADR-0004).** Every second (`fixedDelay`, so ticks never overlap)
+`OutboxPublisher` asks `PublishOutboxEventsUseCase` for a bounded batch of waiting events — a Query on
+the sparse `gsi3`, oldest first — publishes each to SNS `pix-events` with `eventType`/`eventId`/
+`correlationId` as **message attributes** (SNS filter policies match attributes, never the body), and
+only **then** removes `gsi3pk` so the item leaves the index. The order is the decision: a crash after the
+publish costs a *duplicate* (every consumer dedupes by `eventId` via `common-lib`'s
+`ProcessedEventStore`), while marking first would cost a *lost* event — an external payment's money
+parked in clearing with nothing to settle it. So delivery is deliberately **at-least-once**. A failed
+publish leaves its event in the index for the next tick and does not stop the batch (no ordering is
+promised across redeliveries; blocking would only add head-of-line blocking), and the
+`outbox.lag` gauge — the age of the oldest waiting event — is what exposes one that is stuck.
+Polling, not DynamoDB Streams: against a 10s SPI SLA a 1s poll is invisible, and a sparse index makes it
+O(in-flight) rather than O(history); Streams remains the documented evolution, and swapping it in
+replaces `OutboxPublisher` + `SnsEventPublisher` and nothing else.
+
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
 api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPixRequest (wire shape
         + bean validation), PaymentAcceptedResponse (internal state → external "PROCESSING"),
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
-        PaymentExceptionHandler (domain exception → problem+json)                  (inbound adapters)
-domain/model/     Transaction (record), TransactionStatus (enum: RECEIVED, DEBITED, SETTLED),
+        PaymentExceptionHandler (domain exception → problem+json),
+        OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `outbox.lag` gauge)
+                                                                                   (inbound adapters)
+domain/model/     Transaction (record), PendingOutboxEvent (a stored event awaiting publication),
+                  TransactionStatus (enum: RECEIVED, DEBITED, SETTLED),
                   KeyResolution (where a destination key lives: internal | external PSP),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
                   FraudDecision (enum: APPROVE, REVIEW, DENY, SKIPPED),
                   Money (string → strictly-positive long cents)                       (plain Java)
 domain/port/      TransactionRepository, IdempotencyRepository, PixKeyResolver, LedgerClient,
-                  AccountLimitClient, DailyLimitReservation, FraudScorer        (outbound interfaces)
+                  AccountLimitClient, DailyLimitReservation, FraudScorer,
+                  OutboxEventStore (the sparse index), EventPublisher (broker-agnostic by design)
+                                                                                (outbound interfaces)
 domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededException,
                   FraudDeniedException, InsufficientFundsException, LedgerUnavailableException,
                   AccountLookupException, PaymentNotFoundException, IdempotencyKeyRequiredException,
@@ -192,15 +212,20 @@ domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededExc
                   TransactionWriteConflictException                                   (plain Java)
 domain/service/   EndToEndIdGenerator (BACEN E2E id minting),
                   PixOutboxEvents (which events an accepted send announces)           (plain Java)
-domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase (plain Java)
+domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase,
+                  PublishOutboxEventsUseCase + PublishOutboxOutcome (publish-then-mark) (plain Java)
 infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
-                   DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter)
+                   DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter),
+                   DynamoOutboxEventStore (Query gsi3 oldest-first, UpdateItem REMOVE gsi3pk)
 infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
                    HttpLedgerClient (RestClient → ledger-service, timeouts),
                    HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
-                   — all forward the bearer token
-infra/config/      DynamoConfig, PaymentBeansConfig (composition root: Clock, EndToEndIdGenerator,
-                   clearing account id, use cases), AwsProperties, CorsConfig  (outbound adapter + wiring)
+                   — all forward the bearer token —,
+                   SnsEventPublisher (envelope + eventType/eventId/correlationId attributes → SNS)
+infra/config/      DynamoConfig, SnsConfig (client + topic ARN), SchedulingConfig (@EnableScheduling,
+                   guarded by pix.schedulers.enabled), PaymentBeansConfig (composition root: Clock,
+                   EndToEndIdGenerator, clearing account id, use cases), AwsProperties, CorsConfig
+                                                                        (outbound adapter + wiring)
 ```
 
 `Clock` is injected rather than read as `Instant.now()`: the transaction's instant, and the minute
@@ -225,6 +250,10 @@ mechanical rather than a review habit.
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `SNS_TOPIC_ARN` / `pix.events.topic-arn` | `arn:aws:sns:us-east-1:000000000000:pix-events` | The topic the outbox publisher drains into (step 29). Injected, never looked up by name: a deployed service holds `sns:Publish` on exactly this ARN and may not list topics (ADR-0013). |
+| `OUTBOX_PUBLISHER_DELAY_MS` / `pix.outbox.publisher.fixed-delay-ms` | `1000` | Poll interval of the outbox publisher. `fixedDelay` (not rate), so a slow tick never overlaps the next and cannot publish the same event twice. |
+| `OUTBOX_PUBLISHER_BATCH_SIZE` / `pix.outbox.publisher.batch-size` | `25` | Max events one tick may publish — a backlog drains in bounded chunks, never one unbounded write storm. |
+| `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs. Integration tests set it `false` and drive the tick explicitly (Spring caches contexts; a live poller would drain the shared table mid-assertion). |
 
 ## Run
 
@@ -298,8 +327,9 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
 curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
   -H "Authorization: Bearer $TOKEN" | jq   # credited by exactly the amount in flight
 
-# outbox (step 28): every send left an UNPUBLISHED event on the sparse index, written in the same
-# transaction as the payment. Nothing drains it until step 29, so the count only grows.
+# outbox (step 28): every send leaves an UNPUBLISHED event on the sparse index, written in the same
+# transaction as the payment. Since step 29 the 1s publisher drains it, so this count is briefly 1
+# and then back to 0 — run it immediately after a send to catch the event in flight.
 aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
   --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
   --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' \
@@ -309,6 +339,14 @@ aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transac
 aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
   --key-condition-expression 'pk = :p' \
   --expression-attribute-values '{":p":{"S":"TX#<txId>"}}' | jq '.Items[].sk.S'
+
+# publisher (step 29): one log line per event that goes out, and the event on the subscribed queue
+docker compose -f infra/docker-compose.yml logs payment-service | grep 'Outbox item published'
+aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
+  $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue \
+      --query QueueUrl --output text) | jq '.Messages[0] | {body: .Body, attrs: .MessageAttributes}'
+# publisher liveness: seconds the oldest unpublished event has waited (0.0 on a drained outbox)
+curl -s localhost:8084/actuator/metrics/outbox.lag | jq
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the

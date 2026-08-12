@@ -33,6 +33,39 @@ public final class CorrelationId {
         return MDC.get(MDC_KEY);
     }
 
+    /**
+     * Adopt the ids carried by a piece of work that was created elsewhere — the other half of
+     * {@link #current()}, for the threads no HTTP filter ever runs on: an outbox publisher tick, a
+     * queue consumer, a reconciliation scan.
+     *
+     * <p>Without this the ids exist only as <i>values inside</i> the event, so they would have to be
+     * hand-written into every log statement — precisely what ADR-0012 forbids, because the moment one
+     * statement forgets, {@code grep <correlationId>} silently returns an incomplete path. Restoring
+     * them into the MDC instead makes the shared log <b>pattern</b> carry them, so every line the
+     * worker emits while handling that event — ours, Spring's, the AWS SDK's — is prefixed
+     * {@code [cid=… tx=…]} for free.
+     *
+     * <p>Always pair with {@link #clear()} in a {@code finally}: worker threads are pooled and reused,
+     * so a leaked id would mislabel the next unrelated piece of work. A {@code null} or blank value is
+     * simply not set (the pattern then prints its own placeholder), never an empty MDC entry.
+     */
+    public static void restore(String correlationId, String txId) {
+        put(MDC_KEY, correlationId);
+        put(TX_ID_MDC_KEY, txId);
+    }
+
+    /** Drop the ids {@link #restore} put on this thread. Safe to call when nothing was set. */
+    public static void clear() {
+        MDC.remove(MDC_KEY);
+        MDC.remove(TX_ID_MDC_KEY);
+    }
+
+    private static void put(String key, String value) {
+        if (value != null && !value.isBlank()) {
+            MDC.put(key, value);
+        }
+    }
+
     private CorrelationId() {
     }
 }
