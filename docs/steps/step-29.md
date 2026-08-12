@@ -11,6 +11,24 @@ The **delivery** half of the outbox (ADR-0004): polling, not Streams. A 1s Query
 ## Prerequisites
 Steps 26, 28.
 
+> **Divergences recorded on completion (2026-08-12).**
+> 1. **The second "Verify locally" command returns nothing yet, and that is correct.** A message only
+>    reaches `settlement-queue` if it is a `PixDebited` (the subscription's filter policy, step 26), and
+>    a `PixDebited` requires an **external** send — whose key cannot resolve until mock-bacen's DICT
+>    lands in step 30. Internal sends announce `PixSettled`, which SNS filters out by design. The full
+>    publish → filter → queue path is proven in `OutboxPublisherIT` (external send over a stubbed
+>    resolver); live, the drain is observed through the log line, the sparse-index count and
+>    `outbox.lag` (see the extra commands below). Same root cause as step 27's recorded divergence.
+> 2. **Scheduling is off in integration tests.** Spring caches contexts across test classes, so a live
+>    1s publisher would drain the shared table while `OutboxWriteIT` (step 28) asserts an event is still
+>    unpublished. Every background job is therefore `@ConditionalOnProperty("pix.schedulers.enabled")`
+>    (default true) and `LocalStackTestBase` sets it false; ITs drive the tick explicitly. Recorded as a
+>    convention in `CLAUDE.md`, together with "`api/` is inbound adapters, not only controllers".
+> 3. **ADR-0012 gap closed here** (not in the task list, but required by the logging rules for any new
+>    behaviour): publisher lines ran on the scheduler thread with `[cid=n/a tx=n/a]`, so one `grep
+>    <correlationId>` no longer reconstructed the whole path. `CorrelationId.restore(...)`/`clear()` was
+>    added in common-lib and the use case adopts the event's own ids while publishing it.
+
 ## Tasks
 1. `OutboxPublisher` (`@Scheduled(fixedDelay=1000)`): query GSI3 oldest-first, publish to SNS with message attributes, `UpdateItem REMOVE gsi3pk`. Handle partial failures (leave unpublished → retried next tick).
 2. `outbox.lag` gauge (oldest unpublished age) for the silence alert (step 44).
@@ -25,6 +43,13 @@ Steps 26, 28.
 docker compose -f infra/docker-compose.yml logs -f payment-service | grep 'Outbox item published'
 aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
   $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue --query QueueUrl --output text) | jq
+# (empty until step 30 — see divergence 1 above; these three show the drain today:)
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+  --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
+  --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Count'   # briefly 1, then 0
+curl -s localhost:8084/actuator/metrics/outbox.lag | jq          # 0.0s on a drained outbox
+docker compose -f infra/docker-compose.yml logs payment-service | grep '<correlationId of a send>'
+# ⇒ one grep spans request → ledger → atomic write → publish → mark (ADR-0012)
 ```
 
 ## Definition of Done

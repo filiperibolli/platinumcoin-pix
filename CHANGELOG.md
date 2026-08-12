@@ -47,6 +47,65 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- Outbox polling publisher (sparse GSI → SNS) with publish-then-mark and a ProcessedEventStore consumer-dedup table (step 29)
+  The events step 28 made *durable* now become *delivered* — ADR-0004 is complete. `OutboxPublisher`
+  (`@Scheduled` 1s) asks `PublishOutboxEventsUseCase` for a bounded batch off the sparse `gsi3`
+  (oldest first), publishes each to SNS `pix-events`, and only **then** removes `gsi3pk`.
+  **The ordering is the decision, not an implementation detail.** Both orderings can crash halfway, so
+  the question is *which way to fail*: publish-then-mark costs a **duplicate** (recoverable — every
+  consumer dedupes by `eventId`), mark-then-publish costs a **lost event** (unrecoverable — for an
+  external send, money parked in `SPI_CLEARING` with no settlement flow that will ever pick it up).
+  Delivery is therefore deliberately **at-least-once**, and `OutboxPublisherIT` proves exactly that
+  window: an event whose `gsi3pk` survived the publish is republished on the next tick, same `eventId`.
+  **Why the index is sparse.** A GSI only holds items carrying its key attributes, so "published" *is*
+  "no longer in the index" — the poll costs O(in-flight), never O(history), which is what makes a 1s
+  tick affordable against five years of settled payments. A `published=true` flag would have inverted
+  that. The item itself stays in its transaction's partition as the audit record of what was announced.
+  **Why polling and not Streams:** against a 10s SPI SLA and reconciliation measured in minutes, a 1s
+  poll is invisible, while Streams would be the most complex consumer in the project (shard iterators,
+  checkpoints, resharding, 24h expiry). Kept as the documented evolution — and the swap replaces
+  `OutboxPublisher` + `SnsEventPublisher` and *nothing else*: not the outbox write, not the envelope,
+  not a consumer (`EventPublisher` is a one-method port that names no broker).
+  **Routing is a message attribute, never the body**: `eventType`/`eventId`/`correlationId` are set as
+  SNS attributes, because SNS filter policies match attributes — which is what lets `settlement-queue`
+  subscribe to `PixDebited` alone and pay nothing for the rest (step 26's policy, now exercised for real).
+  **A failed publish never blocks the batch.** No ordering is promised across redeliveries (consumers
+  rely on guarded status transitions), so aborting would buy nothing and cost head-of-line blocking: one
+  unpublishable event holding back every payment behind it. The stuck event surfaces through the new
+  **`outbox.lag`** gauge (seconds the oldest waiting event has waited) — the publisher-liveness signal
+  step 44 alerts on, by *silence* as much as by threshold.
+  **`ProcessedEventStore` (common-lib) + `pix_processed_events`** close the loop on the consumer side:
+  a conditional put on `CONSUMER#<name>#EVT#<eventId>` **before** the side effect turns at-least-once
+  into effectively-once. The consumer name is in the *key* (ADR-0006's deliberate shared-table
+  exception), so settlement, notification and audit never dedupe each other out. TTL is 7 days and
+  DynamoDB's lazy deletion errs the safe way here — an expired-but-present record still reads
+  "duplicate", i.e. *skip* a side effect rather than repeat one, the exact opposite of `pix_idempotency`
+  (§5), where an expired record must read as absent. New init script `07-processed-events.sh`, which
+  also **moved the Testcontainers readiness marker** (`LocalStackTestBase` now waits on its last line).
+  **Convention added (CLAUDE.md):** `api/` is *inbound adapters*, not only controllers — a scheduled job
+  enters the application like a request does, so it lives there and inherits the ArchUnit rule that
+  forbids reaching an outbound port (the publisher must go through a use case). Every background job is
+  `@ConditionalOnProperty("pix.schedulers.enabled")` and is **off in ITs**: Spring caches contexts across
+  test classes, so a live 1s poller would drain the shared table while `OutboxWriteIT` asserts an event
+  is still unpublished. The IT that covers a job drives its tick explicitly — deterministic, no sleeps.
+  **ADR-0012 gap found on the live stack and closed here:** publisher lines were logged on the scheduler
+  thread with `[cid=n/a tx=n/a]`, so `grep <correlationId>` returned an incomplete path. `CorrelationId`
+  gains `restore(correlationId, txId)` / `clear()`, and the use case adopts the event's own ids for the
+  duration of its publish (cleared in a `finally` — pooled threads must not leak an id onto the next
+  event). One `grep` now spans request → ledger → atomic write → publish → mark, verified live.
+  Tests: `PublishOutboxEventsUseCaseTest` (8 — publish-then-mark order, oldest-first drain, a failed
+  publish left in the index and retried, a poison event not blocking the batch, lag incl. the
+  clock-skew floor, bounded batch), `OutboxPublisherIT` (3 — event reaches `settlement-queue` past the
+  filter policy with raw delivery and integer-cent money, leaves the sparse index but stays in its
+  partition; the crash window republishes; the gauge reports a 5-minute-old event as ~300s),
+  `ProcessedEventStoreIT` (3) and `CorrelationIdTest` (3). `mvn verify` green across all modules
+  (common-lib 36 unit + 14 IT; payment-service 69 unit + 39 IT), and verified on the live compose stack:
+  the 1s tick published a real send's event (SNS `messageId` logged), the sparse index went to 0,
+  `outbox.lag` read `0.0` seconds, and the published item stayed in its partition without `gsi3pk`.
+  **Known gap, not a defect:** no *live* `PixDebited` reaches `settlement-queue` yet — external keys only
+  resolve once mock-bacen's DICT lands (step 30), and internal sends announce `PixSettled`, which the
+  subscription filters out by design; the full path is proven in `OutboxPublisherIT`.
+  AI: est 3.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - Transactional outbox: status transition + event written atomically in one TransactWriteItems (step 28)
   The send flow stops being able to lie. Until now the transaction was saved with a `PutItem` and
   "announce it" was a future second write — the **dual-write problem** (ADR-0004): a crash between the

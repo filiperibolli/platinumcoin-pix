@@ -33,6 +33,29 @@ pix:
   # not a constant, because step 52 shards it into SPI_CLEARING#00..#15 to spread a hot partition —
   # a change of which id is passed, never of the orchestration or of the ledger contract.
   clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  events:
+    # The ONE topic every domain event is published to (step 26); consumers fan out by subscribing with
+    # a filter policy on the eventType message attribute. The ARN is injected rather than looked up by
+    # name: a deployed service is granted sns:Publish on exactly this ARN (ADR-0013) and has no business
+    # listing or creating topics. The default is the ARN LocalStack mints for 06-messaging-core.sh's
+    # topic (account 000000000000); ITs override it with the disposable container's real ARN.
+    topic-arn: ${SNS_TOPIC_ARN:arn:aws:sns:${AWS_REGION:us-east-1}:000000000000:pix-events}
+  outbox:
+    # The polling publisher of ADR-0004 (step 29): it drains the sparse gsi3 index to SNS, publishing
+    # each event BEFORE marking it published — so a crash in between costs a duplicate (consumers dedupe
+    # by eventId) rather than a lost event (money stuck in clearing that nobody settles).
+    publisher:
+      # 1s: invisible against a SPI that settles in up to 10s, and cheap because the index it polls only
+      # ever holds in-flight events. fixedDelay, so a slow tick never overlaps the next one.
+      fixed-delay-ms: ${OUTBOX_PUBLISHER_DELAY_MS:1000}
+      # Upper bound on how much ONE tick may publish — a backlog drains in bounded chunks instead of a
+      # single unbounded write storm; the remainder is the next tick's work.
+      batch-size: ${OUTBOX_PUBLISHER_BATCH_SIZE:25}
+  # Master switch for every background job in this service (today: the outbox publisher). True in every
+  # real run; integration tests set it false and drive the tick explicitly, because Spring caches
+  # contexts across test classes and a live poller would drain the shared tables mid-assertion.
+  schedulers:
+    enabled: ${PIX_SCHEDULERS_ENABLED:true}
 
 # Service-to-service base URLs. payment-service reads the debtor's dailyLimitCents from account-service
 # before reserving daily-limit headroom (step 20), resolves the destination Pix key against

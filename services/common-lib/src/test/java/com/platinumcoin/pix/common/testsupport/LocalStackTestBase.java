@@ -59,9 +59,9 @@ public abstract class LocalStackTestBase {
                 // before ready.d runs, so waiting on the port alone would race the init; we wait on
                 // the last script's final log line instead, guaranteeing tables, seed AND messaging
                 // resources are present. This pattern must track whichever script sorts last in
-                // ready.d — today 06-messaging-core.sh (step 26); appending a script after it moves
-                // the marker.
-                .waitingFor(Wait.forLogMessage(".*\\[init\\] messaging ready.*", 1)
+                // ready.d — today 07-processed-events.sh (step 29; it moved the marker off
+                // 06-messaging-core.sh); appending a script after it moves the marker again.
+                .waitingFor(Wait.forLogMessage(".*\\[init\\] consumer dedup ready.*", 1)
                         .withStartupTimeout(Duration.ofMinutes(2)));
 
         // Mount each real init script into ready.d with the executable bit — LocalStack runs any
@@ -79,6 +79,15 @@ public abstract class LocalStackTestBase {
     /**
      * Point a service's AWS SDK at the disposable container. Registered on the Spring
      * {@code Environment} of any extending {@code @SpringBootTest}; unused by non-Spring ITs.
+     *
+     * <p><b>Background jobs are off in integration tests</b> ({@code pix.schedulers.enabled=false},
+     * step 29). Every scheduled component in the platform is conditional on that flag, because a
+     * background poller wrecks determinism here in a way no per-test assertion can fix: Spring
+     * <i>caches</i> contexts across test classes, so a publisher started by one IT keeps ticking
+     * against the shared tables while a later, unrelated IT asserts on them (payment-service's
+     * {@code OutboxWriteIT} asserts an outbox event is still unpublished — a live 1s publisher would
+     * drain it mid-assertion). An IT that tests a job invokes its tick explicitly instead, which is
+     * both deterministic and faster than waiting on a schedule.
      */
     @DynamicPropertySource
     static void awsProperties(DynamicPropertyRegistry registry) {
@@ -86,6 +95,7 @@ public abstract class LocalStackTestBase {
         registry.add("aws.region", LOCALSTACK::getRegion);
         registry.add("aws.access-key-id", LOCALSTACK::getAccessKey);
         registry.add("aws.secret-access-key", LOCALSTACK::getSecretKey);
+        registry.add("pix.schedulers.enabled", () -> "false");
     }
 
     /** The shared container, for ITs that build their own AWS clients (no Spring context). */

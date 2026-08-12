@@ -57,6 +57,10 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `BACEN_TIMEOUT_RATE` | `0.0` | Fraction of SPI calls that hang |
 | `SPI_WEBHOOK_TOKEN` | dev-only value in compose | Authenticates mock-bacen's inbound webhook calls to settlement-service |
 | `FRAUD_TIMEOUT_MS` | `200` | Fraud budget in payment-service |
+| `SNS_TOPIC_ARN` | `arn:aws:sns:us-east-1:000000000000:pix-events` | Topic the outbox publisher drains into (injected, never looked up by name — ADR-0013) |
+| `OUTBOX_PUBLISHER_DELAY_MS` | `1000` | Outbox poll interval (`fixedDelay`, so ticks never overlap) |
+| `OUTBOX_PUBLISHER_BATCH_SIZE` | `25` | Max events one tick may publish |
+| `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs; integration tests set it `false` and drive each tick explicitly |
 
 ## 4. Bring it up
 
@@ -403,6 +407,54 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --wait-time-seconds
       --queue-name settlement-queue --query QueueUrl --output text) | jq '.Messages[0].Body'
 # ⇒ the raw event JSON, NOT an SNS {"Type":"Notification",...} envelope.
 # Re-run with eventType=PixSettled ⇒ the queue stays empty: the filter policy dropped it at SNS.
+```
+
+#### Consumer dedup table (mirror of `infra/localstack/init/07-processed-events.sh`, step 29)
+
+One tiny table shared by **every** consumer, with the consumer name in the key — the deliberate
+exception to one-table-per-service (ADR-0006). Delivery is at-least-once by design (the publisher
+publishes *then* marks, so a crash in between republishes), so each consumer conditionally puts
+`CONSUMER#<name>#EVT#<eventId>` **before** its side effect: first delivery wins, redeliveries are
+skipped. TTL 7 days — comfortably past any redelivery window, and DynamoDB's lazy deletion errs in the
+safe direction here (an expired-but-present record still reads as "duplicate", i.e. skip rather than
+repeat — the opposite of `pix_idempotency`, where an expired record must read as absent).
+
+```bash
+aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+  --table-name pix_processed_events \
+  --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
+  --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
+
+aws --endpoint-url=http://localhost:4566 dynamodb update-time-to-live \
+  --table-name pix_processed_events \
+  --time-to-live-specification 'Enabled=true,AttributeName=expiresAt'
+```
+
+#### The outbox publisher (step 29)
+
+payment-service polls the sparse `gsi3` every second, publishes each waiting event to `pix-events`
+(message attributes `eventType`/`eventId`/`correlationId`), and only then removes `gsi3pk` so the item
+leaves the index. Watch one payment's event make the whole trip:
+
+```bash
+# 1. the publisher's own log line (one per event that goes out)
+docker compose -f infra/docker-compose.yml logs -f payment-service | grep 'Outbox item published'
+
+# 2. the sparse index drains: briefly 1 after a send, then 0 — "published" IS "no longer indexed"
+aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+  --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
+  --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Count'
+
+# 3. the event actually landed on the subscribed queue (external sends only — the filter policy
+#    passes PixDebited and drops everything else)
+aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
+  $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue --query QueueUrl --output text) | jq
+
+# 4. publisher liveness: age of the oldest unpublished event, in seconds (0.0 on a drained outbox).
+#    A climbing value = falling behind or stuck; no value at all = the publisher is dead (step 44
+#    alerts on the silence, not only on the threshold).
+curl -s localhost:8084/actuator/metrics/outbox.lag | jq
 ```
 
 **Step 18 — sending a Pix (walking skeleton) through payment-service** (`:8084`). The endpoint

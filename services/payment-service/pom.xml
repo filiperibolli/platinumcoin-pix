@@ -53,6 +53,15 @@
             <artifactId>dynamodb</artifactId>
         </dependency>
 
+        <!-- SNS SDK v2 (step 29): the outbox publisher drains the sparse index to the `pix-events`
+             topic. Publish-only — payment-service owns no queue and needs no SQS at runtime (the
+             fan-out is SNS's job, and the least-privilege policy of ADR-0013 is just sns:Publish on
+             one topic). Confined to infra/client + infra/config like every other AWS type. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sns</artifactId>
+        </dependency>
+
         <!-- Context-load + controller ITs (*IT → failsafe, runs on `mvn verify`). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -78,6 +87,15 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- SQS SDK, TEST scope only (step 29): OutboxPublisherIT asserts a published event actually
+             ARRIVES on settlement-queue — i.e. that the fan-out and the eventType filter policy of
+             step 26 accept what this service publishes. The service itself never touches SQS. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
             <scope>test</scope>
         </dependency>
 
