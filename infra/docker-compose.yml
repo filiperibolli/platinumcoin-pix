@@ -239,6 +239,55 @@ services:
       retries: 5
       start_period: 30s
 
+  # settlement-service — the SPI connector (Sprint 6, step 31), and the first service in the stack that
+  # nobody calls: it long-polls settlement-queue and scales with queue depth rather than user traffic
+  # (ADR-0006). It publishes no HTTP business endpoint, so the only port exposed is the actuator one the
+  # healthcheck probes. Copies the auth-service "service in compose" block, and gates startup on both the
+  # emulator (queue + tables) and the rail it settles against.
+  settlement-service:
+    build:
+      context: ..
+      dockerfile: services/settlement-service/Dockerfile
+    image: platinumcoin/settlement-service
+    container_name: settlement-service
+    ports:
+      - "8086:8086"
+    environment:
+      # Must match auth-service's JWT_SECRET. Nothing is authenticated here yet — the platform keeps ONE
+      # authentication posture rather than a per-service opt-out, and step 37 gives this service its first
+      # HTTP endpoint (inbound Pix).
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # PlatinumCoin's participant id, sent to the rail as the debtor participant. Same value
+      # payment-service bakes into every endToEndId.
+      PIX_ISPB: "12345678"
+      # The rail this service settles against. 12s read timeout (ADR-0003): above BACEN's 10s, below the
+      # queue's 30s visibility timeout — a longer budget would let a hung call hold a message past its
+      # visibility window and have SQS redeliver work still in progress.
+      BACEN_BASE_URL: http://mock-bacen-spi:9090
+      # Reach LocalStack by service name on the shared network (DynamoDB + SQS).
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      # Hard dependency, unlike most: this service resolves its queue URL at startup and consumes from it,
+      # so a not-yet-ready emulator means a service that boots healthy while consuming nothing.
+      localstack:
+        condition: service_healthy
+      # The rail itself. Not a correctness requirement (an unreachable SPI leaves the message on the queue
+      # for redelivery, which is exactly the designed behaviour) — gating here just means the first
+      # external send in a demo settles immediately instead of after a retry.
+      mock-bacen-spi:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8086/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # Redis — its own container (ADR-0008), the local stand-in for ElastiCache for Redis, which LocalStack
   # does NOT emulate. Comes up in Sprint 5 because fraud is the first flow that needs it (velocity
   # counters); Sprint 9's balance cache reuses this same container. Data is ephemeral (a cache): no named
@@ -280,9 +329,22 @@ services:
     networks:
       - pix-net
     healthcheck:
-      # The emulator's own health endpoint; the image ships curl. Gates any later service's
-      # `depends_on: { localstack: { condition: service_healthy } }` on DynamoDB being up.
-      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      # Two conditions, not one — and the second is the one that matters (step 31).
+      #
+      # The emulator opens port 4566 and reports UP *before* the ready.d scripts have finished, so a
+      # service gated only on the health endpoint can start against an emulator with no tables and no
+      # queues. Nothing noticed until settlement-service: every service before it touches AWS lazily, on
+      # the first request, by which time init has long finished. A consumer resolves its queue at startup
+      # and simply died with `QueueDoesNotExist`.
+      #
+      # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
+      # probe asserts a resource created by the LAST init script (07-processed-events.sh) exists —
+      # scripts run in lexical order, so that one existing means all of them ran. This mirrors exactly
+      # what the Testcontainers harness already does (LocalStackTestBase waits on that script's final log
+      # line); compose and the tests now agree on what readiness means.
+      #
+      # IF YOU ADD A SCRIPT THAT SORTS AFTER 07, MOVE THIS PROBE (and the harness's marker) TO IT.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && awslocal dynamodb describe-table --table-name pix_processed_events >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5

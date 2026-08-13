@@ -63,6 +63,7 @@
         <module>services/ledger-service</module>
         <module>services/payment-service</module>
         <module>services/fraud-service</module>
+        <module>services/settlement-service</module>
         <module>services/mock-bacen-spi</module>
     </modules>
 

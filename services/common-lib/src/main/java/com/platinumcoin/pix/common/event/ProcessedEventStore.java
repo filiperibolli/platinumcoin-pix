@@ -113,6 +113,42 @@ public class ProcessedEventStore {
         return true;
     }
 
+    /**
+     * Give the claim back, because the side effect it was taken for did <b>not</b> happen.
+     *
+     * <p><b>Why a claim can be given back at all.</b> {@link #markProcessed} is taken <i>before</i> the
+     * side effect, which is the only ordering that survives two concurrent deliveries. But taken alone
+     * it also disarms every retry the platform has: the SPI call fails, the consumer leaves the message
+     * on the queue on purpose (step 32's backoff), SQS redelivers it — and the gate answers "already
+     * processed" for work that never ran. The claim therefore means <i>"I am handling this"</i>, and
+     * only a completed side effect turns it into <i>"this is done"</i>.
+     *
+     * <p><b>The failure direction, chosen deliberately.</b> A crash between the side effect and the
+     * release costs nothing (the claim stands, as it should). A crash between a <i>failed</i> side
+     * effect and this release leaves a stale claim, so the redelivery is skipped and the transaction is
+     * left mid-flight — which is precisely the case the reconciliation loop of ADR-0003 exists to close
+     * within 5 minutes. Losing a retry to a safety net beats letting two workers settle the same Pix.
+     *
+     * <p>Idempotent and never throws for absence: releasing an unclaimed event is a normal outcome for
+     * a consumer whose failure handling runs twice.
+     */
+    public void release(String consumer, String eventId) {
+        String pk = key(consumer, eventId);
+
+        log.debug("DynamoDB DeleteItem releasing an event claim | table={} pk={} sk={}",
+                TABLE, pk, META_SK);
+
+        dynamo.deleteItem(request -> request
+                .tableName(TABLE)
+                .key(Map.of(
+                        "pk", AttributeValue.fromS(pk),
+                        "sk", AttributeValue.fromS(META_SK))));
+
+        log.warn("Event claim released because the side effect did not complete, a redelivery will be "
+                        + "processed for real instead of being deduped away | consumer={} eventId={} pk={}",
+                consumer, eventId, pk);
+    }
+
     private static String key(String consumer, String eventId) {
         return "CONSUMER#" + consumer + "#EVT#" + eventId;
     }

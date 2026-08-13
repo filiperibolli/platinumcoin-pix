@@ -130,6 +130,40 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > Nothing consumes `POST /spi/settlements` yet — settlement-service is step 31 — so the rail comes up idle
 > **on purpose**; it is exercised by hand (`services/mock-bacen-spi/README.md`) until then.
 
+> **Step 31 (settlement-service).** `settlement-service` (8086) now comes up with the stack and the
+> external send **completes end to end**: it long-polls `settlement-queue`, dedupes by `eventId`, drives
+> `DEBITED → SENT_TO_SPI` (guarded, *before* the call), settles against the rail with a 12s timeout, then
+> `SENT_TO_SPI → SETTLED` together with a `PixSettled` outbox event in one atomic write. Gates its startup
+> on `localstack` (it resolves the queue URL at boot) and on `mock-bacen-spi`.
+>
+> It exposes **no business endpoint** — the only HTTP surface is the actuator one, so there is nothing in
+> Postman or the API explorer for it. Watch it work instead:
+>
+> ```bash
+> curl -s localhost:8086/actuator/health | jq                       # {"status":"UP"}
+> # send an external Pix (§5.3 with bob@otherbank.com), then:
+> watch -n1 "curl -s localhost:8084/v1/payments/\$TX -H 'Authorization: Bearer $TOKEN' | jq .status"
+> #   PROCESSING → SETTLED, after BACEN_LATENCY_MS (2s in compose)
+> docker compose -f infra/docker-compose.yml logs -f settlement-service   # one line per stage (ADR-0012)
+> ```
+>
+> **One infra change came with it:** LocalStack's compose healthcheck now means *"seeded"*, not merely
+> *"the emulator answers"*. The emulator opens port 4566 and reports UP **before** its `ready.d` scripts
+> finish, and nothing noticed until now because every earlier service touches AWS lazily, on the first
+> request. A consumer resolves its queue at **startup**, so settlement-service died on first boot with
+> `QueueDoesNotExist`. The probe now also asserts a resource created by the *last* init script
+> (`pix_processed_events`) exists — scripts run in lexical order, so that one existing means all of them
+> ran. Compose and the Testcontainers harness now agree on what readiness means (`LocalStackTestBase`
+> already waited on that script's final log line). **If you add an init script that sorts after `07`, move
+> both markers.**
+>
+> Two caveats worth knowing before §5.5's drill: retries, backoff and DLQ handling are **step 32** — today
+> a failed or timed-out settlement simply leaves the message on the queue (which is what makes those
+> retries possible, since the dedup claim is released), and a permanent `422` refusal is left for the
+> reversal of step 33. And `PixSettled` is *written* here but *published* by payment-service's outbox
+> publisher, which drains the whole sparse index of `pix_transactions` — so a stopped payment-service
+> means settled payments that nobody is told about yet.
+
 ### How the build works (there is no service image in git)
 
 The repo versions the **recipe** (each `services/<name>/Dockerfile`), never the built image. Service images

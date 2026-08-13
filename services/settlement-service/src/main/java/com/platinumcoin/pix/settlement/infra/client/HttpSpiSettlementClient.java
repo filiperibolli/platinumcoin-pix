@@ -1,0 +1,159 @@
+package com.platinumcoin.pix.settlement.infra.client;
+
+import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
+import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
+import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
+import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
+import java.time.Duration;
+import java.time.Instant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+
+/**
+ * The only place HTTP touches the settlement rail (ADR-0010): {@code POST /spi/settlements} against
+ * mock-bacen.
+ *
+ * <h2>The 12s read timeout is a decision, not a default</h2>
+ * BACEN settles in up to 10s (ADR-0003), so a budget below that would abandon perfectly healthy
+ * settlements; a budget far above it would let one hung call hold an SQS message hostage past its 30s
+ * visibility timeout, at which point SQS redelivers a message still being worked on and two workers race
+ * on one transaction. 12s sits between the two: generous enough for the slowest honest answer, tight
+ * enough to finish (and delete or release) well inside the visibility window. This is the <b>opposite
+ * posture</b> to the 200ms fraud budget (ADR-0005): nobody is waiting here — a user got their
+ * {@code 202} seconds ago — so patience is cheap and giving up early is what costs.
+ *
+ * <h2>Three answers, three types</h2>
+ * <ul>
+ *   <li><b>2xx</b> → a {@link SpiSettlement}. The money moved.</li>
+ *   <li><b>422</b> → {@link SpiSettlementRejectedException}. BACEN looked and said no, permanently;
+ *       retrying cannot change it (step 33 reverses).</li>
+ *   <li><b>everything else</b> — {@code 503}, {@code 504}, a connection failure, the read timeout, an
+ *       unreadable body → {@link SpiCallFailedException}, meaning <b>unknown</b>. Never "failed": a
+ *       timeout may well have settled (mock-bacen's injection settles and then withholds the answer, as
+ *       a real rail can), which is why step 32 must <i>ask</i> before retrying.</li>
+ * </ul>
+ * Collapsing the last two into one type is the classic way a refused transfer ends up retried forever or
+ * a timed-out one ends up reversed while the money is gone. The type system keeps them apart.
+ *
+ * <p><b>No {@code Authorization} header, on purpose.</b> BACEN is outside PlatinumCoin's trust domain
+ * and validates none of our tokens (a real participant presents mTLS + an ICP-Brasil certificate), so —
+ * like account-service's DICT client — this outbound call forwards no bearer token. The correlation id
+ * still rides along via common-lib's {@code RestClient} customizer, so one {@code grep} spans the send,
+ * the settlement and the SPI.
+ */
+@Component
+public class HttpSpiSettlementClient implements SpiSettlementClient {
+
+    private static final Logger log = LoggerFactory.getLogger(HttpSpiSettlementClient.class);
+
+    /** The only status a 2xx body may carry; anything else is an answer we do not understand. */
+    private static final String SETTLED = "SETTLED";
+
+    private final RestClient restClient;
+
+    /** Wire shape of what we send — mock-bacen's {@code SettlementRequest}. Integer cents. */
+    record SettleRequest(String endToEndId, String creditorKey, long amountCents, String debtorIspb,
+            String description) {
+    }
+
+    /** Wire shape of what we get back — mock-bacen's {@code SettlementView}. */
+    record SettlementView(String endToEndId, String status, Long amountCents, String creditorKey,
+            String creditorIspb, String rejectionReason, Instant recordedAt) {
+    }
+
+    public HttpSpiSettlementClient(
+            RestClient.Builder builder,
+            @Value("${services.bacen.base-url}") String baseUrl,
+            @Value("${services.bacen.connect-timeout-ms}") long connectTimeoutMs,
+            @Value("${services.bacen.read-timeout-ms}") long readTimeoutMs) {
+        var factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
+        factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
+        this.restClient = builder.baseUrl(baseUrl).requestFactory(factory).build();
+        log.info("SPI settlement client ready, external Pix will be settled against this rail | "
+                        + "baseUrl={} connectTimeoutMs={} readTimeoutMs={}",
+                baseUrl, connectTimeoutMs, readTimeoutMs);
+    }
+
+    @Override
+    public SpiSettlement settle(String endToEndId, String creditorKey, long amountCents,
+            String description, String debtorIspb) {
+        log.info("Asking the SPI to settle a Pix | endToEndId={} creditorKey={} amountCents={} "
+                        + "debtorIspb={}",
+                endToEndId, creditorKey, amountCents, debtorIspb);
+
+        SettlementView view;
+        try {
+            view = restClient.post()
+                    .uri("/spi/settlements")
+                    .body(new SettleRequest(endToEndId, creditorKey, amountCents, debtorIspb, description))
+                    .retrieve()
+                    .body(SettlementView.class);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == HttpStatus.UNPROCESSABLE_ENTITY.value()) {
+                throw rejected(endToEndId, e);
+            }
+            // 503, 504 and anything else: the rail's state is unknown to us.
+            throw failed(endToEndId, "the SPI answered " + e.getStatusCode().value(), e);
+        } catch (RuntimeException e) {
+            // Connection refused, DNS failure, the 12s read timeout expiring.
+            throw failed(endToEndId, "the SPI could not be reached or did not answer in time", e);
+        }
+
+        if (view == null || !SETTLED.equals(view.status()) || view.amountCents() == null) {
+            // A 2xx we cannot read is not a settlement. Treated as unknown rather than as success:
+            // reporting a payment settled on the strength of an unparseable body is the one mistake
+            // this whole flow must not make.
+            log.warn("The SPI answered 2xx with a body this client cannot read as a settlement, treating "
+                            + "the outcome as UNKNOWN | endToEndId={} body={}", endToEndId, view);
+            throw new SpiCallFailedException(
+                    "the SPI returned an answer that is not a readable settlement", null);
+        }
+
+        log.info("The SPI settled the Pix | endToEndId={} amountCents={} creditorIspb={} recordedAt={}",
+                view.endToEndId(), view.amountCents(), view.creditorIspb(), view.recordedAt());
+        return new SpiSettlement(view.endToEndId(), view.amountCents(), view.creditorIspb(),
+                view.recordedAt());
+    }
+
+    private static SpiSettlementRejectedException rejected(String endToEndId,
+            RestClientResponseException cause) {
+        String reason = detailOf(cause);
+        log.warn("The SPI refused this settlement permanently, retrying it is pointless | endToEndId={} "
+                        + "status=422 reason={}", endToEndId, reason);
+        return new SpiSettlementRejectedException(reason, cause);
+    }
+
+    private static SpiCallFailedException failed(String endToEndId, String what, RuntimeException cause) {
+        // WARN, not ERROR: an unavailable dependency is a degradation the flow is designed to absorb,
+        // not an actionable fault in this service.
+        log.warn("The settlement attempt did not produce an answer, the outcome is UNKNOWN and must not "
+                        + "be treated as a failure | endToEndId={} what={} error={}",
+                endToEndId, what, cause.toString());
+        return new SpiCallFailedException(what, cause);
+    }
+
+    /**
+     * The refusal reason, read from the platform's problem+json body. Best effort by design: the reason
+     * is for the log and for step 33's decision, and a rail that refuses without explaining itself must
+     * still be recognised as having refused.
+     */
+    private static String detailOf(RestClientResponseException e) {
+        try {
+            ProblemDetail problem = e.getResponseBodyAs(ProblemDetail.class);
+            if (problem != null && problem.getDetail() != null) {
+                return problem.getDetail();
+            }
+        } catch (RuntimeException ignored) {
+            // An error body we cannot parse changes nothing: the refusal itself is the 422.
+        }
+        return "unspecified";
+    }
+}
