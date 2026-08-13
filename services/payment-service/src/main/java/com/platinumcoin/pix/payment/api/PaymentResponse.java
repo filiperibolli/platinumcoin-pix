@@ -50,14 +50,18 @@ public record PaymentResponse(
      * is given its external face — the mapping cannot silently fall through to a wrong default. It did
      * exactly that when step 27 added {@code DEBITED}.
      *
-     * <p>{@code DEBITED} maps to {@code PROCESSING} rather than to a name of its own: the payer has been
-     * debited but the payee has not been paid, and "the money is parked in our clearing account" is an
-     * internal fact a client can neither use nor act on. It keeps polling the same {@code PROCESSING}
-     * until settlement makes it {@code SETTLED} (or a reversal makes it {@code REVERSED}, step 33).
+     * <p>{@code DEBITED} and {@code SENT_TO_SPI} map to {@code PROCESSING} rather than to names of their
+     * own: the payer has been debited but the payee has not been paid, and "the money is parked in our
+     * clearing account" / "we are waiting on BACEN" are internal facts a client can neither use nor act
+     * on — worse, exposing them would leak our settlement mechanics into a contract we then could not
+     * change. The client keeps polling the same {@code PROCESSING} until settlement makes it
+     * {@code SETTLED} (or a reversal makes it {@code REVERSED}, step 33). This is precisely what the
+     * mapping-at-the-edge discipline buys: step 31 added a whole state to the internal machine and not
+     * one client learned a new word.
      */
     private static String externalStatusOf(TransactionStatus status) {
         return switch (status) {
-            case RECEIVED, DEBITED -> "PROCESSING";
+            case RECEIVED, DEBITED, SENT_TO_SPI -> "PROCESSING";
             case SETTLED -> "SETTLED";
         };
     }

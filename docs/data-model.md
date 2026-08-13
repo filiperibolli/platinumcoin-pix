@@ -192,6 +192,27 @@ Both are written only when set, so a not-yet-settled item carries neither — an
 `ACCOUNT#SPI_CLEARING` (in flight) rather than with the payee, so the item rests at `DEBITED` with
 `settledAt` absent until settlement (step 31) writes it.
 
+**The settlement-confirmation fields (step 31, owner: settlement-service).** An external send is finished
+by settlement-service, which is the platform's one documented exception to table ownership (ADR-0006): the
+status change and the `PixSettled` it announces must commit in **one** `TransactWriteItems`, and an
+internal API between the writer and this table would reintroduce the dual write the outbox exists to
+remove. Its write surface is exactly two **guarded** transitions and nothing else:
+
+| Transition | Condition (inside the write) | Attributes written |
+|---|---|---|
+| `DEBITED → SENT_TO_SPI` | `attribute_exists(pk) AND (status = DEBITED OR status = SENT_TO_SPI)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt` |
+| `SENT_TO_SPI → SETTLED` | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
+
+- `settledAt` is **BACEN's** instant (the SPI's `recordedAt`), not ours: the money moved on the rail, and
+  reconciliation (step 35) compares the two systems on exactly that fact.
+- `creditorIspb` is the participant that received the money, written only when the rail reported one. It
+  is the external counterpart of `creditorAccountId` — an external payee has no account here.
+- `gsi2pk`/`gsi2sk` move with **every** transition, or a finished payment would keep showing up in the
+  stuck-transaction scan forever.
+- The first transition accepts an item **already** in `SENT_TO_SPI` (re-claiming a retry is not a
+  regression) but never one outside those two states — dragging a `SETTLED` transaction back onto the rail
+  would send the same money twice.
+
 `creditorInternal` is written on **every** transaction (step 27), internal ones included — `true` when
 the destination key resolved inside PlatinumCoin, `false` when it belongs to another PSP. A boolean has
 no "absent" state, and the settlement/reconciliation reads that filter on it must not silently miss
@@ -236,6 +257,13 @@ send announces `PixSettled` — the atomic posting was the settlement, and `PixD
 settle a transfer that never left the bank; a **fail-open fraud skip** (ADR-0005) adds a second
 `FraudCheckSkipped` item to the same transaction, so "an unscored payment was let through" is as durable
 as the payment. Money in a payload is always integer cents.
+
+**And which events a settlement writes** (`SettlementOutboxEvents`, settlement-service, step 31): a
+confirmed external settlement announces `PixSettled` too — the same event type, so consumers never have to
+learn where the payee banks in order to know a payment completed. The payload differs only in the facts
+that genuinely differ: an internal `PixSettled` carries `creditorAccountId`, an external one carries
+`creditorIspb`. The item is byte-identical in shape to payment-service's, which is what lets **one**
+publisher drain the whole sparse index: `gsi3` is a property of the table, not of the writer.
 
 `correlationId` carries the request's id into the asynchronous half, so one `grep` still reconstructs the
 whole path once the flow leaves the request thread (ADR-0012); it is absent for an event minted outside a
@@ -339,6 +367,8 @@ At-least-once delivery (outbox + SQS) means consumers **will** see duplicates. E
 If the conditional put fails → duplicate → ack the message and skip. This one small table is what makes "at-least-once + idempotent consumer = effectively-once" real across the whole platform. Created by `infra/localstack/init/07-processed-events.sh`; the shared implementation is `common-lib`'s `ProcessedEventStore.markProcessed(consumer, eventId)` (step 29).
 
 The consumer name is part of the **key**, not an attribute: settlement, notification and audit all consume the same event and each must see it exactly once — a shared key would let whichever consumed first silently starve the others.
+
+> **A claim is not yet a completion (step 31).** The record is written *before* the side effect — the only ordering under which two concurrent deliveries cannot both proceed — so what it really means is *"I am handling this"*. Only a completed side effect turns it into *"this is done"*; a consumer whose work failed calls `ProcessedEventStore.release(consumer, eventId)` and deletes it, so the redelivery is real work instead of being deduped away. Without the release, a failed settlement would disarm SQS's entire retry mechanism: the message returns, the gate answers "already processed", the consumer acks, and the payment never settles. The failure direction is chosen: a crash between a *failed* side effect and its release leaves a stale claim, that delivery is skipped, and the transaction is left for the reconciliation loop of ADR-0003 to close within 5 minutes — losing a retry to a safety net beats letting two workers settle one Pix.
 
 > **TTL, and which way it is safe to be wrong.** DynamoDB deletes expired items lazily, so an expired-but-still-present record keeps answering "duplicate" — the consumer *skips* a side effect rather than repeating one. That is the opposite of `pix_idempotency` (§5), where a read must treat an expired-but-present record as absent. The asymmetry is deliberate: here a false "duplicate" costs a skipped notification, while a false "new" could pay twice. Seven days is chosen to outlive every redelivery window that can still produce a duplicate (SQS retention, the DLQ, and the reconciliation loop of step 35 all close far sooner).
 

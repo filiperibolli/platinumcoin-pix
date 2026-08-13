@@ -77,7 +77,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 28](docs/steps/step-28.md) — transactional outbox: tx + outbox item in one TransactWriteItems
 - [x] [Step 29](docs/steps/step-29.md) — outbox polling publisher: sparse GSI → SNS; `ProcessedEventStore` (consumer dedup)
 - [x] [Step 30](docs/steps/step-30.md) — mock-bacen-spi: settlement endpoint (latency/failure/timeout config) + external DICT resolve
-- [ ] [Step 31](docs/steps/step-31.md) — settlement-service: consume settlement-queue, call SPI, mark SETTLED (happy path)
+- [x] [Step 31](docs/steps/step-31.md) — settlement-service: consume settlement-queue, call SPI, mark SETTLED (happy path)
 
 ## Sprint 7 — Resilience & reconciliation
 **Flow delivered:** timeouts/failures never lose or double money; stuck tx resolved in < 5 min.

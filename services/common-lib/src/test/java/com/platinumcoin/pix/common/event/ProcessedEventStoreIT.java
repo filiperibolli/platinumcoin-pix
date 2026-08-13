@@ -82,6 +82,36 @@ class ProcessedEventStoreIT extends LocalStackTestBase {
                 .isFalse();
     }
 
+    /**
+     * The claim is <b>released</b> when the side effect fails, so the redelivery is genuinely
+     * reprocessed instead of being silently swallowed by the dedup gate.
+     *
+     * <p>Without this, a consumer that claims-then-fails turns SQS's whole retry mechanism into a
+     * no-op: the message comes back, the gate says "already processed", the consumer acks, and the work
+     * never happens. The claim marks "I am handling this", and it only becomes "this is done" once the
+     * side effect committed (step 31; step 32's retries depend on it).
+     */
+    @Test
+    void aReleasedClaimIsReprocessedByTheRedelivery() {
+        String eventId = "evt-" + UUID.randomUUID();
+
+        assertThat(store.markProcessed("settlement-service", eventId)).isTrue();
+        store.release("settlement-service", eventId);
+
+        assertThat(store.markProcessed("settlement-service", eventId))
+                .as("the attempt failed and released its claim — the redelivery must run for real")
+                .isTrue();
+        assertThat(store.markProcessed("settlement-service", eventId))
+                .as("and once it succeeds and keeps the claim, dedup is back in force")
+                .isFalse();
+    }
+
+    /** Releasing something never claimed is a no-op, never an error — the caller may be a retry. */
+    @Test
+    void releasingAnUnclaimedEventIsHarmless() {
+        store.release("settlement-service", "evt-" + UUID.randomUUID());
+    }
+
     /** The record shape the table was created for: consumer-scoped key, {@code META} sk, 7-day TTL. */
     @Test
     void theRecordCarriesTheConsumerScopedKeyAndASevenDayTtl() {

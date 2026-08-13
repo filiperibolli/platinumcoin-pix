@@ -47,6 +47,60 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Added
+- settlement-service: consume settlement-queue, call SPI, guarded transition to SETTLED with PixSettled
+  event (step 31)
+  **The external send now finishes.** Since step 27 an external Pix has answered `202` with the money
+  parked in the clearing account and nothing to complete it; the new service on port 8086 is that
+  something. It long-polls `settlement-queue`, dedupes by `eventId`, and walks the transaction
+  `DEBITED → SENT_TO_SPI → SETTLED`, writing `PixSettled` into the outbox in the **same**
+  `TransactWriteItems` as the status change. The walking skeleton of the asynchronous half is complete for
+  the sunny day.
+  **The first service nobody calls.** Its only inbound adapter is a queue consumer, so it scales with
+  queue depth rather than with user traffic (ADR-0006) — and it therefore ships with no business endpoint,
+  no CORS, and nothing to add to Postman or the API explorer (the twin harnesses cover public endpoints;
+  this service has none until step 37's inbound Pix). The consumer lives in `api/` all the same: a queue
+  is a way of *entering* the application, so it obeys the controller rules — bind the wire shape, call one
+  use case, map the result, hold no policy — and the ArchUnit rule that forbids `api/ → interface in
+  domain/` is what stops it from growing a second, untested settlement path.
+  **Three decisions carry the correctness.** *(i)* `SENT_TO_SPI` is written **before** the rail is called,
+  so a consumer that dies mid-call leaves the durable statement "we asked BACEN" — without it a settlement
+  that timed out (BACEN may well have completed it) is indistinguishable from one never attempted, and the
+  two demand opposite reactions. *(ii)* Both transitions are guarded **inside** the write
+  (`ConditionExpression`), never read-then-check: a redelivery, a second instance and step 35's
+  reconciliation loop can all race, exactly one wins, and a `SETTLED` transaction can never be dragged
+  back onto the rail — that would be the same money sent twice. *(iii)* The rail's three answers are three
+  **types**, not a status field: a settlement is a value, a `422` is `SpiSettlementRejectedException`
+  (permanent, step 33 reverses), and a `503`/timeout is `SpiCallFailedException` meaning *unknown* — the
+  distinction the whole flow turns on, since a timeout treated as failure would reverse a payment whose
+  money already left.
+  **`ProcessedEventStore` gains `release`** (common-lib). The claim is taken before the side effect
+  (Domain Safety Rule #2) but now means *"I am handling this"*; only a completed settlement turns it into
+  *"this is done"*. Without the release the dedup gate would disarm SQS's own retry mechanism — the
+  message returns, the gate says "already processed", the consumer acks, the payment never settles — and
+  step 32 could not be written at all. The failure direction is deliberate: a crash between a failed
+  attempt and its release leaves a stale claim, that delivery is skipped, and the transaction falls to the
+  reconciliation loop (ADR-0003, <5 min). Losing a retry to a safety net beats two workers settling one Pix.
+  **Nobody publishes twice.** settlement *writes* `PixSettled`; payment-service's polling publisher
+  delivers it, because the sparse `gsi3` index is a property of the table and it already drains all of it.
+  A second publisher on the same single `OUTBOX#UNPUBLISHED` partition would republish the other's events
+  — self-inflicted duplicates — so independence would cost a per-writer index, i.e. a data-model change.
+  The trade-off is recorded rather than hidden: settlement's events go out only while payment-service runs.
+  **The seams left open on purpose** (happy path only, per the step): a failed or timed-out settlement just
+  leaves the message on the queue — no query-before-retry, no visibility backoff, no DLQ metric (step 32);
+  a permanent `422` is recognised and left for the reversal of step 33; no reconciliation yet (steps 34–35).
+  payment-service gains `SENT_TO_SPI` in its `TransactionStatus` (it must be able to *read* a state
+  settlement writes) and maps it to `PROCESSING` — the `switch` with no `default` broke the build until it
+  was given an external face, exactly as designed, and not one client learned a new word.
+  **LocalStack's compose healthcheck now means "seeded", not "answering".** Caught by running the stack:
+  the emulator reports UP before its `ready.d` scripts finish, and settlement-service — the first service
+  that touches an AWS *resource at startup* rather than lazily on the first request — died on boot with
+  `QueueDoesNotExist`. The probe now also asserts a resource created by the last init script exists, which
+  is what the Testcontainers harness already did (it waits on that script's final log line), so compose
+  and the tests finally agree on what readiness means.
+  Docs updated in the same change: `docs/data-model.md` §4 (the two guarded transitions and the
+  settlement-confirmation fields `settledAt`/`creditorIspb`) and §6 (claim vs. completion),
+  `docs/local-dev.md` (step-31 note, the healthcheck change, and how to watch a payment settle).
+  AI: est 3.5h / actual 2h / ~90% generated / 3 issues caught in human review
 - mock-bacen-spi: settlement + status + admin-config endpoints and external DICT resolution (step 30)
   The platform gains a dependency it can **break on purpose**, and with it the last missing piece of the
   external send path. Two roles in one stub on port 9090: the **SPI rail** (`POST /spi/settlements`,

@@ -1,0 +1,81 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: settlement-service
+
+# No CORS block, unlike every other service: settlement-service exposes NO business endpoint, so there is
+# no browser origin to allow and nothing to add to Postman or the API explorer. Its only inbound adapter
+# is the queue consumer, and its whole HTTP footprint is the actuator surface compose gates on.
+#
+# The JWT config below is still required: common-lib auto-configures the shared JwtAuthFilter for every
+# servlet service, and the platform keeps ONE authentication posture rather than a per-service opt-out —
+# a service that could quietly skip token validation is a hole waiting for the day it grows an endpoint,
+# and this one does exactly that in step 37 (inbound Pix from BACEN). The secret must match
+# auth-service's; public-paths is the allow-list the filter skips, which today is everything this service
+# serves.
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  public-paths:
+    - /actuator/**
+
+# Pix participant identifier (ISPB — 8 digits), sent to the rail as the debtor participant. Same value
+# payment-service bakes into every endToEndId; one place to change PlatinumCoin's participant code.
+pix:
+  ispb: ${PIX_ISPB:12345678}
+  settlement:
+    # The queue this service consumes (created by infra/localstack/init/06-messaging-core.sh, subscribed
+    # to pix-events with a filter policy of eventType=PixDebited). Resolved to its URL at startup —
+    # booting healthy while consuming nothing would be the worst possible failure mode.
+    queue-name: ${SETTLEMENT_QUEUE_NAME:settlement-queue}
+    consumer:
+      # How long a receive blocks waiting for work. 20s is the SQS maximum and matches the queue's own
+      # ReceiveMessageWaitTimeSeconds: an idle system costs one request per 20s instead of a stream of
+      # empty ones, and a message that arrives is picked up in milliseconds.
+      wait-time-seconds: ${SETTLEMENT_WAIT_TIME_SECONDS:20}
+      # Messages per receive (SQS maximum is 10). They are handled sequentially, so this bounds how long
+      # one tick can hold messages invisible: 10 × 12s worst case is far past the 30s visibility timeout,
+      # which is exactly what step 32 has to fix (batch size, visibility extension, or both).
+      batch-size: ${SETTLEMENT_BATCH_SIZE:5}
+      # Gap between polls. Small because the long poll already does the waiting; fixedDelay, so a slow
+      # batch never overlaps the next tick.
+      fixed-delay-ms: ${SETTLEMENT_CONSUMER_DELAY_MS:500}
+  # Master switch for every background job in this service (today: the queue consumer). True in every
+  # real run; integration tests set it false and drive one tick explicitly, because Spring caches
+  # contexts across test classes and a live consumer would drain the shared queue mid-assertion.
+  schedulers:
+    enabled: ${PIX_SCHEDULERS_ENABLED:true}
+
+# The BACEN SPI (mock-bacen-spi, step 30). Defaults target a locally-run stub on 9090
+# (docs/local-dev.md §2); compose overrides it to the service name on the shared network.
+services:
+  bacen:
+    base-url: ${BACEN_BASE_URL:http://localhost:9090}
+    # 12s read timeout (ADR-0003): BACEN settles in up to 10s, so a tighter budget would abandon healthy
+    # settlements, while a looser one would hold an SQS message past its 30s visibility timeout and let a
+    # redelivery race the worker still handling it. Nobody is waiting on this call — the payer got their
+    # 202 seconds ago — which is why patience here is the opposite posture to the 200ms fraud budget.
+    connect-timeout-ms: ${BACEN_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${BACEN_READ_TIMEOUT_MS:12000}
+
+# AWS SDK → LocalStack (DynamoDB + SQS). Defaults target a locally-run LocalStack; compose overrides
+# AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK
+# demands. ITs override these via LocalStackTestBase's @DynamicPropertySource (same aws.* keys).
+aws:
+  endpoint-url: ${AWS_ENDPOINT_URL:http://localhost:4566}
+  region: ${AWS_REGION:us-east-1}
+  access-key-id: ${AWS_ACCESS_KEY_ID:test}
+  secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups the compose healthcheck probes.
+      probes:
+        enabled: true

@@ -61,6 +61,21 @@ class PaymentResponseTest {
     }
 
     @Test
+    void sentToSpiAlsoMapsToProcessingSoTheClientLearnsNoNewWord() {
+        // Step 31 added a whole state to the internal machine — "we are waiting on BACEN". Mapping it at
+        // the edge is what keeps that mechanics change invisible to every client: settlement is our
+        // problem, and a status the client cannot act on has no business in the contract.
+        Transaction sentToSpi = new Transaction(
+                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, 20_000L,
+                TransactionStatus.SENT_TO_SPI, "rent", FraudDecision.APPROVE, false, CREATED, null);
+
+        PaymentResponse response = PaymentResponse.from(sentToSpi);
+
+        assertThat(response.status()).isEqualTo("PROCESSING");
+        assertThat(response.settledAt()).isNull();
+    }
+
+    @Test
     void rendersIdentityAmountAndKeyFromTheTransaction() {
         Transaction settled = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, 12_550L,
