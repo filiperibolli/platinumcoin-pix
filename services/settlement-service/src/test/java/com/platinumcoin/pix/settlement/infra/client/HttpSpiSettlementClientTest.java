@@ -122,6 +122,44 @@ class HttpSpiSettlementClientTest {
                 .isInstanceOf(SpiCallFailedException.class);
     }
 
+    /**
+     * Query-before-retry, happy answer: the rail reports the id SETTLED, so the caller can finalize
+     * without re-sending. The instant is BACEN's own, as with a direct settle.
+     */
+    @Test
+    void aStatusQueryReturningSettledBecomesAPresentSettlement() throws IOException {
+        String baseUrl = startServer(0, 200, """
+                {"endToEndId":"%s","status":"SETTLED","amountCents":12550,
+                 "creditorKey":"bob@otherbank.com","creditorIspb":"99999999",
+                 "rejectionReason":null,"recordedAt":"2026-08-13T10:15:29Z"}
+                """.formatted(E2E_ID));
+
+        var found = client(baseUrl).findSettlement(E2E_ID);
+
+        assertThat(found).isPresent();
+        assertThat(found.get().amountCents()).isEqualTo(12_550L);
+        assertThat(found.get().recordedAt()).isEqualTo(Instant.parse("2026-08-13T10:15:29Z"));
+    }
+
+    /** UNKNOWN (the rail never heard of the id): empty means "not settled, go ahead and retry the POST". */
+    @Test
+    void aStatusQueryReturningUnknownBecomesEmpty() throws IOException {
+        String baseUrl = startServer(0, 200, "{\"endToEndId\":\"%s\",\"status\":\"UNKNOWN\"}".formatted(E2E_ID));
+
+        assertThat(client(baseUrl).findSettlement(E2E_ID)).isEmpty();
+    }
+
+    /**
+     * The query itself failing must never throw: it is empty (not-yet-known), and the caller falls back
+     * to the idempotent retry POST. A query-before-retry that could blow up would defeat its own purpose.
+     */
+    @Test
+    void aFailingStatusQueryIsEmptyRatherThanThrowing() throws IOException {
+        String baseUrl = startServer(0, 503, "{\"status\":503,\"detail\":\"unavailable\"}");
+
+        assertThat(client(baseUrl).findSettlement(E2E_ID)).isEmpty();
+    }
+
     private static HttpSpiSettlementClient client(String baseUrl) {
         return new HttpSpiSettlementClient(RestClient.builder(), baseUrl, CONNECT_TIMEOUT_MS,
                 READ_TIMEOUT_MS);

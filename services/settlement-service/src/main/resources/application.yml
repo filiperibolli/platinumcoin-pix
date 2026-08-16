@@ -29,6 +29,14 @@ pix:
     # to pix-events with a filter policy of eventType=PixDebited). Resolved to its URL at startup —
     # booting healthy while consuming nothing would be the worst possible failure mode.
     queue-name: ${SETTLEMENT_QUEUE_NAME:settlement-queue}
+    # The dead-letter queue this service's redrive policy targets (step 26). It consumes nothing from it;
+    # it only measures its depth as the settlement.dlq.depth metric (step 32) — a non-zero, sustained
+    # depth means money is stuck in clearing with no automatic path releasing it (step 44 alerts on it).
+    dlq:
+      queue-name: ${SETTLEMENT_DLQ_NAME:settlement-queue-dlq}
+      # How often the depth gauge is refreshed via GetQueueAttributes. 15s is far finer than the minutes
+      # an alert on "stuck money" reacts in, and one cheap attribute read is negligible.
+      metric-refresh-ms: ${SETTLEMENT_DLQ_REFRESH_MS:15000}
     consumer:
       # How long a receive blocks waiting for work. 20s is the SQS maximum and matches the queue's own
       # ReceiveMessageWaitTimeSeconds: an idle system costs one request per 20s instead of a stream of
@@ -41,6 +49,12 @@ pix:
       # Gap between polls. Small because the long poll already does the waiting; fixedDelay, so a slow
       # batch never overlaps the next tick.
       fixed-delay-ms: ${SETTLEMENT_CONSUMER_DELAY_MS:500}
+      # Per-attempt retry backoff (step 32): on a rail failure the message is left on the queue and its
+      # visibility reset to base·2^(receiveCount-1), capped. Defaults give 5,10,20,40,60(cap)s across the
+      # five deliveries before the DLQ — quick retries first, further apart the longer an id keeps
+      # failing. ITs set the base to 0 for immediate redelivery so a retry drill does not wait on time.
+      retry-backoff-base-seconds: ${SETTLEMENT_RETRY_BACKOFF_BASE_SECONDS:5}
+      retry-backoff-cap-seconds: ${SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS:60}
   # Master switch for every background job in this service (today: the queue consumer). True in every
   # real run; integration tests set it false and drive one tick explicitly, because Spring caches
   # contexts across test classes and a live consumer would drain the shared queue mid-assertion.

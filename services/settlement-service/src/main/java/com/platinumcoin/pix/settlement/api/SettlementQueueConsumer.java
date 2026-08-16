@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.Message;
+import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
 
 /**
  * The platform's first queue-driven inbound adapter: it long-polls {@code settlement-queue} and hands
@@ -56,6 +57,8 @@ public class SettlementQueueConsumer {
     private final SettlePixUseCase settlePix;
     private final int batchSize;
     private final int waitTimeSeconds;
+    private final int backoffBaseSeconds;
+    private final int backoffCapSeconds;
 
     /**
      * The queue's URL is resolved from its <b>name</b> here, at startup. Unlike the SNS topic ARN of step
@@ -72,16 +75,21 @@ public class SettlementQueueConsumer {
             SettlePixUseCase settlePix,
             @Value("${pix.settlement.queue-name}") String queueName,
             @Value("${pix.settlement.consumer.batch-size}") int batchSize,
-            @Value("${pix.settlement.consumer.wait-time-seconds}") int waitTimeSeconds) {
+            @Value("${pix.settlement.consumer.wait-time-seconds}") int waitTimeSeconds,
+            @Value("${pix.settlement.consumer.retry-backoff-base-seconds}") int backoffBaseSeconds,
+            @Value("${pix.settlement.consumer.retry-backoff-cap-seconds}") int backoffCapSeconds) {
         this.sqs = sqs;
         this.queueUrl = sqs.getQueueUrl(request -> request.queueName(queueName)).queueUrl();
         this.mapper = mapper;
         this.settlePix = settlePix;
         this.batchSize = batchSize;
         this.waitTimeSeconds = waitTimeSeconds;
+        this.backoffBaseSeconds = backoffBaseSeconds;
+        this.backoffCapSeconds = backoffCapSeconds;
         log.info("Settlement consumer ready, it will long-poll this queue for PixDebited events | "
-                        + "queueName={} queueUrl={} batchSize={} waitTimeSeconds={}",
-                queueName, this.queueUrl, batchSize, waitTimeSeconds);
+                        + "queueName={} queueUrl={} batchSize={} waitTimeSeconds={} "
+                        + "retryBackoffBaseSeconds={} retryBackoffCapSeconds={}",
+                queueName, this.queueUrl, batchSize, waitTimeSeconds, backoffBaseSeconds, backoffCapSeconds);
     }
 
     /**
@@ -97,7 +105,12 @@ public class SettlementQueueConsumer {
             var messages = sqs.receiveMessage(request -> request
                     .queueUrl(queueUrl)
                     .maxNumberOfMessages(batchSize)
-                    .waitTimeSeconds(waitTimeSeconds)).messages();
+                    .waitTimeSeconds(waitTimeSeconds)
+                    // ApproximateReceiveCount is how many times SQS has handed this message out. >1 means
+                    // a prior attempt did not delete it — a redelivery — which is the signal step 32 uses
+                    // to query the rail before re-sending.
+                    .messageSystemAttributeNames(MessageSystemAttributeName.APPROXIMATE_RECEIVE_COUNT))
+                    .messages();
 
             if (messages.isEmpty()) {
                 // DEBUG, not INFO: on an idle system this is nearly every tick and would drown the log
@@ -158,16 +171,24 @@ public class SettlementQueueConsumer {
                 return;
             }
 
-            SettleOutcome outcome = settlePix.execute(parsed.toCommand());
+            int receiveCount = receiveCount(message);
+            boolean redelivery = receiveCount > 1;
+
+            SettleOutcome outcome = settlePix.execute(parsed.toCommand(), redelivery);
             if (outcome.messageMayBeDeleted()) {
                 delete(message);
                 log.info("Settlement message handled and acked | messageId={} eventId={} txId={} "
-                        + "outcome={}", message.messageId(), parsed.eventId(), parsed.payload().txId(),
-                        outcome);
+                        + "receiveCount={} redelivery={} outcome={}", message.messageId(), parsed.eventId(),
+                        parsed.payload().txId(), receiveCount, redelivery, outcome);
             } else {
-                log.warn("Settlement message NOT acked, it stays invisible until the visibility timeout "
-                                + "and will be redelivered | messageId={} eventId={} txId={} outcome={}",
-                        message.messageId(), parsed.eventId(), parsed.payload().txId(), outcome);
+                int backoff = backoffSeconds(receiveCount);
+                extendVisibility(message, backoff);
+                log.warn("Settlement message NOT acked, it stays invisible for the backoff window then "
+                                + "SQS redelivers it (or redrives to the DLQ once it has been received "
+                                + "maxReceiveCount times) | messageId={} eventId={} txId={} receiveCount={} "
+                                + "backoffSeconds={} outcome={}",
+                        message.messageId(), parsed.eventId(), parsed.payload().txId(), receiveCount,
+                        backoff, outcome);
             }
         } catch (RuntimeException e) {
             // The use case releases its own claim on any failure, so leaving the message here is enough
@@ -186,5 +207,56 @@ public class SettlementQueueConsumer {
         sqs.deleteMessage(request -> request
                 .queueUrl(queueUrl)
                 .receiptHandle(message.receiptHandle()));
+    }
+
+    /**
+     * Reset this message's visibility to the backoff window, so it is redelivered after {@code seconds}
+     * rather than after the queue's static 30s timeout. This is the "per-attempt backoff via visibility
+     * extension" of step 32's task 1: the failed attempt already finished, so the window is not about
+     * protecting an in-flight call — it spaces the retries out, quickly at first and further apart the
+     * more an id keeps failing, until {@code maxReceiveCount} sends it to the DLQ.
+     *
+     * <p>Best-effort: if the reset itself fails, the message simply keeps its current visibility and
+     * comes back on the default schedule — never a reason to crash the tick.
+     */
+    private void extendVisibility(Message message, int seconds) {
+        try {
+            sqs.changeMessageVisibility(request -> request
+                    .queueUrl(queueUrl)
+                    .receiptHandle(message.receiptHandle())
+                    .visibilityTimeout(seconds));
+        } catch (RuntimeException e) {
+            log.warn("Could not set the retry backoff on a settlement message, it will be redelivered on "
+                            + "the queue's default visibility timeout instead | messageId={} backoffSeconds={}",
+                    message.messageId(), seconds, e);
+        }
+    }
+
+    /**
+     * Exponential backoff capped: {@code base·2^(receiveCount-1)}, never above the cap. With the default
+     * base of 5s that is 5, 10, 20, 40, 60(cap) across the five deliveries before the DLQ. A base of 0
+     * (integration tests) yields 0 — immediate redelivery, so a retry drill does not wait on wall-clock.
+     */
+    int backoffSeconds(int receiveCount) {
+        long shift = Math.min(Math.max(receiveCount - 1, 0), 20);
+        long backoff = (long) backoffBaseSeconds << shift;
+        return (int) Math.min(backoff, backoffCapSeconds);
+    }
+
+    /**
+     * How many times SQS has delivered this message. Absent or unparseable (a hand-placed test message,
+     * a broker that omits it) is treated as a first delivery — the safe default, since it only means the
+     * consumer sends before querying, which {@code endToEndId} idempotency makes safe anyway.
+     */
+    private static int receiveCount(Message message) {
+        String raw = message.attributes().get(MessageSystemAttributeName.APPROXIMATE_RECEIVE_COUNT);
+        if (raw == null) {
+            return 1;
+        }
+        try {
+            return Integer.parseInt(raw);
+        } catch (NumberFormatException e) {
+            return 1;
+        }
     }
 }

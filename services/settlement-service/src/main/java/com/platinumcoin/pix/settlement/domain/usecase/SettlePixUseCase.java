@@ -12,6 +12,7 @@ import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.service.SettlementOutboxEvents;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,12 +71,12 @@ public class SettlePixUseCase {
         this.clock = clock;
     }
 
-    public SettleOutcome execute(SettlePixCommand command) {
+    public SettleOutcome execute(SettlePixCommand command, boolean redelivery) {
         log.info("Settlement message accepted for processing, claiming it before touching the rail | "
                         + "eventId={} txId={} endToEndId={} debtorAccountId={} creditorKey={} "
-                        + "amountCents={}",
+                        + "amountCents={} redelivery={}",
                 command.eventId(), command.txId(), command.endToEndId(), command.debtorAccountId(),
-                command.creditorKey(), command.amountCents());
+                command.creditorKey(), command.amountCents(), redelivery);
 
         if (!processedEvents.claim(command.eventId())) {
             log.warn("Duplicate settlement delivery ignored, this event was already processed, acking "
@@ -86,7 +87,7 @@ public class SettlePixUseCase {
 
         boolean settled = false;
         try {
-            SettleOutcome outcome = settle(command);
+            SettleOutcome outcome = redelivery ? settleAfterRedelivery(command) : settle(command);
             settled = outcome == SettleOutcome.SETTLED;
             return outcome;
         } finally {
@@ -97,6 +98,34 @@ public class SettlePixUseCase {
                 processedEvents.release(command.eventId());
             }
         }
+    }
+
+    /**
+     * The retry path of step 32: <b>ask before re-sending</b>. A first delivery goes straight to {@link
+     * #settle} because nothing can have settled yet; a redelivery, however, may be the second half of a
+     * timeout whose {@code POST} actually settled at BACEN — so we query the rail first
+     * ({@code GET /spi/settlements/{endToEndId}}) and finalize on the settled truth instead of re-sending
+     * blindly. Only if the rail does not (yet) report this id as {@code SETTLED} do we fall through to a
+     * normal attempt, which is itself safe because {@code endToEndId} is the idempotency key.
+     *
+     * <p>The transaction is already {@code SENT_TO_SPI} on this path (the prior attempt claimed it before
+     * the timeout), so a settled answer needs no {@code markSentToSpi} — {@link #recordSettled} guards
+     * strictly on {@code SENT_TO_SPI} and commits the settlement plus its event in one atomic write.
+     */
+    private SettleOutcome settleAfterRedelivery(SettlePixCommand command) {
+        Optional<SpiSettlement> alreadySettled = spi.findSettlement(command.endToEndId());
+        if (alreadySettled.isEmpty()) {
+            log.info("Query-before-retry found no settlement at the rail yet, retrying the POST, which is "
+                            + "safe because endToEndId is the idempotency key | txId={} endToEndId={}",
+                    command.txId(), command.endToEndId());
+            return settle(command);
+        }
+
+        log.info("Query-before-retry discovered the Pix ALREADY settled at BACEN, so a POST that timed out "
+                        + "had in fact moved the money, finalizing without re-sending | txId={} "
+                        + "endToEndId={} amountCents={}",
+                command.txId(), command.endToEndId(), command.amountCents());
+        return recordSettled(command, alreadySettled.get(), clock.instant());
     }
 
     private SettleOutcome settle(SettlePixCommand command) {
@@ -134,6 +163,17 @@ public class SettlePixUseCase {
             return SettleOutcome.SPI_CALL_FAILED;
         }
 
+        return recordSettled(command, settlement, now);
+    }
+
+    /**
+     * Commit {@code SENT_TO_SPI → SETTLED} plus its {@code PixSettled} event in one atomic write — the
+     * shared tail of both a direct settle and a query-before-retry finalize. {@code now} is only the
+     * event's own {@code occurredAt}; the transaction's {@code settledAt} is BACEN's instant, carried on
+     * the {@link SpiSettlement}, because the money moved <i>there</i> and reconciliation compares the two
+     * systems on exactly that fact.
+     */
+    private SettleOutcome recordSettled(SettlePixCommand command, SpiSettlement settlement, Instant now) {
         SettlementConfirmation confirmation = SettlementConfirmation.of(settlement);
         OutboxEvent event = SettlementOutboxEvents.pixSettled(command, confirmation, now);
 

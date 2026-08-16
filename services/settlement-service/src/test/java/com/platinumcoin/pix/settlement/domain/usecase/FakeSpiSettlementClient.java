@@ -4,6 +4,7 @@ import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 /** BACEN's rail, under the test's control: it answers, or it fails exactly how the test says. */
 final class FakeSpiSettlementClient implements SpiSettlementClient {
@@ -19,6 +20,7 @@ final class FakeSpiSettlementClient implements SpiSettlementClient {
     private String lastCreditorKey;
     private String lastDebtorIspb;
     private long lastAmountCents;
+    private SpiSettlement queryAnswer;
 
     FakeSpiSettlementClient(List<String> trace) {
         this.trace = trace;
@@ -37,6 +39,18 @@ final class FakeSpiSettlementClient implements SpiSettlementClient {
             throw failure;
         }
         return new SpiSettlement(endToEndId, amountCents, CREDITOR_ISPB, RECORDED_AT);
+    }
+
+    /** The query-before-retry lookup: empty unless a test arranged a settled answer with {@link #settledAtRail}. */
+    @Override
+    public Optional<SpiSettlement> findSettlement(String endToEndId) {
+        trace.add("spi.findSettlement");
+        return Optional.ofNullable(queryAnswer);
+    }
+
+    /** Arrange the rail so a query-before-retry discovers this id already SETTLED (a timeout that landed). */
+    void settledAtRail(String endToEndId, long amountCents) {
+        this.queryAnswer = new SpiSettlement(endToEndId, amountCents, CREDITOR_ISPB, RECORDED_AT);
     }
 
     void failWith(RuntimeException failure) {

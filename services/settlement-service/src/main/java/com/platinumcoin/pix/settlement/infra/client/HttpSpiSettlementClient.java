@@ -6,6 +6,7 @@ import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -121,6 +122,43 @@ public class HttpSpiSettlementClient implements SpiSettlementClient {
                 view.endToEndId(), view.amountCents(), view.creditorIspb(), view.recordedAt());
         return new SpiSettlement(view.endToEndId(), view.amountCents(), view.creditorIspb(),
                 view.recordedAt());
+    }
+
+    @Override
+    public Optional<SpiSettlement> findSettlement(String endToEndId) {
+        log.info("Querying the SPI for the fate of a settlement before retrying it | endToEndId={}",
+                endToEndId);
+
+        SettlementView view;
+        try {
+            view = restClient.get()
+                    .uri("/spi/settlements/{endToEndId}", endToEndId)
+                    .retrieve()
+                    .body(SettlementView.class);
+        } catch (RuntimeException e) {
+            // The query itself failed — a status lookup we could not complete. Reported as "not known to
+            // be settled" (empty), never as a failure: the caller then retries the idempotent POST, which
+            // is the safe fallback. WARN, not ERROR: an unavailable dependency is a degradation the flow
+            // absorbs.
+            log.warn("The SPI status query did not answer, treating the settlement as not-yet-known and "
+                            + "letting the retry POST proceed | endToEndId={} error={}",
+                    endToEndId, e.toString());
+            return Optional.empty();
+        }
+
+        if (view == null || !SETTLED.equals(view.status()) || view.amountCents() == null) {
+            // UNKNOWN (the rail never heard of it), a refusal, or an unreadable body — none of which is a
+            // settlement to finalize on. Empty means "go ahead and retry the POST".
+            log.info("The SPI does not report this id as settled yet, the retry POST will proceed | "
+                            + "endToEndId={} status={}", endToEndId, view == null ? null : view.status());
+            return Optional.empty();
+        }
+
+        log.info("The SPI reports this Pix ALREADY settled, the caller can finalize without re-sending | "
+                        + "endToEndId={} amountCents={} creditorIspb={} recordedAt={}",
+                view.endToEndId(), view.amountCents(), view.creditorIspb(), view.recordedAt());
+        return Optional.of(new SpiSettlement(view.endToEndId(), view.amountCents(), view.creditorIspb(),
+                view.recordedAt()));
     }
 
     private static SpiSettlementRejectedException rejected(String endToEndId,
