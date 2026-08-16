@@ -97,6 +97,34 @@
     button.polling svg { animation: spin 1.2s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     input.reqpath { font-family: var(--mono); font-size: 12.5px; margin-bottom: 14px; }
+    textarea.reqhdr { min-height: 58px; font-size: 12.5px; margin-bottom: 14px; }
+    .reqpreview { font-family: var(--mono); font-size: 12px; color: var(--text-2); background: var(--bg-1);
+      border: 1px dashed var(--line-2); border-radius: 8px; padding: 9px 12px; margin: 0 0 6px;
+      white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+    .reqpreview .rp-method { color: var(--ok); font-weight: 700; }
+    .authnote { font-size: 11.5px; margin: 4px 0 12px; }
+    .linkbtn { background: none; border: none; color: var(--accent); padding: 0 0 0 4px; font: 600 11px var(--mono); cursor: pointer; }
+    .linkbtn:hover { background: none; border: none; text-decoration: underline; }
+
+    .toasts { position: fixed; right: 20px; top: 20px; z-index: 60; display: flex; flex-direction: column;
+      gap: 10px; align-items: flex-end; pointer-events: none; }
+    .toast { pointer-events: auto; min-width: 230px; max-width: 400px; padding: 11px 14px; border-radius: 10px;
+      background: var(--elev); border: 1px solid var(--line-2); box-shadow: 0 10px 30px rgba(0,0,0,.38);
+      display: flex; align-items: flex-start; gap: 10px; animation: toast-in .18s ease-out; }
+    .toast.out { animation: toast-out .32s ease-in forwards; }
+    .toast .tdot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--muted); }
+    .toast.ok  { border-color: var(--accent-line); } .toast.ok .tdot  { background: var(--ok); }
+    .toast.bad { border-color: rgba(226,98,111,.4); } .toast.bad .tdot { background: var(--err); }
+    .toast .tbody { display: flex; flex-direction: column; gap: 2px; }
+    .toast .tstatus { font: 700 12.5px var(--mono); color: var(--text); }
+    .toast.ok .tstatus { color: var(--ok); } .toast.bad .tstatus { color: var(--err); }
+    .toast .tmeta { font: 500 11.5px var(--mono); color: var(--muted); word-break: break-all; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes toast-out { to { opacity: 0; transform: translateX(16px); } }
+
+    .respmeta { font: 500 11.5px var(--mono); margin: 11px 0 0; }
+    .respmeta .cid { color: var(--text); border-bottom: 1px dashed var(--line-2); cursor: pointer; padding-bottom: 1px; }
+    .respmeta .cid:hover { color: var(--accent); border-color: var(--accent); }
 
     .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 7px; font-size: 11.5px; font-weight: 600; border: 1px solid transparent; }
     .pill.ok  { background: var(--accent-soft); color: var(--ok);  border-color: var(--accent-line); }
@@ -149,6 +177,7 @@
   </style>
 </head>
 <body>
+  <div class="toasts" id="toasts"></div>
   <header>
     <img class="logo" src="data:image/png;base64,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" alt="PlatinumCoin" />
     <div class="brand">
@@ -270,10 +299,60 @@
       const text = await res.text();
       let json = null;
       try { json = text ? JSON.parse(text) : null; } catch (_) {}
-      return { ok: res.ok, status: res.status, statusText: res.statusText, bodyText: text, json };
+      // Every service echoes X-Correlation-Id and its CORS config exposes the header, so a cross-origin
+      // fetch can read it — surfacing it here is what lets you copy the id and `grep <cid>` the logs of
+      // every service the request touched (ADR-0012). On a 4xx it is also in the problem+json body.
+      const correlationId = res.headers.get('X-Correlation-Id');
+      return { ok: res.ok, status: res.status, statusText: res.statusText, bodyText: text, json, correlationId };
     }
 
     const pretty = (r) => (r.json !== null ? JSON.stringify(r.json, null, 2) : (r.bodyText || '(empty body)'));
+
+    // The request preview is built with innerHTML (it carries a styled method span), so every value that
+    // comes from an editable field is escaped first — a "<" typed in the body must not become markup.
+    const escapeHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    // Copy to clipboard with a file:// fallback: the async Clipboard API is blocked outside a secure
+    // context (and this page is opened from disk), so fall back to a hidden textarea + execCommand.
+    function copyText(t) {
+      try { if (navigator.clipboard) { navigator.clipboard.writeText(t); return true; } } catch (_) {}
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand('copy'); ta.remove(); return ok;
+      } catch (_) { return false; }
+    }
+
+    // Transient send confirmation: a toast slides in bottom-right and auto-dismisses after ~3s (click to
+    // dismiss early). Fired on every Send and on a stopped auto-poll, so an action always leaves a visible
+    // acknowledgement even when the response body is empty or the inline status is scrolled out of view.
+    function toast(statusLine, meta, kind) {
+      const box = $('toasts'); if (!box) return;
+      const el = document.createElement('div');
+      el.className = 'toast ' + (kind || '');
+      el.innerHTML = `<span class="tdot"></span><span class="tbody">`
+        + `<span class="tstatus">${escapeHtml(statusLine)}</span>`
+        + (meta ? `<span class="tmeta">${escapeHtml(meta)}</span>` : '') + `</span>`;
+      box.appendChild(el);
+      const kill = () => { el.classList.add('out'); setTimeout(() => el.remove(), 320); };
+      const t = setTimeout(kill, 3200);
+      el.onclick = () => { clearTimeout(t); kill(); };
+    }
+
+    // Parse the editable "Key: Value per line" headers box back into an object. Blank lines and lines
+    // without a colon are ignored, so a half-typed line never breaks a send. Authorization is never here
+    // (it is attached from the live session by send()), so what you see in the box is what goes on the wire.
+    function parseHeaderLines(text) {
+      const out = {};
+      (text || '').split('\n').forEach((line) => {
+        const t = line.trim();
+        const i = t.indexOf(':');
+        if (i < 1) return;
+        out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+      });
+      return out;
+    }
 
     // ---- Session actions ----------------------------------------------------------------------
     async function doLogin(username, password) {
@@ -623,6 +702,24 @@
       // A card that follows a payment starts pointed at the last one you created, if any.
       const initialPath = ep.syncFromTxId && lastPaymentTxId ? '/v1/payments/' + lastPaymentTxId : ep.path;
 
+      // Pre-fill the editable headers box with exactly what the card sends (minus Authorization, which the
+      // session attaches). Two ids are seeded as real, visible, editable values:
+      //   • Idempotency-Key — on money-moving POSTs (same key = replay; ADR-0002).
+      //   • X-Correlation-Id — on every call: the client originates the trace, the server reuses the
+      //     header it receives and echoes it back, so one `grep <cid>` walks every service (ADR-0012).
+      //     Clear the line to let the server mint one instead.
+      // The ↻ button re-mints only the ids WE generated, never an authored one (e.g. the fixed replay key).
+      const seededHeaders = { ...ep.headers };
+      const generatedKeys = [];
+      if (ep.idempotent && !('Idempotency-Key' in seededHeaders)) {
+        seededHeaders['Idempotency-Key'] = crypto.randomUUID(); generatedKeys.push('Idempotency-Key');
+      }
+      if (!ep.capturesToken && !('X-Correlation-Id' in seededHeaders)) {
+        seededHeaders['X-Correlation-Id'] = crypto.randomUUID(); generatedKeys.push('X-Correlation-Id');
+      }
+      const showHeaders = !ep.capturesToken && Object.keys(seededHeaders).length > 0;
+      const headersText = Object.entries(seededHeaders).map(([k, v]) => `${k}: ${v}`).join('\n');
+
       card.innerHTML = `
         <div class="head">
           <span class="method ${ep.method}">${ep.method}</span>
@@ -633,41 +730,86 @@
           <p class="desc">${ep.desc}</p>
           ${editablePath ? `<label for="path-${key}">Request path <span class="muted">· editable — change ids, keys &amp; query params here</span></label>
           <input id="path-${key}" class="reqpath" value="${initialPath}" spellcheck="false" autocomplete="off" />` : ''}
-          ${hasBody ? `<label>Request body</label><textarea id="body-${key}">${ep.body}</textarea>` : ''}
+          ${showHeaders ? `<label for="hdr-${key}">Request headers <span class="muted">· editable — one Key: Value per line; ids pre-filled</span>${generatedKeys.length ? ` <button type="button" class="linkbtn" data-newkey>↻ new ids</button>` : ''}</label>
+          <textarea id="hdr-${key}" class="reqhdr mono" spellcheck="false">${headersText}</textarea>` : ''}
+          ${hasBody ? `<label for="body-${key}">Request body <span class="muted">· editable — pre-filled with a valid example</span></label><textarea id="body-${key}">${ep.body}</textarea>` : ''}
+          <label class="muted" style="margin-top:2px;">This is what will be sent</label>
+          <div class="reqpreview" id="prev-${key}"></div>
+          ${ep.auth ? `<p class="authnote" id="auth-${key}"></p>` : ''}
           <div class="respbar">
             <button data-send>${ICON.send}Send</button>
             ${canPoll ? `<button class="ghost" data-poll>${ICON.poll}Auto-poll</button>` : ''}
             <span class="status pending" id="status-${key}"></span>
           </div>
+          <div class="respmeta" id="meta-${key}" style="display:none;"></div>
           <pre id="out-${key}" style="display:none;"></pre>
         </div>`;
       card.querySelector('.head').onclick = () => card.classList.toggle('open');
       if (ep.syncFromTxId) card.dataset.syncTxId = '1';
 
-      const statusEl = () => $('status-' + key), outEl = () => $('out-' + key), pathEl = () => $('path-' + key);
+      const statusEl = () => $('status-' + key), outEl = () => $('out-' + key);
+      const pathEl = () => $('path-' + key), hdrEl = () => $('hdr-' + key), bodyEl = () => $('body-' + key);
+
+      const effPath = () => (editablePath && pathEl() ? pathEl().value.trim() : ep.path);
+      const effHeaders = () => (hdrEl() ? parseHeaderLines(hdrEl().value) : { ...ep.headers });
+
+      // The live "what will be sent" box: method + full target URL + the headers/body actually going out,
+      // recomputed on every edit. Authorization is summarised, never dumped (it is a long opaque token).
+      function refreshPreview() {
+        const prev = $('prev-' + key); if (!prev) return;
+        const base = ep.capturesToken ? authBase() : currentServiceBase(svc);
+        const lines = [`<span class="rp-method">${ep.method}</span> ${escapeHtml(base + effPath())}`];
+        if (ep.auth) lines.push(accessToken
+          ? `Authorization: Bearer …  (session: ${identity ? identity.accountId : 'logged in'})`
+          : `Authorization: —  (not logged in; this endpoint will 401)`);
+        Object.entries(effHeaders()).forEach(([k, v]) => lines.push(`${escapeHtml(k)}: ${escapeHtml(v)}`));
+        if (hasBody && bodyEl()) { lines.push(''); lines.push(escapeHtml(bodyEl().value)); }
+        prev.innerHTML = lines.join('\n');
+        const authEl = $('auth-' + key);
+        if (authEl) authEl.className = 'authnote ' + (accessToken ? 'muted' : 'status bad');
+      }
+      // Recompute the preview as the user edits any field, and once now.
+      ['input', 'change'].forEach((evt) => card.querySelector('.body').addEventListener(evt, refreshPreview));
+      refreshPreview();
+
+      // ↻ new key: swap the Idempotency-Key line for a fresh UUID, leaving every other header as typed.
+      const newKeyBtn = card.querySelector('[data-newkey]');
+      if (newKeyBtn) newKeyBtn.onclick = (e) => {
+        e.stopPropagation();
+        const h = effHeaders();
+        // Only re-mint ids we generated and that are still present — a line the user deleted or an
+        // authored value (the fixed replay-demo key) is left untouched.
+        generatedKeys.forEach((k) => { if (k in h) h[k] = crypto.randomUUID(); });
+        hdrEl().value = Object.entries(h).map(([k, v]) => `${k}: ${v}`).join('\n');
+        refreshPreview();
+      };
 
       // One request execution, shared by the Send button and the auto-poll loop, so both stay identical.
+      // Everything sent comes from the editable fields — the preview above is literally these same values.
       async function runRequest() {
-        const bodyEl = $('body-' + key);
-        // Money-moving POSTs auto-attach a fresh Idempotency-Key (mirrors Postman's {{$guid}}); the
-        // minted value is surfaced in the Session panel's field so it is visible, not magic.
-        let headers = ep.headers;
-        if (ep.idempotent) {
-          const idem = crypto.randomUUID();
-          $('idemKey').value = idem;
-          headers = { ...ep.headers, 'Idempotency-Key': idem };
-        }
-        const path = editablePath && pathEl() ? pathEl().value.trim() : ep.path;
+        const path = effPath();
         const r = ep.capturesToken
-          ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
-          : await send({ method: ep.method, path, headers,
-                         body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
+          ? await doLogin(...bodyToCreds(bodyEl() ? bodyEl().value : ep.body))
+          : await send({ method: ep.method, path, headers: effHeaders(),
+                         body: hasBody && bodyEl() ? bodyEl().value : null, auth: ep.auth,
                          base: currentServiceBase(svc) });
         // A returned transactionId is remembered and pushed into any status card that follows a payment.
         if (r.json && r.json.transactionId) captureTxId(r.json.transactionId);
         statusEl().textContent = `${r.status} ${r.statusText}`;
         statusEl().className = 'status ' + (r.ok ? 'ok' : 'bad');
         outEl().style.display = 'block'; outEl().textContent = pretty(r);
+        // Surface the correlation id the service echoed, click-to-copy, so you can grep every service's
+        // logs for this one request (ADR-0012). Absent only if the request never reached a service.
+        const metaEl = $('meta-' + key);
+        if (metaEl && r.correlationId) {
+          metaEl.style.display = 'block';
+          metaEl.innerHTML = `<span class="muted">X-Correlation-Id · click to copy → grep the logs</span> `
+            + `<span class="cid">${escapeHtml(r.correlationId)}</span>`;
+          metaEl.querySelector('.cid').onclick = () => {
+            const ok = copyText(r.correlationId);
+            toast(ok ? 'Correlation id copied' : 'Copy failed — select it manually', r.correlationId, ok ? 'ok' : 'bad');
+          };
+        } else if (metaEl) { metaEl.style.display = 'none'; }
         return r;
       }
 
@@ -676,9 +818,13 @@
         e.stopPropagation();
         sendBtn.disabled = true;
         statusEl().textContent = 'Sending…'; statusEl().className = 'status pending';
-        try { await runRequest(); }
-        catch (err) { statusEl().textContent = err.message; statusEl().className = 'status bad'; outEl().style.display = 'none'; }
-        finally { sendBtn.disabled = false; }
+        try {
+          const r = await runRequest();
+          toast(`${r.status} ${r.statusText}`, `${ep.method} ${effPath()}`, r.ok ? 'ok' : 'bad');
+        } catch (err) {
+          statusEl().textContent = err.message; statusEl().className = 'status bad'; outEl().style.display = 'none';
+          toast('Request failed', err.message, 'bad');
+        } finally { sendBtn.disabled = false; }
       };
 
       // Auto-poll (GET only): re-run every 2s until a terminal status, a 40-poll cap, or a second click.
@@ -690,7 +836,11 @@
           if (timer) clearInterval(timer);
           timer = null; ticks = 0;
           pollBtn.classList.remove('polling'); pollBtn.innerHTML = `${ICON.poll}Auto-poll`;
-          if (why) statusEl().textContent += ' · ' + why;
+          if (why) {
+            statusEl().textContent += ' · ' + why;
+            const reached = why.startsWith('reached');
+            toast(reached ? 'Auto-poll done' : 'Auto-poll stopped', `${ep.method} ${effPath()} · ${why}`, reached ? 'ok' : '');
+          }
         };
         pollBtn.onclick = async (e) => {
           e.stopPropagation();
