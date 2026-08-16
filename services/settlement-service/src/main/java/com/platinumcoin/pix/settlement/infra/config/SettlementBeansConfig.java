@@ -1,5 +1,7 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
+import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
+import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
@@ -39,8 +41,11 @@ public class SettlementBeansConfig {
             ProcessedEvents processedEvents,
             SpiSettlementClient spi,
             SettlementTransactionStore transactions,
+            LedgerClient ledger,
+            DailyLimitRelease dailyLimits,
             @Value("${pix.ispb}") String ispb,
             Clock clock) {
-        return new SettlePixUseCase(processedEvents, spi, transactions, ispb, clock);
+        return new SettlePixUseCase(
+                processedEvents, spi, transactions, ledger, dailyLimits, ispb, clock);
     }
 }

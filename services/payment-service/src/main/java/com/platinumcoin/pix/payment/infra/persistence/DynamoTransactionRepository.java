@@ -201,6 +201,12 @@ public class DynamoTransactionRepository implements TransactionRepository {
         if (transaction.settledAt() != null) {
             item.put("settledAt", AttributeValue.fromS(transaction.settledAt().toString()));
         }
+        // Step-33 task 4: the exact clearing account an external debit credited, written only on an
+        // external send. A reversal reads it back (via the PixDebited event) so it debits the same
+        // account it credited — which is what keeps step 52's per-shard balance correct.
+        if (transaction.clearingAccountId() != null) {
+            item.put("clearingAccountId", AttributeValue.fromS(transaction.clearingAccountId()));
+        }
         // Step-25 fraud verdict: the enum name only when scored; the skipped flag always (a boolean's
         // honest default is false, not absent).
         if (transaction.fraudDecision() != null) {
@@ -210,12 +216,12 @@ public class DynamoTransactionRepository implements TransactionRepository {
 
         log.debug("DynamoDB Put of the transaction META item | table={} pk=TX#{} sk={} "
                         + "gsi1pk=E2E#{} gsi2pk=STATUS#{} debtorAccountId={} creditorKey={} "
-                        + "creditorAccountId={} creditorInternal={} amountCents={} settledAt={} "
-                        + "fraudDecision={} fraudSkipped={} condition=attribute_not_exists(pk)",
+                        + "creditorAccountId={} creditorInternal={} clearingAccountId={} amountCents={} "
+                        + "settledAt={} fraudDecision={} fraudSkipped={} condition=attribute_not_exists(pk)",
                 TABLE, transaction.txId(), META_SK, transaction.endToEndId(),
                 transaction.status().name(), transaction.debtorAccountId(), transaction.creditorKey(),
                 transaction.creditorAccountId(), transaction.creditorInternal(),
-                transaction.amountCents(), transaction.settledAt(),
+                transaction.clearingAccountId(), transaction.amountCents(), transaction.settledAt(),
                 transaction.fraudDecision(), transaction.fraudSkipped());
 
         return Put.builder()
@@ -270,6 +276,7 @@ public class DynamoTransactionRepository implements TransactionRepository {
                 item.containsKey("creditorInternal")
                         ? Boolean.TRUE.equals(item.get("creditorInternal").bool())
                         : item.containsKey("creditorAccountId"),
+                item.containsKey("clearingAccountId") ? item.get("clearingAccountId").s() : null,
                 Long.parseLong(item.get("amountCents").n()),
                 TransactionStatus.valueOf(item.get("status").s()),
                 item.get("description").s(),

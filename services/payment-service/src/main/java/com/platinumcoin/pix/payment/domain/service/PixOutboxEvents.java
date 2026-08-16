@@ -63,7 +63,12 @@ public final class PixOutboxEvents {
     }
 
     private static OutboxEvent pixDebited(Transaction transaction, Instant occurredAt) {
-        return event(PIX_DEBITED, sendPayload(transaction, occurredAt), occurredAt);
+        Map<String, Object> payload = sendPayload(transaction, occurredAt);
+        // The exact clearing account this debit credited (step 33, task 4). settlement-service reads it
+        // off the event so a reversal debits the same account — no re-derivation that could miss the
+        // step-52 shard the money actually went to.
+        payload.put("clearingAccountId", transaction.clearingAccountId());
+        return event(PIX_DEBITED, payload, occurredAt);
     }
 
     private static OutboxEvent pixSettled(Transaction transaction, Instant occurredAt) {

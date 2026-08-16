@@ -6,17 +6,19 @@ import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import java.time.Instant;
 
 /**
- * Outbound port for the two — and only two — writes settlement-service performs on
- * {@code pix_transactions}.
+ * Outbound port for the narrow, guarded set of writes settlement-service performs on
+ * {@code pix_transactions} — the three definitive transitions of an external send it owns:
+ * {@code DEBITED → SENT_TO_SPI}, and from there either {@code → SETTLED} or (on a permanent BACEN
+ * refusal) {@code → REVERSED}.
  *
  * <p><b>Why this service writes a table another service owns.</b> ADR-0006 records it as a deliberate
  * exception: the transactional-outbox guarantee (ADR-0004) requires the state change and the event it
  * announces to commit in <i>one</i> {@code TransactWriteItems}, and putting an internal API between the
  * writer and the table would reintroduce exactly the dual-write problem the outbox exists to eliminate.
- * The price is paid by keeping the write surface narrow: two named transitions, each guarded by a
+ * The price is paid by keeping the write surface narrow: named transitions, each guarded by a
  * condition, and never a free-form update. This interface <b>is</b> that surface.
  *
- * <p>Both methods express their precondition as a condition <i>inside</i> the write — never a read
+ * <p>Every method expresses its precondition as a condition <i>inside</i> the write — never a read
  * followed by a check, which under concurrency is not a guard at all.
  */
 public interface SettlementTransactionStore {
@@ -46,4 +48,21 @@ public interface SettlementTransactionStore {
      * @throws TransitionNotAllowedException when the transaction is no longer {@code SENT_TO_SPI}
      */
     void markSettled(String txId, SettlementConfirmation confirmation, OutboxEvent event);
+
+    /**
+     * {@code SENT_TO_SPI → REVERSED}, together with the {@code PixReversed} outbox event, in <b>one</b>
+     * atomic write (step 33). Guarded strictly on {@code SENT_TO_SPI}: only a transaction this consumer
+     * put on the rail and that BACEN then permanently refused may be reversed — and the guard is what
+     * makes the reversal idempotent at the state level, so a redelivery finds it already {@code REVERSED}
+     * and refuses rather than reversing again.
+     *
+     * <p>The event is written, not published — the polling publisher (ADR-0004) drains the sparse index —
+     * so the {@code PixReversed} announcement inherits the same atomicity as the state change: no crash
+     * can leave a reversed payment nobody hears about, nor announce a reversal that did not commit.
+     *
+     * @param failureReason BACEN's machine-readable refusal reason, stamped on the item for the status
+     *                      endpoint and audit
+     * @throws TransitionNotAllowedException when the transaction is no longer {@code SENT_TO_SPI}
+     */
+    void markReversed(String txId, String failureReason, Instant at, OutboxEvent event);
 }

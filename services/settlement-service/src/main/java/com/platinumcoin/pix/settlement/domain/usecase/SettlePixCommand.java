@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.settlement.domain.usecase;
 
+import java.time.Instant;
 import java.util.Objects;
 
 /**
@@ -16,6 +17,13 @@ import java.util.Objects;
  * <p>{@code amountCents} is a {@code long} of integer cents from the queue to the rail — no decimal
  * string, no {@code double}, no conversion anywhere in between.
  *
+ * @param clearingAccountId the exact clearing account the acceptance-time debit credited (step 33 task
+ *                          4). Carried on the event so a reversal debits the same account it credited —
+ *                          the same shard, once step 52 shards it — rather than re-deriving it and risking
+ *                          the wrong sub-account. Required: every external {@code PixDebited} carries it.
+ * @param debitedAt         the instant the payer was debited (the event's {@code occurredAt}); the daily
+ *                          limit was reserved against this instant's calendar day, so a reversal releases
+ *                          it against the same day. May be absent on a hand-built or legacy event.
  * @param eventId       the de-dup key of the delivery being processed (Domain Safety Rule #2)
  * @param correlationId the request that caused the payment, carried across the asynchronous boundary so
  *                      one {@code grep} still reconstructs the whole path (ADR-0012); may be absent
@@ -26,8 +34,10 @@ public record SettlePixCommand(
         String endToEndId,
         String debtorAccountId,
         String creditorKey,
+        String clearingAccountId,
         long amountCents,
         String description,
+        Instant debitedAt,
         String correlationId) {
 
     public SettlePixCommand {
@@ -36,6 +46,7 @@ public record SettlePixCommand(
         requireText(endToEndId, "endToEndId");
         requireText(debtorAccountId, "debtorAccountId");
         requireText(creditorKey, "creditorKey");
+        requireText(clearingAccountId, "clearingAccountId");
         if (amountCents <= 0) {
             // A non-positive amount is not money. Refusing it here means a malformed event can never
             // reach the rail, whatever produced it.

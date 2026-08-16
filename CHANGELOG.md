@@ -122,6 +122,32 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Settlement finalization: clearing release on SETTLED, compensating reversal (append-only) on FAILED with PixReversed (step 33)
+  **The money loop closes on definitive outcomes.** Until step 33 an external send that BACEN permanently
+  refused was left to redrive to the DLQ, and a settled one never drew its money out of the clearing
+  account. Now settlement-service finalizes both branches through the ledger, and Σ balances stays
+  invariant on each:
+  - **SETTLED** → a `CLEARING_RELEASE` posting (`debit SPI_CLEARING / credit SPI_SETTLED`,
+    `txId=<orig>-rel`) draws the parked money out of clearing into a new seeded system account
+    `SPI_SETTLED` ("money settled out to the network"), posted **before** `markSettled` so a crash between
+    the two replays harmlessly.
+  - **Permanent refusal** (`SpiSettlementRejectedException`) → a compensating `PIX_REVERSAL` posting
+    (`debit SPI_CLEARING / credit payer`, `txId=<orig>-rev`) returns the money to the payer, then a guarded
+    `SENT_TO_SPI → REVERSED` transition + `PixReversed` outbox event commit in one `TransactWriteItems`, and
+    the daily-limit reservation is released — **only when the guard wins on this invocation**, so a
+    redelivery never double-refunds the counter. The ledger stays append-only: a reversal is a new posting,
+    never an edit.
+  Both postings are **idempotent by their deterministic `txId`**, which is what lets them precede the
+  guarded status transition without ever double-moving money. **Task 4:** payment-service now persists the
+  exact `clearingAccountId` the debit credited on the transaction and carries it on the `PixDebited` event,
+  so a reversal debits the same account (the same shard, once step 52 shards `SPI_CLEARING`) rather than
+  re-deriving it. settlement-service, being queue-driven, has no user token to forward, so a new
+  `ServiceTokenIssuer` mints a short-lived HS256 service token (shared secret) for the JWT-protected ledger
+  call — a sandbox stand-in for a real service credential (ADR-0013; step-45 hardening). `ReversalIT` proves
+  the payer is refunded to their pre-send balance, the status reaches `REVERSED`, `PixReversed` is emitted,
+  conservation holds and a re-run does not double-refund; `ClearingReleaseIT` proves the clearing nets to
+  zero and Σ balances is conserved on the success branch too.
+  AI: est 4h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - Settlement retries with query-before-retry, visibility backoff and DLQ redrive; DLQ depth metric (step 32)
   **Settlement becomes failure-proof.** On an SPI timeout/5xx the message is no longer just left on the
   queue: the consumer resets its visibility to an exponential backoff (`base·2^(receiveCount-1)`, default

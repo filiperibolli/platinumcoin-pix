@@ -227,8 +227,8 @@ class OutboxPublisherIT extends LocalStackTestBase {
         String txId = "tx-" + UUID.randomUUID();
         transactions.create(
                 new Transaction(txId, "E" + UUID.randomUUID(), "acc-publisher-lag", EXTERNAL_KEY, null,
-                        false, 1_000L, TransactionStatus.DEBITED, "aged", FraudDecision.APPROVE, false,
-                        fiveMinutesAgo, null),
+                        false, "SPI_CLEARING", 1_000L, TransactionStatus.DEBITED, "aged",
+                        FraudDecision.APPROVE, false, fiveMinutesAgo, null),
                 List.of(new OutboxEvent("evt-" + UUID.randomUUID(), "PixDebited", Map.of("txId", txId),
                         fiveMinutesAgo, "corr-publish-lag")));
 

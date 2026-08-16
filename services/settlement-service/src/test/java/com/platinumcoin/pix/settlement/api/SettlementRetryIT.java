@@ -212,6 +212,7 @@ class SettlementRetryIT extends LocalStackTestBase {
         item.put("debtorAccountId", AttributeValue.fromS("acc-001"));
         item.put("creditorKey", AttributeValue.fromS("bob@otherbank.com"));
         item.put("creditorInternal", AttributeValue.fromBool(false));
+        item.put("clearingAccountId", AttributeValue.fromS("SPI_CLEARING"));
         item.put("amountCents", AttributeValue.fromN(Long.toString(amountCents)));
         item.put("status", AttributeValue.fromS("DEBITED"));
         item.put("description", AttributeValue.fromS("aluguel"));
@@ -226,7 +227,8 @@ class SettlementRetryIT extends LocalStackTestBase {
         String body = """
                 {"eventId":"%s","eventType":"PixDebited","occurredAt":"2026-08-13T10:15:00.000Z",
                  "correlationId":"%s","payload":{"txId":"%s","endToEndId":"%s",
-                 "debtorAccountId":"acc-001","creditorKey":"bob@otherbank.com","amountCents":%d,
+                 "debtorAccountId":"acc-001","creditorKey":"bob@otherbank.com",
+                 "clearingAccountId":"SPI_CLEARING","amountCents":%d,
                  "description":"aluguel","status":"DEBITED","occurredAt":"2026-08-13T10:15:00.000Z"}}
                 """.formatted(eventId, correlationId, txId, e2eId, amountCents);
 

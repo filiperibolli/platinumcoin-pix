@@ -6,11 +6,11 @@ package com.platinumcoin.pix.settlement.domain.model;
  * <p><b>Why this enum exists next to payment-service's.</b> The two services share a <i>table</i>
  * (ADR-0006's documented exception), not a class — and each owns a different part of the machine:
  * payment-service can write {@link #RECEIVED}, {@link #DEBITED} and, for an internal send,
- * {@link #SETTLED}; settlement-service may only move {@code DEBITED → SENT_TO_SPI → SETTLED}. Naming
- * exactly the states this service writes is what keeps the write surface as narrow as the ADR promises,
- * and it means a state added elsewhere ({@code REVERSED}, step 33) cannot be produced here by accident.
- * The values are the strings persisted in the {@code status} attribute, so the two enums agree by
- * contract, not by inheritance.
+ * {@link #SETTLED}; settlement-service may move {@code DEBITED → SENT_TO_SPI → SETTLED} and, on a
+ * permanent BACEN refusal, {@code SENT_TO_SPI → REVERSED} (step 33). Naming exactly the states this
+ * service writes is what keeps the write surface as narrow as the ADR promises. The values are the
+ * strings persisted in the {@code status} attribute, so the two enums agree by contract, not by
+ * inheritance.
  */
 public enum TransactionStatus {
 
@@ -30,5 +30,14 @@ public enum TransactionStatus {
     SENT_TO_SPI,
 
     /** BACEN confirmed the transfer. Terminal for an external send. */
-    SETTLED
+    SETTLED,
+
+    /**
+     * BACEN <b>permanently refused</b> the transfer, and the payer has been made whole by a compensating
+     * ledger posting (step 33): a new {@code debit clearing / credit payer} entry returns the money that
+     * was parked in clearing at acceptance time. Terminal, and reached only from {@link #SENT_TO_SPI}
+     * under a guarded transition — the ledger stays append-only (the reversal is a fresh posting with its
+     * own {@code <txId>-rev} identity, never an edit of the original debit).
+     */
+    REVERSED
 }

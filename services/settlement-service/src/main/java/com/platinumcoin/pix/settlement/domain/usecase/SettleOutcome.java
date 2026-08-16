@@ -15,6 +15,15 @@ public enum SettleOutcome {
     /** BACEN confirmed and the transaction is {@code SETTLED} with its event written. Done. */
     SETTLED(true),
 
+    /**
+     * BACEN permanently refused the transfer, so settlement-service made the payer whole in the same
+     * delivery (step 33): a compensating {@code debit clearing / credit payer} posting, the guarded
+     * transition to {@code REVERSED}, the daily-limit reservation released, and a {@code PixReversed}
+     * event written. The work is finished — the message is acked. This is what step 31's
+     * {@code REJECTED_BY_SPI} became: a refusal no longer redrives to the DLQ, it reverses in place.
+     */
+    REVERSED(true),
+
     /** This event was already processed. The work is not repeated and the message is acked. */
     DUPLICATE(true),
 
@@ -24,13 +33,6 @@ public enum SettleOutcome {
      * reconciliation loop (step 35) owns whatever state it is actually in.
      */
     NOT_ELIGIBLE(true),
-
-    /**
-     * BACEN refused the transfer permanently. <b>Not</b> deleted: step 31 has no reversal path, so the
-     * message stays visible and redrives to the DLQ, where a flagged message is picked up by step 33's
-     * reversal and step 35's resolver. Losing it silently would strand the payer's money in clearing.
-     */
-    REJECTED_BY_SPI(false),
 
     /**
      * The rail was unreachable, errored or timed out — the outcome is <b>unknown</b>. Left on the queue

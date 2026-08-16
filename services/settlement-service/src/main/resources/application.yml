@@ -24,7 +24,16 @@ jwt:
 # payment-service bakes into every endToEndId; one place to change PlatinumCoin's participant code.
 pix:
   ispb: ${PIX_ISPB:12345678}
+  # Service-to-service auth (step 33). settlement runs off a queue, so it has no user token to forward to
+  # ledger-service's JWT-protected /internal endpoint — it mints its own short-lived token signed with the
+  # shared jwt.secret above. A sandbox stand-in for a real service credential; the production posture
+  # (ambient IAM role / mTLS) is the step-45 sweep (ADR-0013).
+  service-auth:
+    token-ttl-seconds: ${SERVICE_TOKEN_TTL_SECONDS:60}
   settlement:
+    # The ledger account a CLEARING_RELEASE credits when an external send settles (step 33): money that
+    # has left the bank to the SPI network. Seeded at 0 by infra/localstack/init/05-seed-ledger.sh.
+    settled-account-id: ${PIX_SETTLED_ACCOUNT_ID:SPI_SETTLED}
     # The queue this service consumes (created by infra/localstack/init/06-messaging-core.sh, subscribed
     # to pix-events with a filter policy of eventType=PixDebited). Resolved to its URL at startup —
     # booting healthy while consuming nothing would be the worst possible failure mode.
@@ -64,6 +73,13 @@ pix:
 # The BACEN SPI (mock-bacen-spi, step 30). Defaults target a locally-run stub on 9090
 # (docs/local-dev.md §2); compose overrides it to the service name on the shared network.
 services:
+  # ledger-service, called on a DEFINITIVE settlement outcome (step 33): CLEARING_RELEASE on success,
+  # the compensating reversal on a permanent refusal. Short timeouts — a hung ledger surfaces as a
+  # timeout (nothing posted) and the message redelivers, which the idempotent -rel/-rev txId makes safe.
+  ledger-service:
+    base-url: ${LEDGER_BASE_URL:http://localhost:8085}
+    connect-timeout-ms: ${LEDGER_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${LEDGER_READ_TIMEOUT_MS:3000}
   bacen:
     base-url: ${BACEN_BASE_URL:http://localhost:9090}
     # 12s read timeout (ADR-0003): BACEN settles in up to 10s, so a tighter budget would abandon healthy

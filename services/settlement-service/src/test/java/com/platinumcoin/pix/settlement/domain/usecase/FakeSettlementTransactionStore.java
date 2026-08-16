@@ -20,10 +20,15 @@ final class FakeSettlementTransactionStore implements SettlementTransactionStore
     private final List<String> sentToSpi = new ArrayList<>();
     private boolean refuseSentToSpi;
     private boolean refuseSettled;
+    private boolean refuseReversed;
     private int settledCalls;
     private String settledTxId;
     private SettlementConfirmation settledConfirmation;
     private OutboxEvent settledEvent;
+    private int reversedCalls;
+    private String reversedTxId;
+    private String reversedFailureReason;
+    private OutboxEvent reversedEvent;
 
     FakeSettlementTransactionStore(List<String> trace) {
         this.trace = trace;
@@ -50,12 +55,44 @@ final class FakeSettlementTransactionStore implements SettlementTransactionStore
         settledEvent = event;
     }
 
+    @Override
+    public void markReversed(String txId, String failureReason, Instant at, OutboxEvent event) {
+        trace.add("markReversed");
+        if (refuseReversed) {
+            throw new TransitionNotAllowedException(txId, "SENT_TO_SPI", "REVERSED");
+        }
+        reversedCalls++;
+        reversedTxId = txId;
+        reversedFailureReason = failureReason;
+        reversedEvent = event;
+    }
+
     void refuseSentToSpi() {
         this.refuseSentToSpi = true;
     }
 
     void refuseSettled() {
         this.refuseSettled = true;
+    }
+
+    void refuseReversed() {
+        this.refuseReversed = true;
+    }
+
+    int reversedCalls() {
+        return reversedCalls;
+    }
+
+    String reversedTxId() {
+        return reversedTxId;
+    }
+
+    String reversedFailureReason() {
+        return reversedFailureReason;
+    }
+
+    OutboxEvent reversedEvent() {
+        return reversedEvent;
     }
 
     List<String> sentToSpi() {

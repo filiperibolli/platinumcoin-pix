@@ -6,12 +6,16 @@ import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedExc
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
+import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
+import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.service.SettlementOutboxEvents;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,28 +49,52 @@ import org.slf4j.LoggerFactory;
  * {@code SENT_TO_SPI} for the reconciliation loop to close within 5 minutes (ADR-0003). Losing a retry
  * to a safety net beats letting two workers settle one Pix.
  *
- * <p>No money moves here: an external send debited the payer into the clearing account at acceptance
- * time (step 27), so settlement records what BACEN did with money that already left the payer. That is
- * why this service holds no ledger client — the compensating posting for a refusal is step 33's.
+ * <h2>Definitive outcomes move money again (step 33)</h2>
+ * An external send parked the payer's money in the clearing account at acceptance time (step 27), so on
+ * a definitive answer the clearing balance must be resolved through the ledger:
+ * <ul>
+ *   <li><b>SETTLED</b> — the money left the bank, so {@link #recordSettled} first posts a
+ *       {@code CLEARING_RELEASE} ({@code debit clearing / credit SPI_SETTLED}) to draw it out, then
+ *       records {@code SETTLED} + {@code PixSettled}.</li>
+ *   <li><b>Permanently refused</b> — the money never left, so {@link #reverse} posts a compensating
+ *       {@code debit clearing / credit payer}, moves the transaction to {@code REVERSED}, releases the
+ *       daily-limit reservation and announces {@code PixReversed}. The ledger stays append-only: a
+ *       reversal is a new posting, never an edit.</li>
+ * </ul>
+ * Both postings are idempotent by a deterministic {@code txId} ({@code -rel}, {@code -rev}), which is
+ * what lets them run before the guarded status transition without ever double-moving money.
  *
- * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): the queue lives in {@code api/}, the store,
- * the rail and the dedup gate behind three ports.
+ * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): the queue lives in {@code api/}; the store,
+ * the rail, the ledger, the dedup gate and the daily-limit counter each sit behind a port.
  */
 public class SettlePixUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(SettlePixUseCase.class);
 
+    /**
+     * The zone whose calendar day the daily limit is windowed on — the same
+     * {@code America/Sao_Paulo} payment-service reserved against (step 20). A reversal releases the
+     * reservation against the debit day, not the day the reversal happens, so it must resolve the debit
+     * instant in this zone to hit the same {@code DAY#} counter.
+     */
+    private static final ZoneId LIMIT_ZONE = ZoneId.of("America/Sao_Paulo");
+
     private final ProcessedEvents processedEvents;
     private final SpiSettlementClient spi;
     private final SettlementTransactionStore transactions;
+    private final LedgerClient ledger;
+    private final DailyLimitRelease dailyLimits;
     private final String debtorIspb;
     private final Clock clock;
 
     public SettlePixUseCase(ProcessedEvents processedEvents, SpiSettlementClient spi,
-            SettlementTransactionStore transactions, String debtorIspb, Clock clock) {
+            SettlementTransactionStore transactions, LedgerClient ledger, DailyLimitRelease dailyLimits,
+            String debtorIspb, Clock clock) {
         this.processedEvents = processedEvents;
         this.spi = spi;
         this.transactions = transactions;
+        this.ledger = ledger;
+        this.dailyLimits = dailyLimits;
         this.debtorIspb = debtorIspb;
         this.clock = clock;
     }
@@ -85,16 +113,18 @@ public class SettlePixUseCase {
             return SettleOutcome.DUPLICATE;
         }
 
-        boolean settled = false;
+        boolean done = false;
         try {
             SettleOutcome outcome = redelivery ? settleAfterRedelivery(command) : settle(command);
-            settled = outcome == SettleOutcome.SETTLED;
+            // The claim means "I am handling this"; only a terminal outcome turns it into "this is done"
+            // and keeps the claim so a redelivery is deduped. A settlement is terminal; so is a reversal
+            // (step 33) — the money is back with the payer, there is nothing left to do. Everything else —
+            // a refused transition, an unreachable rail, an unexpected error — releases the claim so the
+            // redelivery is real work.
+            done = outcome == SettleOutcome.SETTLED || outcome == SettleOutcome.REVERSED;
             return outcome;
         } finally {
-            // The claim means "I am handling this"; only a completed settlement turns it into "this is
-            // done". Anything else — a refused transition, a rejected transfer, an unreachable rail, an
-            // unexpected error — gives it back so the redelivery is real work.
-            if (!settled) {
+            if (!done) {
                 processedEvents.release(command.eventId());
             }
         }
@@ -147,12 +177,13 @@ public class SettlePixUseCase {
                     command.description(), debtorIspb);
         } catch (SpiSettlementRejectedException e) {
             // Terminal at BACEN: the money is still in the clearing account and the payer must be made
-            // whole by a compensating posting. Step 31 stops here on purpose — see SettleOutcome.
-            log.warn("The SPI refused this settlement permanently, leaving the message on the queue, the "
-                            + "payer is made whole by the reversal of step 33, nothing is settled locally "
-                            + "| txId={} endToEndId={} amountCents={} reason={}",
+            // whole by a compensating posting (step 33). Unlike a settlement, we reached SENT_TO_SPI first
+            // (markSentToSpi, above), so the reversal transitions from there to REVERSED.
+            log.warn("The SPI refused this settlement permanently, reversing the payment: the money parked "
+                            + "in clearing is returned to the payer | txId={} endToEndId={} amountCents={} "
+                            + "reason={}",
                     command.txId(), command.endToEndId(), command.amountCents(), e.reason());
-            return SettleOutcome.REJECTED_BY_SPI;
+            return reverse(command, e.reason());
         } catch (SpiCallFailedException e) {
             // Unknown, NOT failed: the transfer may well have happened. Nothing local is decided; the
             // transaction rests at SENT_TO_SPI, which is what tells step 32 to ask before retrying.
@@ -177,6 +208,17 @@ public class SettlePixUseCase {
         SettlementConfirmation confirmation = SettlementConfirmation.of(settlement);
         OutboxEvent event = SettlementOutboxEvents.pixSettled(command, confirmation, now);
 
+        // Draw the money out of the clearing account BEFORE recording the settlement (step 33, task 2).
+        // The money has left the bank, so SPI_CLEARING must be drained: debit clearing / credit
+        // SPI_SETTLED, keyed by <txId>-rel. Doing it before markSettled is safe because the posting is
+        // idempotent by that txId — if we crash between this and markSettled, the redelivery's
+        // query-before-retry re-finds the settlement, re-posts this (a no-op replay) and then records
+        // SETTLED. A ledger outage here throws and leaves the message for redelivery (nothing recorded
+        // locally yet). Doing it AFTER markSettled would instead risk announcing a settlement whose
+        // clearing was never released if the process died in between.
+        ledger.releaseClearing(clearingReleaseTxId(command.txId()), command.clearingAccountId(),
+                command.amountCents(), "Pix clearing release " + command.txId());
+
         try {
             transactions.markSettled(command.txId(), confirmation, event);
         } catch (TransitionNotAllowedException e) {
@@ -197,5 +239,83 @@ public class SettlePixUseCase {
                 command.txId(), command.endToEndId(), command.amountCents(), confirmation.creditorIspb(),
                 confirmation.settledAt(), command.eventId(), event.eventId());
         return SettleOutcome.SETTLED;
+    }
+
+    /**
+     * Make the payer whole after a permanent BACEN refusal (step 33): a compensating posting returns the
+     * parked money, the transaction moves to {@code REVERSED}, the daily-limit reservation is released,
+     * and {@code PixReversed} is announced. Reached from {@link #settle} on a
+     * {@link SpiSettlementRejectedException}, so the transaction is already {@code SENT_TO_SPI}.
+     *
+     * <h2>The order, and why it is idempotent</h2>
+     * <ol>
+     *   <li><b>Compensating posting first</b> ({@code debit clearing / credit payer}, keyed by
+     *       {@code <txId>-rev}). Idempotent by that {@code txId}: a redelivery replays it rather than
+     *       refunding twice. A ledger outage throws and propagates, leaving the message for redelivery —
+     *       nothing local is recorded yet, so the retry is clean.</li>
+     *   <li><b>Guarded transition {@code SENT_TO_SPI → REVERSED} + {@code PixReversed}, in one atomic
+     *       write.</b> If it refuses, the transaction was already reversed (a redelivery finalized before
+     *       this one) — we ack without releasing the limit again.</li>
+     *   <li><b>Release the daily limit</b>, reached only when the transition <i>won on this invocation</i>
+     *       — so a non-idempotent counter decrement runs exactly once per reversal.</li>
+     * </ol>
+     * The residual window (a crash between the transition and the release) leaves the reservation
+     * standing: a conservative over-count that never overspends and self-heals next day (ADR-0007).
+     */
+    private SettleOutcome reverse(SettlePixCommand command, String reason) {
+        Instant now = clock.instant();
+
+        ledger.reverseToPayer(reversalTxId(command.txId()), command.clearingAccountId(),
+                command.debtorAccountId(), command.amountCents(), "Pix reversal " + command.txId());
+
+        OutboxEvent event = SettlementOutboxEvents.pixReversed(command, reason, now);
+        try {
+            transactions.markReversed(command.txId(), reason, now, event);
+        } catch (TransitionNotAllowedException e) {
+            // Already reversed by a prior delivery, or moved on under us. The compensating posting above
+            // was an idempotent replay (no second refund); acking here without releasing the limit again
+            // is correct — the first reversal already released it.
+            log.warn("Reversal skipped, the transaction is no longer SENT_TO_SPI (already reversed or "
+                            + "moved on under us), acking without releasing the limit again | txId={} "
+                            + "endToEndId={} expectedStatus={}",
+                    e.txId(), command.endToEndId(), e.expectedStatus());
+            return SettleOutcome.NOT_ELIGIBLE;
+        }
+
+        releaseDailyLimit(command);
+
+        log.info("Pix reversed: the payer was refunded by a compensating posting, the transaction is "
+                        + "REVERSED and PixReversed was written in the same atomic write | txId={} "
+                        + "endToEndId={} amountCents={} debtorAccountId={} clearingAccountId={} reason={} "
+                        + "eventId={} reversedEventId={}",
+                command.txId(), command.endToEndId(), command.amountCents(), command.debtorAccountId(),
+                command.clearingAccountId(), reason, command.eventId(), event.eventId());
+        return SettleOutcome.REVERSED;
+    }
+
+    /**
+     * Return the daily-limit headroom the accepted send reserved, against the calendar day the debit was
+     * made on (not today's) — that is the {@code DAY#} counter payment-service incremented at acceptance.
+     */
+    private void releaseDailyLimit(SettlePixCommand command) {
+        Instant debitedAt = command.debitedAt() != null ? command.debitedAt() : clock.instant();
+        if (command.debitedAt() == null) {
+            log.warn("The PixDebited carried no debit instant, releasing the daily limit against today "
+                    + "instead of the debit day | txId={}", command.txId());
+        }
+        LocalDate day = debitedAt.atZone(LIMIT_ZONE).toLocalDate();
+        dailyLimits.release(command.debtorAccountId(), command.amountCents(), day);
+        log.info("Daily-limit headroom released after the reversal | debtorAccountId={} amountCents={} "
+                + "day={}", command.debtorAccountId(), command.amountCents(), day);
+    }
+
+    /** The reversal posting's identity: the original {@code txId} plus {@code -rev} (step 33 task 1). */
+    private static String reversalTxId(String txId) {
+        return txId + "-rev";
+    }
+
+    /** The clearing-release posting's identity: the original {@code txId} plus {@code -rel}. */
+    private static String clearingReleaseTxId(String txId) {
+        return txId + "-rel";
     }
 }

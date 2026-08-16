@@ -22,9 +22,33 @@ Steps 27 (clearing debit), 32 (failure detection).
 - `ClearingReleaseIT` — SETTLED ⇒ CLEARING_RELEASE entry present; clearing nets correctly.
 
 ## Verify locally
+
+**Success branch — `CLEARING_RELEASE` (task 2), reachable end-to-end.** Send an external Pix to a key
+mock-bacen's DICT knows, let it settle, and watch the clearing balance net back to zero as `SPI_SETTLED`
+takes it up:
 ```bash
-curl -s -X POST localhost:9090/admin/config -d '{"failureRate":1.0}' -H 'Content-Type: application/json'
-# send external pix; after retries/DLQ+finalization, payer is refunded and status REVERSED
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"pixKey":"bob@otherbank.com","amount":"12.50","description":"aluguel"}'
+# after settlement (~2s): SPI_CLEARING nets to 0, SPI_SETTLED credited by the amount
+curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance -H "Authorization: Bearer $TOKEN" | jq
+curl -s localhost:8085/internal/ledger/accounts/SPI_SETTLED/balance  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+**Failure branch — reversal on a permanent refusal (task 1).** The reversal fires on a permanent SPI
+refusal (`422 SPI_REJECTED`), which mock-bacen produces for a creditor key its **settlement** DICT does
+not answer for. Today the send-time resolution and the settlement both consult the *same* mock-bacen DICT
+(`SpiDirectory`), so a key that would be rejected at settlement is already refused at send (`422
+KEY_NOT_FOUND`) and never debits — there is no send-reachable end-to-end trigger yet. The failure branch
+is therefore proven by the automated **`ReversalIT`** (it stubs the SPI refusal against real DynamoDB/SQS):
+payer refunded to the pre-send balance, status `REVERSED`, `PixReversed` emitted, conservation holds,
+re-run does not double-refund. A manual end-to-end drill awaits a mock-bacen settlement-rejection knob (a
+natural companion to step 35's DLQ/reconciliation drills); `failureRate` is **not** it — it injects
+transient `503`s (retries → DLQ), which is step 32/35 territory, not a permanent refusal.
+```bash
+mvn -pl services/settlement-service -am verify -Dtest=ReversalIT -Dit.test=ReversalIT
 ```
 
 ## Definition of Done

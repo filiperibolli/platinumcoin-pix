@@ -135,9 +135,9 @@ It doubles as the **stored posting record**: with `ReturnValuesOnConditionCheckF
 
 **Invariant (checkable at any time):** `Σ balanceCents over all accounts (including SPI_CLEARING) = Σ of initial seeds` — postings move money, never create or destroy it. The invariant test suite (step 15) asserts this under a concurrent debit storm.
 
-**`entryType` vocabulary** (grown one step at a time, as each flow lands): `SEED_FUNDING` — the initial funding postings written by `05-seed-ledger.sh` (step 12); `PIX_OUT` / `PIX_IN`, `CLEARING_RELEASE` and the reversal type arrive with the flows that produce them (steps 21, 27, 33, 37). The ledger **stores it and does not validate it** (it only refuses a blank): an entry written by a newer service must never fail to load in an older one, which is why it is an open string rather than an enum. Step 14 therefore adds no term — the `PIX_INTERNAL` in its runbook curl is an example value, not a vocabulary entry.
+**`entryType` vocabulary** (grown one step at a time, as each flow lands): `SEED_FUNDING` — the initial funding postings written by `05-seed-ledger.sh` (step 12); `PIX_INTERNAL` (step 21) / `PIX_OUT` (step 27) / `PIX_IN` (step 37); and, on a **definitive external outcome** (step 33), `CLEARING_RELEASE` (a settled send draws the money out of clearing: `debit SPI_CLEARING / credit SPI_SETTLED`) and `PIX_REVERSAL` (a permanently-refused send returns the money to the payer: `debit SPI_CLEARING / credit payer`). The ledger **stores it and does not validate it** (it only refuses a blank): an entry written by a newer service must never fail to load in an older one, which is why it is an open string rather than an enum. Step 14 therefore adds no term — the `PIX_INTERNAL` in its runbook curl is an example value, not a vocabulary entry.
 
-**System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days) and `ACCOUNT#SEED` (initial funding source for demo users — **also exempt**: its balance is negative by construction, the double-entry counterpart of the seeded user balances, so Σ over all accounts nets to **zero**). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally).
+**System accounts:** `ACCOUNT#SPI_CLEARING` (money in flight to/from BACEN — exempt from the `balance >= x` condition, since its balance represents an inter-bank position and may go negative on inbound-heavy days); `ACCOUNT#SPI_SETTLED` (step 33 — money that has **settled out** to the SPI network, the credit counterpart of a `CLEARING_RELEASE` so that a settlement draws clearing down while Σ over all accounts stays **zero**; seeded at 0, only ever credited, so it never needs the exemption); and `ACCOUNT#SEED` (initial funding source for demo users — **also exempt**: its balance is negative by construction, the double-entry counterpart of the seeded user balances, so Σ over all accounts nets to **zero**). Production note: at 500 TPS all external sends hit the single clearing item → write-shard it into `SPI_CLEARING#00..#15` by hash of txId (documented, N=1 locally); a reversal/release must hit the **same** shard the debit credited, which is why the shard used is persisted on the transaction (§4, `clearingAccountId`).
 
 **Statement pagination:** `Query pk = ACCOUNT#id AND begins_with(sk, "ENTRY#")`, `ScanIndexForward=false` (newest first), `Limit=n`; the API cursor is the base64 of `LastEvaluatedKey`. Timestamp-prefixed sort keys give chronological ordering for free — a core DynamoDB idiom.
 
@@ -192,19 +192,36 @@ Both are written only when set, so a not-yet-settled item carries neither — an
 `ACCOUNT#SPI_CLEARING` (in flight) rather than with the payee, so the item rests at `DEBITED` with
 `settledAt` absent until settlement (step 31) writes it.
 
+- `clearingAccountId` (step 33, external send only) — the **exact** clearing account the acceptance-time
+  debit credited. Written on an external `DEBITED` item and carried on the `PixDebited` event, so a later
+  reversal debits the same account it credited. Today that is the single `SPI_CLEARING`; step 52 shards it
+  (`SPI_CLEARING#00..#15`), and a reversal that re-derived the shard instead of reading the one used would
+  drain the wrong sub-account and break the per-shard balance. An internal send never touches clearing, so
+  it carries no `clearingAccountId`.
+
 **The settlement-confirmation fields (step 31, owner: settlement-service).** An external send is finished
 by settlement-service, which is the platform's one documented exception to table ownership (ADR-0006): the
 status change and the `PixSettled` it announces must commit in **one** `TransactWriteItems`, and an
 internal API between the writer and this table would reintroduce the dual write the outbox exists to
-remove. Its write surface is exactly two **guarded** transitions and nothing else:
+remove. Its write surface is exactly these **guarded** transitions and nothing else:
 
 | Transition | Condition (inside the write) | Attributes written |
 |---|---|---|
 | `DEBITED → SENT_TO_SPI` | `attribute_exists(pk) AND (status = DEBITED OR status = SENT_TO_SPI)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt` |
 | `SENT_TO_SPI → SETTLED` | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
+| `SENT_TO_SPI → REVERSED` (step 33) | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
 
 - `settledAt` is **BACEN's** instant (the SPI's `recordedAt`), not ours: the money moved on the rail, and
   reconciliation (step 35) compares the two systems on exactly that fact.
+- **`REVERSED` is the failure-branch twin of `SETTLED`** (step 33): a permanent BACEN refusal reverses the
+  payment — settlement-service posts a compensating `debit clearing / credit payer` (`entryType=PIX_REVERSAL`,
+  `txId=<orig>-rev`) through ledger-service, releases the daily-limit reservation, and writes this guarded
+  transition + `PixReversed` in one `TransactWriteItems`. It stamps `failureReason` (BACEN's refusal code)
+  and — like a settlement — is idempotent: a redelivery finds it already `REVERSED` and the guard refuses.
+  On the **success** branch a settlement additionally posts a `CLEARING_RELEASE` (`debit clearing / credit
+  SPI_SETTLED`, `txId=<orig>-rel`) so the clearing balance nets to zero; both postings are idempotent by
+  their deterministic `txId`, so they run before the guarded status transition without ever double-moving
+  money.
 - `creditorIspb` is the participant that received the money, written only when the rail reported one. It
   is the external counterpart of `creditorAccountId` — an external payee has no account here.
 - `gsi2pk`/`gsi2sk` move with **every** transition, or a finished payment would keep showing up in the
@@ -262,7 +279,9 @@ as the payment. Money in a payload is always integer cents.
 confirmed external settlement announces `PixSettled` too — the same event type, so consumers never have to
 learn where the payee banks in order to know a payment completed. The payload differs only in the facts
 that genuinely differ: an internal `PixSettled` carries `creditorAccountId`, an external one carries
-`creditorIspb`. The item is byte-identical in shape to payment-service's, which is what lets **one**
+`creditorIspb`. On a permanent refusal it instead writes **`PixReversed`** (step 33, carrying
+`failureReason`) — the same publish path, announcing the failure branch of the funnel so notification and
+audit act on it. The item is byte-identical in shape to payment-service's, which is what lets **one**
 publisher drain the whole sparse index: `gsi3` is a property of the table, not of the writer.
 
 `correlationId` carries the request's id into the asynchronous half, so one `grep` still reconstructs the
