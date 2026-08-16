@@ -16,12 +16,16 @@ An external send answers `202 Accepted` after the payer is debited into the clea
 is never waiting on BACEN, which can take up to 10s (ADR-0003, design Question 4). Something has to
 finish that payment afterwards. This service is that something.
 
-Step 31 delivers the happy path, end to end:
+Step 31 delivers the happy path, step 32 makes it failure-proof:
 
 ```
-PixDebited ─▶ claim eventId (dedup) ─▶ tx: DEBITED → SENT_TO_SPI  (guarded)
+PixDebited ─▶ claim eventId (dedup) ─▶ [redelivery? GET /spi/settlements/{e2e} first]
+           ─▶ tx: DEBITED → SENT_TO_SPI  (guarded)
            ─▶ POST /spi/settlements  (12s timeout, idempotent by endToEndId)
            ─▶ tx: SENT_TO_SPI → SETTLED + PixSettled outbox event  (guarded, ONE atomic write)
+
+on SPI timeout/5xx: don't delete ─▶ ChangeMessageVisibility(backoff) ─▶ SQS redelivers
+                    ─▶ after 5 receives ─▶ settlement-queue-dlq  (settlement.dlq.depth gauge)
 ```
 
 Three properties carry the whole design:
@@ -38,6 +42,14 @@ Three properties carry the whole design:
 3. **`SENT_TO_SPI` is written before the call.** It is the durable statement "we asked BACEN". Without
    it, a settlement that timed out (BACEN may well have completed it) would be indistinguishable from
    one never attempted — and those two demand opposite reactions.
+4. **Query before you retry (step 32).** A timeout is not a failure: the money may already have moved.
+   So on a *redelivery* (SQS `ApproximateReceiveCount > 1`) the consumer asks the rail first —
+   `GET /spi/settlements/{endToEndId}` — and if it reports `SETTLED`, finalizes from that truth **without
+   a second `POST`**. A blind re-`POST` would still be safe (`endToEndId` is idempotent), but the query is
+   what lets a settled-but-unanswered Pix close even when the rail keeps refusing fresh `POST`s as
+   unavailable. Retries are spaced by resetting the message's visibility to an exponential backoff (5, 10,
+   20, 40, 60s); after five undeleted receives SQS redrives it to `settlement-queue-dlq`, whose depth is
+   the `settlement.dlq.depth` gauge — a stuck settlement is *flagged*, never lost (ADR-0003).
 
 **No money moves here.** The payer was debited into the clearing account at acceptance time (step 27);
 settlement records what BACEN did with money that already left. The compensating posting for a permanent
@@ -64,7 +76,11 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 | `SETTLEMENT_WAIT_TIME_SECONDS` | `20` | Long-poll wait — the SQS maximum, so an idle system costs one request per 20s |
 | `SETTLEMENT_BATCH_SIZE` | `5` | Messages per receive, handled sequentially |
 | `SETTLEMENT_CONSUMER_DELAY_MS` | `500` | Gap between polls (`fixedDelay`, so a slow batch never overlaps the next tick) |
-| `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs; ITs set it `false` and drive one tick explicitly |
+| `SETTLEMENT_RETRY_BACKOFF_BASE_SECONDS` | `5` | Retry backoff base — visibility reset to `base·2^(receiveCount-1)` on a rail failure (step 32); ITs set `0` for immediate redelivery |
+| `SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS` | `60` | Upper bound on the retry backoff window |
+| `SETTLEMENT_DLQ_NAME` / `pix.settlement.dlq.queue-name` | `settlement-queue-dlq` | DLQ measured by the `settlement.dlq.depth` gauge (never consumed) |
+| `SETTLEMENT_DLQ_REFRESH_MS` | `15000` | How often the DLQ depth gauge is refreshed via `GetQueueAttributes` |
+| `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs (queue consumer + DLQ gauge); ITs set it `false` and drive a tick explicitly |
 | `BACEN_BASE_URL` | `http://localhost:9090` | mock-bacen-spi (compose: `http://mock-bacen-spi:9090`) |
 | `BACEN_READ_TIMEOUT_MS` | `12000` | ADR-0003's budget: above BACEN's 10s, below the queue's 30s visibility timeout |
 | `BACEN_CONNECT_TIMEOUT_MS` | `2000` | Connect budget |
@@ -74,7 +90,8 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-api/               SettlementQueueConsumer (@Scheduled long poll), SettlementMessage    (inbound adapter)
+api/               SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
+                   SettlementDlqDepthGauge (@Scheduled DLQ depth probe), SettlementMessage (inbound adapter)
 domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus                 (plain Java)
 domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore  (outbound interfaces)
 domain/exception/  TransitionNotAllowedException, SpiCallFailedException,

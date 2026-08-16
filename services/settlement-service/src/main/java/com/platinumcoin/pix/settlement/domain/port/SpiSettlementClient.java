@@ -3,6 +3,7 @@ package com.platinumcoin.pix.settlement.domain.port;
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
+import java.util.Optional;
 
 /**
  * Outbound port for the one call that actually moves money out of PlatinumCoin: BACEN's
@@ -31,4 +32,24 @@ public interface SpiSettlementClient {
      */
     SpiSettlement settle(String endToEndId, String creditorKey, long amountCents, String description,
             String debtorIspb);
+
+    /**
+     * Ask the rail what became of a settlement — {@code GET /spi/settlements/{endToEndId}} — <b>before</b>
+     * retrying one whose {@code POST} timed out (step 32's query-before-retry).
+     *
+     * <p><b>Why this call exists, and why it is not just another {@code settle}.</b> A timeout at the rail
+     * is not a failure: the transfer may well have happened and the answer merely got lost (mock-bacen
+     * models exactly this — it settles, then withholds the response). A blind re-{@code POST} would still
+     * be safe here because {@code endToEndId} is the idempotency key, but it is not always <i>enough</i>:
+     * the rail can refuse a fresh {@code POST} as unavailable even for an id it has already settled (an
+     * injected transport {@code 503} does not know the request it dropped had committed). Asking is the
+     * escape from that trap — the query reports the settled truth without depending on a {@code POST}
+     * succeeding, which is what makes reconciliation (step 35) bounded rather than a hope.
+     *
+     * @return the confirmed settlement iff the rail reports this id as {@code SETTLED}; {@link
+     *         Optional#empty()} for every other answer — {@code UNKNOWN} (never heard of it), a refusal,
+     *         or a query that could not be completed. Empty means "not known to be settled, go ahead and
+     *         retry the {@code POST}"; it never means "failed".
+     */
+    Optional<SpiSettlement> findSettlement(String endToEndId);
 }

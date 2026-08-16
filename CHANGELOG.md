@@ -122,6 +122,25 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Settlement retries with query-before-retry, visibility backoff and DLQ redrive; DLQ depth metric (step 32)
+  **Settlement becomes failure-proof.** On an SPI timeout/5xx the message is no longer just left on the
+  queue: the consumer resets its visibility to an exponential backoff (`base·2^(receiveCount-1)`, default
+  5/10/20/40/60s) so retries space out, and after five undeleted receives SQS redrives it to
+  `settlement-queue-dlq` (step 26's policy). The subtle rule the whole flow turns on is now enforced:
+  **before retrying a redelivery the consumer queries the rail first** — a new
+  `SpiSettlementClient.findSettlement` calls `GET /spi/settlements/{endToEndId}`, and if BACEN reports the
+  id `SETTLED` the Pix is finalized from that truth **without a second `POST`**. A blind re-`POST` would
+  still be safe (`endToEndId` is the idempotency key, ADR-0002 §3), but the query is what closes a
+  settled-but-unanswered Pix even when the rail keeps refusing fresh `POST`s as unavailable — which is
+  what makes reconciliation bounded rather than hopeful (ADR-0003). The redelivery signal is SQS's own
+  `ApproximateReceiveCount > 1`, read as a message system attribute, so no extra table read is needed.
+  DLQ depth is exposed as the `settlement.dlq.depth` gauge (a scheduled `GetQueueAttributes` probe
+  feeding an `AtomicLong`, the same shape as `outbox.lag`) — a DLQ message is *flagged*, not lost, and
+  step 44 alerts on a sustained non-zero depth. `SettlementRetryIT` proves all three against real SQS:
+  a transiently-failing rail retried until it settles, a timeout-that-actually-settled caught by
+  query-before-retry with exactly one `POST`, and a permanent failure redriving to the DLQ after five
+  receives with the gauge reflecting it. No money moves here; reversal of a permanent refusal is step 33.
+  AI: est 3h / actual <Yh> / ~90% generated / <N> issues caught in human review
 - settlement-service: consume settlement-queue, call SPI, guarded transition to SETTLED with PixSettled
   event (step 31)
   **The external send now finishes.** Since step 27 an external Pix has answered `202` with the money

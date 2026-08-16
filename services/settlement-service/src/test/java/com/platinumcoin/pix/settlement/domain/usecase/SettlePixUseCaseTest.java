@@ -59,7 +59,7 @@ class SettlePixUseCaseTest {
 
     @Test
     void theHappyPathWalksDebitedToSentToSpiToSettled() {
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.SETTLED);
         assertThat(outcome.messageMayBeDeleted()).isTrue();
@@ -79,17 +79,17 @@ class SettlePixUseCaseTest {
      */
     @Test
     void theClaimAndTheTransitionBothPrecedeTheSpiCall() {
-        useCase.execute(command());
+        useCase.execute(command(), false);
 
         assertThat(trace).containsExactly("claim", "markSentToSpi", "spi.settle", "markSettled");
     }
 
     @Test
     void aDuplicateDeliveryIsSkippedWithoutTouchingTheSpi() {
-        useCase.execute(command());
+        useCase.execute(command(), false);
         int callsAfterFirstDelivery = spi.calls();
 
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.DUPLICATE);
         assertThat(outcome.messageMayBeDeleted()).as("a duplicate is acked, not retried").isTrue();
@@ -101,7 +101,7 @@ class SettlePixUseCaseTest {
     /** A completed settlement keeps its claim — that is what makes the dedup permanent. */
     @Test
     void aSettledEventKeepsItsClaim() {
-        useCase.execute(command());
+        useCase.execute(command(), false);
 
         assertThat(processedEvents.holdsClaimFor(EVENT_ID)).isTrue();
         assertThat(processedEvents.releases()).isZero();
@@ -116,7 +116,7 @@ class SettlePixUseCaseTest {
     void aFailedSpiCallReleasesTheClaimAndLeavesTheMessageOnTheQueue() {
         spi.failWith(new SpiCallFailedException("the SPI did not answer in time", null));
 
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.SPI_CALL_FAILED);
         assertThat(outcome.messageMayBeDeleted()).as("the message stays for redelivery").isFalse();
@@ -125,12 +125,50 @@ class SettlePixUseCaseTest {
         assertThat(transactions.settledCalls()).isZero();
     }
 
+    /**
+     * Step 32's query-before-retry: a redelivery is often the second half of a timeout whose {@code POST}
+     * actually settled at BACEN. The consumer must therefore <b>ask</b> before re-sending — the rail
+     * reports the id as settled, and the Pix is finalized from that truth <b>without a second
+     * {@code POST}</b>. This is what stops a timeout-that-settled from being retried blind (safe here
+     * only because {@code endToEndId} is idempotent, but not something to depend on when a query removes
+     * the doubt entirely).
+     */
+    @Test
+    void aRedeliveryFinalizesAnAlreadySettledPixFromTheQueryWithoutReSending() {
+        spi.settledAtRail(E2E_ID, 12_550L);
+
+        SettleOutcome outcome = useCase.execute(command(), true);
+
+        assertThat(outcome).isEqualTo(SettleOutcome.SETTLED);
+        assertThat(spi.calls()).as("query-before-retry finalized, the rail is never POSTed again").isZero();
+        assertThat(transactions.settledTxId()).isEqualTo(TX_ID);
+        // No markSentToSpi: the transaction was already claimed by the attempt that timed out. The query,
+        // then the atomic settle — nothing re-sent.
+        assertThat(trace).containsExactly("claim", "spi.findSettlement", "markSettled");
+    }
+
+    /**
+     * The other branch of a redelivery: the rail does not (yet) report this id settled — a genuinely
+     * failed prior attempt — so the query returns empty and we fall through to a normal, idempotent
+     * {@code POST}. The order proves the query happened first.
+     */
+    @Test
+    void aRedeliveryWithNoSettlementYetFallsThroughToAnIdempotentRetryPost() {
+        SettleOutcome outcome = useCase.execute(command(), true);
+
+        assertThat(outcome).isEqualTo(SettleOutcome.SETTLED);
+        assertThat(spi.calls()).as("the retry POST ran because the rail reported nothing settled")
+                .isEqualTo(1);
+        assertThat(trace)
+                .containsExactly("claim", "spi.findSettlement", "markSentToSpi", "spi.settle", "markSettled");
+    }
+
     /** A permanent refusal is neither retryable nor settleable — the payer is made whole in step 33. */
     @Test
     void aRejectedSettlementIsNeverMarkedSettled() {
         spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
 
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.REJECTED_BY_SPI);
         assertThat(transactions.settledCalls())
@@ -146,7 +184,7 @@ class SettlePixUseCaseTest {
     void aTransactionThatIsNotDebitedNeverReachesTheSpi() {
         transactions.refuseSentToSpi();
 
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.NOT_ELIGIBLE);
         assertThat(outcome.messageMayBeDeleted()).isTrue();
@@ -163,7 +201,7 @@ class SettlePixUseCaseTest {
     void aTransactionThatLeftSentToSpiIsNotSettledAgain() {
         transactions.refuseSettled();
 
-        SettleOutcome outcome = useCase.execute(command());
+        SettleOutcome outcome = useCase.execute(command(), false);
 
         assertThat(outcome).isEqualTo(SettleOutcome.NOT_ELIGIBLE);
         assertThat(processedEvents.releases()).isEqualTo(1);
@@ -172,7 +210,7 @@ class SettlePixUseCaseTest {
     /** The state change and the event announcing it are handed to the store together, or not at all. */
     @Test
     void theStatusChangeAndThePixSettledEventAreOneCall() {
-        useCase.execute(command());
+        useCase.execute(command(), false);
 
         OutboxEvent event = transactions.settledEvent();
         assertThat(event).isNotNull();
@@ -201,7 +239,7 @@ class SettlePixUseCaseTest {
      */
     @Test
     void theTransactionIsStampedWithTheInstantBacenRecorded() {
-        useCase.execute(command());
+        useCase.execute(command(), false);
 
         assertThat(transactions.settledConfirmation().settledAt())
                 .isEqualTo(FakeSpiSettlementClient.RECORDED_AT);
