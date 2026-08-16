@@ -69,6 +69,18 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   the first click accepts a fresh payment and moves money once, every later click replays the same
   `transactionId`/`endToEndId` with **no** second debit (`409 IDEMPOTENCY_KEY_REUSED` if the body changes under
   the same key; `400 IDEMPOTENCY_KEY_REQUIRED` if omitted). Layer 1 of ADR-0002 made visible in two clicks.
+- **API explorer: path parameters are now editable and GET cards can auto-poll.** The explorer only
+  rendered an editable *body* textarea, so every card's path was frozen at its literal/derived value —
+  yet a dozen descriptions instructed the reader to *"edit the path to acc-002"*, *"edit the id in the
+  path"*, *"change creditorKey…"*, promising an affordance the UI never had, and there was no way to
+  inspect an arbitrary `transactionId` (only the last one auto-captured from a send). Every non-login
+  card now shows an **editable Request-path input** (change ids, keys, query params in place), a send
+  reads the live value, and a captured `transactionId` is pushed into the status card's field while
+  leaving it fully overwritable (paste any txId, incl. one from a prior run). GET cards also gain an
+  **Auto-poll** toggle that re-queries every 2s and stops on a terminal status (`SETTLED/FAILED/
+  REVERSED/REJECTED`) or a 40-poll cap — the missing tool for watching an **external** Pix flip
+  `PROCESSING → SETTLED` without hammering Send. Closes the "edit the path" doc/UI drift; the settlement
+  and DICT status cards inherit the same controls. Explorer-only; no service or contract change.
 - **Audit note — a fraud-denied send is not demonstrable through the public endpoint under default seeds,**
   so no card was added (recording the finding rather than shipping a card that cannot fire). The fraud
   `HIGH_AMOUNT` line and the daily limit are both `R$5,000.00` (`500000` cents), and the orchestration

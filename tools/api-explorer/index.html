@@ -93,6 +93,10 @@
     button.ghost:hover { background: var(--surface-2); color: var(--text); border-color: var(--line-2); }
     button:disabled { opacity: .45; cursor: not-allowed; }
     button svg { width: 14px; height: 14px; }
+    button.polling { color: var(--ok); border-color: var(--accent-line); background: var(--accent-soft); }
+    button.polling svg { animation: spin 1.2s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    input.reqpath { font-family: var(--mono); font-size: 12.5px; margin-bottom: 14px; }
 
     .pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 7px; font-size: 11.5px; font-weight: 600; border: 1px solid transparent; }
     .pill.ok  { background: var(--accent-soft); color: var(--ok);  border-color: var(--accent-line); }
@@ -215,6 +219,7 @@
       chev: '<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
       lock: '<span class="lock"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>',
       send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>',
+      poll: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
     };
 
     // ---- In-memory session (never persisted) --------------------------------------------------
@@ -225,6 +230,17 @@
     let lastPaymentTxId = null;
 
     const $ = (id) => document.getElementById(id);
+
+    // Remember the last transaction id AND push it into any rendered card that follows a payment (its
+    // path field is marked data-sync-tx-id). So "send a Pix, then poll its status" needs zero copy-paste,
+    // yet the path stays a plain editable input — paste any other txId to inspect a different transaction.
+    function captureTxId(id) {
+      lastPaymentTxId = id;
+      document.querySelectorAll('.card[data-sync-tx-id="1"] input.reqpath').forEach((inp) => {
+        inp.value = '/v1/payments/' + id;
+      });
+    }
+
     const authBase = () => $('authBaseUrl').value.replace(/\/+$/, '');
 
     function renderSession() {
@@ -413,9 +429,8 @@
             body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '42.00', description: 'explorer idempotency replay' }, null, 2),
           },
           {
-            method: 'GET', path: '/v1/payments/{txId}', title: 'Get payment status (200)', auth: true, capturesToken: false,
-            resolvePath: () => '/v1/payments/' + (lastPaymentTxId || 'send-a-pix-first'),
-            desc: 'Owner-only status query (step 22). Send the "alice → bob (202)" card first — its returned transactionId is captured, and this card polls GET /v1/payments/&lt;txId&gt; for it. The response is the EXTERNAL view of the internal state machine: clients see PROCESSING / SETTLED / FAILED / REVERSED / REJECTED, never internal names like DEBITED, so the machine can evolve without breaking mobile clients (API versioning discipline). An internal send has already settled — the atomic ledger posting IS the settlement — so it reads back SETTLED with settledAt, even though the 202 said PROCESSING. Ownership comes from the JWT: another account\'s token, or an unknown id, both return 404 PAYMENT_NOT_FOUND (never 403) so existence never leaks.',
+            method: 'GET', path: '/v1/payments/{txId}', title: 'Get payment status (200)', auth: true, capturesToken: false, syncFromTxId: true,
+            desc: 'Owner-only status query (step 22). Any send above captures its transactionId and drops it into the editable Request path below, so this card is already pointed at the Pix you just created — but the path is a plain input: paste ANY txId to inspect a different transaction (e.g. one from a previous run). The response is the EXTERNAL view of the internal state machine: clients see PROCESSING / SETTLED / FAILED / REVERSED / REJECTED, never internal names like DEBITED, so the machine can evolve without breaking mobile clients (API versioning discipline). An INTERNAL send has already settled — the atomic ledger posting IS the settlement — so it reads back SETTLED with settledAt even though the 202 said PROCESSING. An EXTERNAL send (bob@otherbank.com) is still PROCESSING at 202: hit "Auto-poll" and watch it flip to SETTLED once settlement-service walks it through the SPI (it re-queries every 2s and stops on any terminal status). Ownership comes from the JWT: another account\'s token, or an unknown id, both return 404 PAYMENT_NOT_FOUND (never 403) so existence never leaks.',
             headers: {}, body: null,
           },
           {
@@ -593,10 +608,21 @@
       if (firstCard) firstCard.classList.add('open');
     }
 
+    // The wire vocabulary a poll waits for: once a transaction/settlement reaches one of these it is done
+    // moving, so the auto-poll loop stops. Anything else (PROCESSING, SENT_TO_SPI, …) means "keep looking".
+    const TERMINAL_STATUS = ['SETTLED', 'FAILED', 'REVERSED', 'REJECTED'];
+
     function makeCard(ep, key, svc) {
       const card = document.createElement('div');
       card.className = 'card';
       const hasBody = ep.body !== null && ep.method !== 'GET';
+      // Login cards go through doLogin(), which owns their path — everything else exposes an editable
+      // path so ids/keys/query params can be changed in place (paste a txId, swap acc-001→acc-002, …).
+      const editablePath = !ep.capturesToken;
+      const canPoll = ep.method === 'GET' && !ep.capturesToken;
+      // A card that follows a payment starts pointed at the last one you created, if any.
+      const initialPath = ep.syncFromTxId && lastPaymentTxId ? '/v1/payments/' + lastPaymentTxId : ep.path;
+
       card.innerHTML = `
         <div class="head">
           <span class="method ${ep.method}">${ep.method}</span>
@@ -605,44 +631,86 @@
         </div>
         <div class="body">
           <p class="desc">${ep.desc}</p>
+          ${editablePath ? `<label for="path-${key}">Request path <span class="muted">· editable — change ids, keys &amp; query params here</span></label>
+          <input id="path-${key}" class="reqpath" value="${initialPath}" spellcheck="false" autocomplete="off" />` : ''}
           ${hasBody ? `<label>Request body</label><textarea id="body-${key}">${ep.body}</textarea>` : ''}
-          <div class="respbar"><button data-send>${ICON.send}Send</button><span class="status pending" id="status-${key}"></span></div>
+          <div class="respbar">
+            <button data-send>${ICON.send}Send</button>
+            ${canPoll ? `<button class="ghost" data-poll>${ICON.poll}Auto-poll</button>` : ''}
+            <span class="status pending" id="status-${key}"></span>
+          </div>
           <pre id="out-${key}" style="display:none;"></pre>
         </div>`;
       card.querySelector('.head').onclick = () => card.classList.toggle('open');
-      card.querySelector('[data-send]').onclick = async (e) => {
+      if (ep.syncFromTxId) card.dataset.syncTxId = '1';
+
+      const statusEl = () => $('status-' + key), outEl = () => $('out-' + key), pathEl = () => $('path-' + key);
+
+      // One request execution, shared by the Send button and the auto-poll loop, so both stay identical.
+      async function runRequest() {
+        const bodyEl = $('body-' + key);
+        // Money-moving POSTs auto-attach a fresh Idempotency-Key (mirrors Postman's {{$guid}}); the
+        // minted value is surfaced in the Session panel's field so it is visible, not magic.
+        let headers = ep.headers;
+        if (ep.idempotent) {
+          const idem = crypto.randomUUID();
+          $('idemKey').value = idem;
+          headers = { ...ep.headers, 'Idempotency-Key': idem };
+        }
+        const path = editablePath && pathEl() ? pathEl().value.trim() : ep.path;
+        const r = ep.capturesToken
+          ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
+          : await send({ method: ep.method, path, headers,
+                         body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
+                         base: currentServiceBase(svc) });
+        // A returned transactionId is remembered and pushed into any status card that follows a payment.
+        if (r.json && r.json.transactionId) captureTxId(r.json.transactionId);
+        statusEl().textContent = `${r.status} ${r.statusText}`;
+        statusEl().className = 'status ' + (r.ok ? 'ok' : 'bad');
+        outEl().style.display = 'block'; outEl().textContent = pretty(r);
+        return r;
+      }
+
+      const sendBtn = card.querySelector('[data-send]');
+      sendBtn.onclick = async (e) => {
         e.stopPropagation();
-        const btn = e.currentTarget; btn.disabled = true;
-        const statusEl = $('status-' + key), outEl = $('out-' + key);
-        statusEl.textContent = 'Sending…'; statusEl.className = 'status pending';
-        try {
-          const bodyEl = $('body-' + key);
-          // Money-moving POSTs auto-attach a fresh Idempotency-Key (mirrors Postman's {{$guid}}); the
-          // minted value is surfaced in the Session panel's field so it is visible, not magic.
-          let headers = ep.headers;
-          if (ep.idempotent) {
-            const idem = crypto.randomUUID();
-            $('idemKey').value = idem;
-            headers = { ...ep.headers, 'Idempotency-Key': idem };
-          }
-          // Some cards target a resource created by an earlier one (e.g. GET a payment by its txId);
-          // resolvePath() is evaluated now, at click time, so it can read that captured id.
-          const path = ep.resolvePath ? ep.resolvePath() : ep.path;
-          const r = ep.capturesToken
-            ? await doLogin(...bodyToCreds(bodyEl ? bodyEl.value : ep.body))
-            : await send({ method: ep.method, path, headers,
-                           body: hasBody && bodyEl ? bodyEl.value : null, auth: ep.auth,
-                           base: currentServiceBase(svc) });
-          // Capture a returned transactionId so the status card can poll the send you just made.
-          if (r.json && r.json.transactionId) lastPaymentTxId = r.json.transactionId;
-          statusEl.textContent = `${r.status} ${r.statusText}`;
-          statusEl.className = 'status ' + (r.ok ? 'ok' : 'bad');
-          outEl.style.display = 'block'; outEl.textContent = pretty(r);
-        } catch (err) {
-          statusEl.textContent = err.message; statusEl.className = 'status bad';
-          outEl.style.display = 'none';
-        } finally { btn.disabled = false; }
+        sendBtn.disabled = true;
+        statusEl().textContent = 'Sending…'; statusEl().className = 'status pending';
+        try { await runRequest(); }
+        catch (err) { statusEl().textContent = err.message; statusEl().className = 'status bad'; outEl().style.display = 'none'; }
+        finally { sendBtn.disabled = false; }
       };
+
+      // Auto-poll (GET only): re-run every 2s until a terminal status, a 40-poll cap, or a second click.
+      // This is how you watch an EXTERNAL Pix flip PROCESSING → SETTLED without hammering the button.
+      if (canPoll) {
+        const pollBtn = card.querySelector('[data-poll]');
+        let timer = null, ticks = 0;
+        const stop = (why) => {
+          if (timer) clearInterval(timer);
+          timer = null; ticks = 0;
+          pollBtn.classList.remove('polling'); pollBtn.innerHTML = `${ICON.poll}Auto-poll`;
+          if (why) statusEl().textContent += ' · ' + why;
+        };
+        pollBtn.onclick = async (e) => {
+          e.stopPropagation();
+          if (timer) { stop('poll stopped'); return; }
+          pollBtn.classList.add('polling'); pollBtn.innerHTML = `${ICON.poll}Stop`;
+          ticks = 0;
+          let done = false;
+          const tick = async () => {
+            ticks++;
+            try {
+              const r = await runRequest();
+              const st = r.json && r.json.status;
+              if (st && TERMINAL_STATUS.includes(st)) { done = true; return stop('reached ' + st); }
+            } catch (err) { /* a transient blip must not kill the loop — keep polling */ }
+            if (!done && ticks >= 40) { done = true; stop('stopped after 40 polls'); }
+          };
+          await tick();                       // poll immediately, then on an interval
+          if (!done) timer = setInterval(tick, 2000);
+        };
+      }
       return card;
     }
 
