@@ -743,6 +743,122 @@
           }
         },
         {
+          "name": "Send Pix — external (bob@otherbank.com, 202 → async settlement)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('carries the two ids', () => { pm.expect(body.transactionId).to.be.a('string'); pm.expect(body.endToEndId).to.match(/^E\\d{8}\\d{12}[A-Za-z0-9]{11}$/); });",
+                  "pm.test('external status is PROCESSING (not settled yet — the money is in SPI_CLEARING)', () => pm.expect(body.status).to.eql('PROCESSING'));",
+                  "pm.test('Location points at the status resource', () => pm.expect(pm.response.headers.get('Location')).to.eql('/v1/payments/' + body.transactionId));",
+                  "pm.collectionVariables.set('paymentTxId', body.transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@otherbank.com\",\n  \"amount\": \"75.00\",\n  \"description\": \"postman external pix\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "The **external** branch (step 27). Identical wire shape to the internal send — only the destination key differs, because authority, limits and fraud are properties of the *payer*, not of where the payee banks. `bob@otherbank.com` is registered in no PlatinumCoin account, so account-service delegates to BACEN's DICT and answers `{internal:false, externalBank:\"99999999\"}` (null `accountId`).\n\nSo the payer is debited and the money is parked in the internal `SPI_CLEARING` account — no ACID transaction can span two banks, and crediting a clearing account keeps double-entry symmetry (Σ balances unchanged). The transaction rests at `DEBITED` (external status `PROCESSING`), **not** `SETTLED`: only BACEN can close the gap to the other PSP.\n\nIt finishes **asynchronously** — payment-service's outbox publishes `PixDebited` → settlement-service (port 8086, step 31) long-polls `settlement-queue`, calls the mock SPI, and walks `DEBITED → SENT_TO_SPI → SETTLED`. Run this, then **Get payment status** a moment later to watch `PROCESSING` flip to `SETTLED`. Requires `settlement-service` + `mock-bacen-spi` running."
+          }
+        },
+        {
+          "name": "Send Pix — idempotent replay (send twice, one debit)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted (fresh accept the first time, memoized replay after)', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('carries the two ids', () => { pm.expect(body.transactionId).to.be.a('string'); pm.expect(body.endToEndId).to.be.a('string'); });",
+                  "// Send this request a SECOND time without changing anything: the fixed Idempotency-Key",
+                  "// makes it replay — same transactionId as the first run, and NO second debit.",
+                  "const seen = pm.collectionVariables.get('replayTxId');",
+                  "if (seen) { pm.test('replay returns the SAME transactionId (no second transaction)', () => pm.expect(body.transactionId).to.eql(seen)); }",
+                  "pm.collectionVariables.set('replayTxId', body.transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "postman-replay-demo-fixed-key"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"42.00\",\n  \"description\": \"postman idempotency replay\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/pix",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "pix"
+              ]
+            },
+            "description": "The idempotency contract (step 19, ADR-0002) — invisible in every send card above because each auto-mints a fresh `Idempotency-Key` (`{{$guid}}`), so a retry always looks like a new payment. This request pins a **constant** `Idempotency-Key`, so sending it twice proves the guarantee.\n\n**First send:** a new payment is accepted — `202`, a fresh `txId`, money moves once. **Every later send:** the memoized `202` is replayed — the *same* `transactionId`/`endToEndId`, and **no** second debit (the test asserts the id is unchanged). That is layer 1 of ADR-0002: a claim/replay lifecycle keyed by `(accountId, Idempotency-Key)`.\n\nKeep the key but change the `amount` → `409 IDEMPOTENCY_KEY_REUSED` (same key, different body is a conflict, not a replay). Omit the header entirely → `400 IDEMPOTENCY_KEY_REQUIRED`. The memo is durable (DynamoDB, 24h TTL), so the replay survives a process crash between the two sends."
+          }
+        },
+        {
           "name": "Get payment status (200)",
           "event": [
             {

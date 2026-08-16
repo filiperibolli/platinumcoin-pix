@@ -46,6 +46,38 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   deterministic `txId` was considered as defense-in-depth and **rejected** (it collides with the 24h
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
+### Fixed
+- **Twin-harness drift: the external send was invisible in the API explorer and Postman.** Caught
+  reviewing the manual-test harnesses against the code: since step 27 the send flow has had two
+  destinations — internal (settles in one atomic posting) and external (debit to `SPI_CLEARING`, settle
+  asynchronously via steps 28–31) — but **every** send card in `tools/api-explorer/index.html` and
+  `tools/postman/pix-platform.postman_collection.json` targeted `bob@platinum.com`, so the entire
+  external branch (`debitToClearing`, `DEBITED`, the async settlement hand-off) was undemonstrated. The
+  external resolution *was* shown, but only as an account-service DICT lookup, never as an actual money
+  move. Added **Send Pix — external (`bob@otherbank.com`, 202 → async settlement)** to both harnesses:
+  identical wire shape to the internal send (authority, limits and fraud are properties of the *payer*,
+  not of where the payee banks), resolving `internal:false` via BACEN's DICT, debiting to the clearing
+  account, resting at `DEBITED` (external status still `PROCESSING`) until settlement-service (port 8086)
+  walks it to `SETTLED`. The card pairs with the status poll so a reviewer watches `PROCESSING → SETTLED`
+  flip live. This is doc/code drift of exactly the kind the "every endpoint in BOTH harnesses in the same
+  step" convention exists to prevent; the fix is retroactive because the harnesses are living artifacts.
+- **Twin-harness drift: the idempotency contract (ADR-0002 / step 19) was undemonstrated.** The second gap
+  the same audit surfaced: every send card auto-mints a fresh `Idempotency-Key` (explorer `crypto.randomUUID()`,
+  Postman `{{$guid}}`), so the *whole point* of step 19 — that a double-tap or a retried request replays the
+  memoized `202` instead of minting a second transaction — could not be triggered from either harness. Added
+  **Send Pix — idempotent replay (press Send twice, one debit)**, which pins a **constant** `Idempotency-Key`:
+  the first click accepts a fresh payment and moves money once, every later click replays the same
+  `transactionId`/`endToEndId` with **no** second debit (`409 IDEMPOTENCY_KEY_REUSED` if the body changes under
+  the same key; `400 IDEMPOTENCY_KEY_REQUIRED` if omitted). Layer 1 of ADR-0002 made visible in two clicks.
+- **Audit note — a fraud-denied send is not demonstrable through the public endpoint under default seeds,**
+  so no card was added (recording the finding rather than shipping a card that cannot fire). The fraud
+  `HIGH_AMOUNT` line and the daily limit are both `R$5,000.00` (`500000` cents), and the orchestration
+  reserves the limit *before* it screens for fraud (`reserveDailyLimit` → `screenForFraud`), so any amount
+  large enough to trip `HIGH_AMOUNT` (`> 500000`) trips `LIMIT_EXCEEDED` first. Reaching `FRAUD_DENIED` from
+  `POST /v1/payments/pix` needs a velocity build-up or a raised limit — out of scope for a single deterministic
+  card. The DENY branch is already covered by `ScoreFraudUseCaseTest`; the fraud-service explorer/Postman card
+  exercises the `/internal/fraud/score` seam directly.
+
 ### Added
 - mock-bacen-spi: settlement + status + admin-config endpoints and external DICT resolution (step 30)
   The platform gains a dependency it can **break on purpose**, and with it the last missing piece of the
