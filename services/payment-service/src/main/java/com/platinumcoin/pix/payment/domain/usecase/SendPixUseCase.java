@@ -394,6 +394,7 @@ public class SendPixUseCase {
                 command.pixKey(),
                 creditorAccountId,
                 true,
+                null, // internal: no clearing account, the money reached the payee directly
                 amountCents,
                 TransactionStatus.SETTLED,
                 description,
@@ -463,6 +464,7 @@ public class SendPixUseCase {
                 command.pixKey(),
                 null,
                 false,
+                clearingAccountId, // the exact account the debit credited; a reversal must target it (step 33)
                 amountCents,
                 TransactionStatus.DEBITED,
                 description,

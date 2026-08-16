@@ -202,7 +202,7 @@ class OutboxWriteIT extends LocalStackTestBase {
         String txId = "tx-" + UUID.randomUUID();
         Instant now = Instant.parse("2026-07-02T12:34:56.789Z");
         Transaction settled = new Transaction(txId, "E" + UUID.randomUUID(), "acc-outbox-guard",
-                INTERNAL_KEY, "acc-outbox-payee", true, 5_000L, TransactionStatus.SETTLED, "first",
+                INTERNAL_KEY, "acc-outbox-payee", true, null, 5_000L, TransactionStatus.SETTLED, "first",
                 FraudDecision.APPROVE, false, now, now);
 
         transactions.create(settled, List.of(
@@ -211,8 +211,8 @@ class OutboxWriteIT extends LocalStackTestBase {
         // A second write of the same id — a stale replay, a redelivered command — carrying a *regressed*
         // status and a different event.
         Transaction regressed = new Transaction(txId, settled.endToEndId(), settled.debtorAccountId(),
-                settled.creditorKey(), null, false, 5_000L, TransactionStatus.DEBITED, "second",
-                FraudDecision.APPROVE, false, now, null);
+                settled.creditorKey(), null, false, "SPI_CLEARING", 5_000L, TransactionStatus.DEBITED,
+                "second", FraudDecision.APPROVE, false, now, null);
 
         assertThatThrownBy(() -> transactions.create(regressed, List.of(
                 new OutboxEvent("evt-guard-2", "PixDebited", Map.of("txId", txId), now, "corr-guard"))))

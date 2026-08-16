@@ -166,11 +166,73 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         assertThat(outboxEvents(txId)).hasSize(1);
     }
 
+    @Test
+    void reversingWritesTheStatusFailureReasonAndItsEventTogether() {
+        String txId = givenTransaction("DEBITED");
+        store.markSentToSpi(txId, AT);
+        OutboxEvent event = pixReversed(txId);
+
+        store.markReversed(txId, "CREDITOR_KEY_NOT_IN_DICT", AT, event);
+
+        Map<String, AttributeValue> meta = meta(txId);
+        assertThat(meta.get("status").s()).isEqualTo("REVERSED");
+        assertThat(meta.get("failureReason").s()).isEqualTo("CREDITOR_KEY_NOT_IN_DICT");
+        assertThat(meta.get("gsi2pk").s()).as("the index follows the state, off the stuck-tx scan")
+                .isEqualTo("STATUS#REVERSED");
+        assertThat(meta.get("settledAt")).as("nothing settled on a reversal").isNull();
+
+        List<Map<String, AttributeValue>> events = outboxEvents(txId);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).get("eventType").s()).isEqualTo("PixReversed");
+        assertThat(events.get(0).get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
+    }
+
+    /** A reversal is guarded on SENT_TO_SPI, and its event rolls back with a refused transition. */
+    @Test
+    void aTransactionThatIsNotOnTheRailCannotBeReversedAndItsEventRollsBackWithIt() {
+        String txId = givenTransaction("DEBITED");
+
+        assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
+                .isInstanceOf(TransitionNotAllowedException.class);
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("DEBITED");
+        assertThat(outboxEvents(txId)).as("the outbox item rolled back with the status").isEmpty();
+    }
+
+    /** Reversing twice is refused, and the second attempt announces nothing — the reversal is idempotent. */
+    @Test
+    void aReversalIsNeverRecordedTwice() {
+        String txId = givenTransaction("DEBITED");
+        store.markSentToSpi(txId, AT);
+        store.markReversed(txId, "REASON", AT, pixReversed(txId));
+
+        assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
+                .isInstanceOf(TransitionNotAllowedException.class);
+
+        assertThat(outboxEvents(txId)).hasSize(1);
+    }
+
+    /** A settled transaction can never be reversed — the two terminal states are mutually exclusive. */
+    @Test
+    void aSettledTransactionCannotBeReversed() {
+        String txId = givenTransaction("SETTLED");
+
+        assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
+                .isInstanceOf(TransitionNotAllowedException.class);
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("SETTLED");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
     private static OutboxEvent pixSettled(String txId) {
         return new OutboxEvent("evt-" + UUID.randomUUID(), "PixSettled",
                 Map.of("txId", txId, "amountCents", 12_550L, "status", "SETTLED"), AT, "cid-transitions");
+    }
+
+    private static OutboxEvent pixReversed(String txId) {
+        return new OutboxEvent("evt-" + UUID.randomUUID(), "PixReversed",
+                Map.of("txId", txId, "amountCents", 12_550L, "status", "REVERSED"), AT, "cid-transitions");
     }
 
     /** An external send's stored transaction, in whichever state the test needs it. */

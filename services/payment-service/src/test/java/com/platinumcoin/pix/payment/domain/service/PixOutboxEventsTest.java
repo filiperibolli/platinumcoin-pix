@@ -22,13 +22,13 @@ class PixOutboxEventsTest {
 
     private static Transaction external(FraudDecision fraud) {
         return new Transaction("tx-1", "E1234", "acc-001", "bob@otherbank.com", null, false,
-                12_550L, TransactionStatus.DEBITED, "rent", fraud,
+                "SPI_CLEARING", 12_550L, TransactionStatus.DEBITED, "rent", fraud,
                 fraud == FraudDecision.SKIPPED, NOW, null);
     }
 
     private static Transaction internal(FraudDecision fraud) {
         return new Transaction("tx-2", "E5678", "acc-001", "bob@platinum.com", "acc-002", true,
-                12_550L, TransactionStatus.SETTLED, "lunch", fraud,
+                null, 12_550L, TransactionStatus.SETTLED, "lunch", fraud,
                 fraud == FraudDecision.SKIPPED, NOW, NOW);
     }
 
@@ -56,7 +56,9 @@ class PixOutboxEventsTest {
                 .containsEntry("amountCents", 12_550L)
                 .containsEntry("status", "DEBITED")
                 .containsEntry("description", "rent")
-                .containsEntry("occurredAt", "2026-07-02T12:34:56.789Z");
+                .containsEntry("occurredAt", "2026-07-02T12:34:56.789Z")
+                // Step 33: the exact clearing account the debit credited, so a reversal targets it.
+                .containsEntry("clearingAccountId", "SPI_CLEARING");
         // The payee banks elsewhere: there is no internal account to name.
         assertThat(event.payload()).doesNotContainKey("creditorAccountId");
         assertThat(event.payload()).doesNotContainKey("settledAt");
@@ -78,6 +80,8 @@ class PixOutboxEventsTest {
                 .containsEntry("status", "SETTLED")
                 .containsEntry("settledAt", "2026-07-02T12:34:56.789Z")
                 .containsEntry("amountCents", 12_550L);
+        // An internal send never touched the clearing account, so it announces no clearing account.
+        assertThat(events.get(0).payload()).doesNotContainKey("clearingAccountId");
     }
 
     /**

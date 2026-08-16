@@ -27,6 +27,13 @@ import java.time.Instant;
  * is at another bank), and rests at {@code DEBITED} with the money parked in the clearing account until
  * the asynchronous settlement resolves it.
  *
+ * <p><b>Which clearing account the money is parked in (step 33, task 4):</b> {@code clearingAccountId}
+ * is the exact account the external debit credited — {@code null} on an internal send, present on an
+ * external one. It is persisted (and carried on the {@code PixDebited} event) so a later reversal
+ * <i>debits the same account it credited</i>: today that is the single {@code SPI_CLEARING}, but step 52
+ * write-shards it into {@code SPI_CLEARING#00..#15}, and a reversal that guessed the shard instead of
+ * reading the one used would drain the wrong sub-account and break the per-shard balance.
+ *
  * <p><b>Scored in the path (step 25):</b> {@code fraudDecision} is the verdict the in-path fraud check
  * returned ({@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out or errored and
  * the send failed open), and {@code fraudSkipped} is its boolean shorthand — {@code true} iff the score
@@ -42,6 +49,7 @@ public record Transaction(
         String creditorKey,
         String creditorAccountId,
         boolean creditorInternal,
+        String clearingAccountId,
         long amountCents,
         TransactionStatus status,
         String description,

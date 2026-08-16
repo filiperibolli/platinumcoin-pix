@@ -1,6 +1,10 @@
 package com.platinumcoin.pix.settlement.api;
 
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixCommand;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The wire shape of a message on {@code settlement-queue} — the broker-agnostic event envelope
@@ -22,14 +26,23 @@ import com.platinumcoin.pix.settlement.domain.usecase.SettlePixCommand;
  */
 record SettlementMessage(String eventId, String eventType, String correlationId, Payload payload) {
 
-    /** The business facts of a {@code PixDebited}. Money is integer cents, straight off the wire. */
+    private static final Logger log = LoggerFactory.getLogger(SettlementMessage.class);
+
+    /**
+     * The business facts of a {@code PixDebited}. Money is integer cents, straight off the wire.
+     * {@code clearingAccountId} and {@code occurredAt} are added by step 33: the account the debit
+     * credited (so a reversal targets it) and the debit instant (so a reversal releases the limit against
+     * the right calendar day).
+     */
     record Payload(
             String txId,
             String endToEndId,
             String debtorAccountId,
             String creditorKey,
+            String clearingAccountId,
             long amountCents,
-            String description) {
+            String description,
+            String occurredAt) {
     }
 
     boolean isComplete() {
@@ -48,8 +61,28 @@ record SettlementMessage(String eventId, String eventType, String correlationId,
                 payload.endToEndId(),
                 payload.debtorAccountId(),
                 payload.creditorKey(),
+                payload.clearingAccountId(),
                 payload.amountCents(),
                 payload.description(),
+                parseOccurredAt(payload.occurredAt()),
                 correlationId);
+    }
+
+    /**
+     * The event's {@code occurredAt} (the debit instant) as an {@link Instant}, or {@code null} if the
+     * event does not carry it or it is unparseable. Not fatal: it only tunes which calendar day a reversal
+     * releases the daily limit against, and the use case falls back to its own clock when it is absent.
+     */
+    private static Instant parseOccurredAt(String occurredAt) {
+        if (occurredAt == null || occurredAt.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(occurredAt);
+        } catch (DateTimeParseException e) {
+            log.warn("PixDebited occurredAt could not be parsed, a reversal will release the daily limit "
+                    + "against today instead of the debit day | occurredAt={}", occurredAt);
+            return null;
+        }
     }
 }

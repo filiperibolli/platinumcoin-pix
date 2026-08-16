@@ -105,6 +105,9 @@ class ExternalSendIT extends LocalStackTestBase {
         assertThat(item).doesNotContainKey("settledAt");
         assertThat(item).doesNotContainKey("creditorAccountId");
         assertThat(item.get("creditorInternal").bool()).isFalse();
+        // Step 33, task 4: the exact clearing account the debit credited is persisted, so a later
+        // reversal debits the same account (the same shard, once step 52 shards it).
+        assertThat(item.get("clearingAccountId").s()).isEqualTo(clearingAccountId);
         assertThat(item.get("creditorKey").s()).isEqualTo(EXTERNAL_KEY);
         assertThat(item.get("direction").s()).isEqualTo("OUTBOUND");
         assertThat(item.get("debtorAccountId").s()).isEqualTo(debtor);

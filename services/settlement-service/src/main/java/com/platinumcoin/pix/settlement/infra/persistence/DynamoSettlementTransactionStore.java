@@ -155,6 +155,75 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
     }
 
     /**
+     * {@code SENT_TO_SPI → REVERSED} plus the {@code PixReversed} outbox item, in one
+     * {@code TransactWriteItems} (step 33). Guarded strictly on {@code SENT_TO_SPI}: only a transaction
+     * this consumer put on the rail and that BACEN then permanently refused may be reversed — the same
+     * shape as {@link #markSettled}, because a reversal is the failure-branch twin of a settlement.
+     */
+    @Override
+    public void markReversed(String txId, String failureReason, Instant at, OutboxEvent event) {
+        String now = at.toString();
+
+        log.info("Writing the reversed status and its PixReversed event in one atomic TransactWriteItems | "
+                        + "table={} pk={}{} reversedAt={} failureReason={} eventId={}",
+                TABLE, TX_PREFIX, txId, now, failureReason, event.eventId());
+
+        List<TransactWriteItem> writes = List.of(
+                TransactWriteItem.builder().update(reversedUpdate(txId, failureReason, now)).build(),
+                TransactWriteItem.builder().put(outboxPut(txId, event)).build());
+
+        try {
+            dynamo.transactWriteItems(request -> request.transactItems(writes));
+        } catch (TransactionCanceledException e) {
+            // Either the status guard fired (the transaction left SENT_TO_SPI under us — a redelivery
+            // already reversed it, or a racing settle) or the event id already exists. Both mean this
+            // consumer may not record the reversal, and in both cases NOTHING was written: the outbox item
+            // rolled back with the status.
+            log.warn("Atomic reversal write was cancelled, the transaction is no longer SENT_TO_SPI or the "
+                            + "event was already recorded, nothing was written (status and outbox both "
+                            + "rolled back) | txId={} eventId={} reasons={}",
+                    txId, event.eventId(), e.cancellationReasons().stream().map(r -> r.code()).toList());
+            throw new TransitionNotAllowedException(txId, TransactionStatus.SENT_TO_SPI.name(),
+                    TransactionStatus.REVERSED.name());
+        }
+
+        log.debug("DynamoDB TransactWriteItems stored the reversed status and 1 outbox event | pk={}{} "
+                        + "sk={} status={} outboxSk={}{}",
+                TX_PREFIX, txId, META_SK, TransactionStatus.REVERSED, OUTBOX_SK_PREFIX, event.eventId());
+    }
+
+    /**
+     * The {@code META} update for a reversal: move the status and the GSI2 keys to {@code REVERSED} (so
+     * the stuck-transaction scan stops seeing a finished payment) and stamp {@code failureReason} — the
+     * one attribute a reversal adds, read back by the status endpoint's external {@code REVERSED}
+     * vocabulary (step 22). No {@code settledAt}: nothing settled.
+     */
+    private static Update reversedUpdate(String txId, String failureReason, String now) {
+        Map<String, AttributeValue> values = Map.of(
+                ":target", AttributeValue.fromS(TransactionStatus.REVERSED.name()),
+                ":targetIndex", AttributeValue.fromS(STATUS_PREFIX + TransactionStatus.REVERSED.name()),
+                ":sentToSpi", AttributeValue.fromS(TransactionStatus.SENT_TO_SPI.name()),
+                ":now", AttributeValue.fromS(now),
+                ":reason", AttributeValue.fromS(failureReason));
+
+        log.debug("DynamoDB Update of the transaction META item | table={} pk={}{} sk={} "
+                        + "update=SET status,gsi2pk,gsi2sk,updatedAt,failureReason "
+                        + "condition=attribute_exists(pk) AND status=SENT_TO_SPI reversedAt={} "
+                        + "failureReason={}",
+                TABLE, TX_PREFIX, txId, META_SK, now, failureReason);
+
+        return Update.builder()
+                .tableName(TABLE)
+                .key(metaKey(txId))
+                .updateExpression("SET #status = :target, gsi2pk = :targetIndex, gsi2sk = :now, "
+                        + "updatedAt = :now, failureReason = :reason")
+                .conditionExpression("attribute_exists(pk) AND #status = :sentToSpi")
+                .expressionAttributeNames(STATUS_ALIAS)
+                .expressionAttributeValues(values)
+                .build();
+    }
+
+    /**
      * The {@code META} update. It adds the two settlement-confirmation attributes documented in
      * {@code docs/data-model.md} §4 — {@code settledAt} (BACEN's instant, not ours) and
      * {@code creditorIspb} (which participant received the money) — and moves the GSI2 keys onto the new

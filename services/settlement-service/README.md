@@ -6,9 +6,12 @@
 
 - **Port:** `8086` (Actuator only — this service exposes **no business endpoint**)
 - **Depends on:** `common-lib` (event envelope, `ProcessedEventStore`, correlation-id log pattern),
-  LocalStack (DynamoDB + SQS), mock-bacen-spi
+  LocalStack (DynamoDB + SQS), mock-bacen-spi, **ledger-service** (finalization postings, step 33)
 - **Consumes:** `settlement-queue` (SNS `pix-events`, filtered to `eventType=PixDebited`)
-- **Writes:** `pix_transactions` (guarded status transitions + outbox items), `pix_processed_events`
+- **Writes:** `pix_transactions` (guarded status transitions + outbox items + the daily-limit release on a
+  reversal), `pix_processed_events`
+- **Calls:** ledger-service `POST /internal/ledger/postings` on a definitive outcome (step 33):
+  `CLEARING_RELEASE` on settlement, the compensating `PIX_REVERSAL` on a permanent refusal
 
 ## Why it exists
 
@@ -26,6 +29,12 @@ PixDebited ─▶ claim eventId (dedup) ─▶ [redelivery? GET /spi/settlements
 
 on SPI timeout/5xx: don't delete ─▶ ChangeMessageVisibility(backoff) ─▶ SQS redelivers
                     ─▶ after 5 receives ─▶ settlement-queue-dlq  (settlement.dlq.depth gauge)
+
+on SETTLED (step 33): ledger CLEARING_RELEASE  (debit clearing / credit SPI_SETTLED, txId=<orig>-rel)
+                                        ─▶ then tx → SETTLED  (idempotent by that txId)
+on SPI permanent refusal (step 33): ledger PIX_REVERSAL  (debit clearing / credit payer, txId=<orig>-rev)
+                                        ─▶ tx: SENT_TO_SPI → REVERSED + PixReversed  (guarded, ONE write)
+                                        ─▶ release the daily-limit reservation  (only if the guard won)
 ```
 
 Three properties carry the whole design:
@@ -51,9 +60,16 @@ Three properties carry the whole design:
    20, 40, 60s); after five undeleted receives SQS redrives it to `settlement-queue-dlq`, whose depth is
    the `settlement.dlq.depth` gauge — a stuck settlement is *flagged*, never lost (ADR-0003).
 
-**No money moves here.** The payer was debited into the clearing account at acceptance time (step 27);
-settlement records what BACEN did with money that already left. The compensating posting for a permanent
-refusal is step 33's, and the ledger stays append-only.
+**Money moves again on a definitive outcome (step 33).** Until the answer is final, settlement only records
+what BACEN did with money debited into the clearing account at acceptance time (step 27). On a **settlement**
+it posts a `CLEARING_RELEASE` (`debit clearing / credit SPI_SETTLED`, `txId=<orig>-rel`) so the parked money
+leaves clearing; on a **permanent refusal** it posts a compensating `PIX_REVERSAL` (`debit clearing / credit
+payer`, `txId=<orig>-rev`), transitions the transaction to `REVERSED`, releases the daily-limit reservation
+and announces `PixReversed`. Both postings are **idempotent by their deterministic `txId`**, so they run
+before the guarded status transition without ever double-moving money, and the ledger stays append-only — a
+reversal is a new posting, never an edit. Σ balances is invariant on both branches. settlement has no user
+token to forward off a queue, so it mints its own short-lived service token (shared secret) for the ledger
+call — a sandbox stand-in for a real service credential (ADR-0013; step-45 hardening).
 
 ## Endpoints
 
@@ -84,7 +100,11 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 | `BACEN_BASE_URL` | `http://localhost:9090` | mock-bacen-spi (compose: `http://mock-bacen-spi:9090`) |
 | `BACEN_READ_TIMEOUT_MS` | `12000` | ADR-0003's budget: above BACEN's 10s, below the queue's 30s visibility timeout |
 | `BACEN_CONNECT_TIMEOUT_MS` | `2000` | Connect budget |
-| `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | Must match auth-service's. Nothing is authenticated today, but the platform keeps one authentication posture rather than a per-service opt-out |
+| `LEDGER_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service, called on a definitive outcome (step 33; compose: `http://ledger-service:8085`) |
+| `LEDGER_READ_TIMEOUT_MS` / `LEDGER_CONNECT_TIMEOUT_MS` | `3000` / `2000` | Ledger call budgets — a hung ledger surfaces as a timeout (nothing posted) and the message redelivers |
+| `PIX_SETTLED_ACCOUNT_ID` / `pix.settlement.settled-account-id` | `SPI_SETTLED` | Credit account of a `CLEARING_RELEASE` — money settled out to the SPI network (seeded at 0) |
+| `SERVICE_TOKEN_TTL_SECONDS` / `pix.service-auth.token-ttl-seconds` | `60` | TTL of the self-minted service token presented to ledger-service (step 33) |
+| `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | Must match auth-service's. Verifies inbound tokens and (step 33) **signs** the service token settlement presents to ledger-service |
 | `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack defaults | AWS SDK wiring |
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
@@ -93,13 +113,16 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 api/               SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
                    SettlementDlqDepthGauge (@Scheduled DLQ depth probe), SettlementMessage (inbound adapter)
 domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus                 (plain Java)
-domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore  (outbound interfaces)
+domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore,
+                   LedgerClient, DailyLimitRelease                                   (outbound interfaces)
 domain/exception/  TransitionNotAllowedException, SpiCallFailedException,
-                   SpiSettlementRejectedException                                           (plain Java)
-domain/service/    SettlementOutboxEvents (mints PixSettled)                                (plain Java)
+                   SpiSettlementRejectedException, LedgerUnavailableException                (plain Java)
+domain/service/    SettlementOutboxEvents (mints PixSettled / PixReversed)                   (plain Java)
 domain/usecase/    SettlePixUseCase + SettlePixCommand + SettleOutcome                      (plain Java)
-infra/client/      HttpSpiSettlementClient (RestClient, 12s read timeout)
-infra/persistence/ DynamoSettlementTransactionStore (the two guarded writes), DynamoProcessedEvents
+infra/client/      HttpSpiSettlementClient (12s read timeout), HttpSettlementLedgerClient (step 33)
+infra/persistence/ DynamoSettlementTransactionStore (the guarded writes), DynamoDailyLimitRelease,
+                   DynamoProcessedEvents
+infra/security/    ServiceTokenIssuer (mints the HS256 service token for the ledger call, step 33)
 infra/config/      AwsClientsConfig, AwsProperties, SettlementBeansConfig, SchedulingConfig
 ```
 
@@ -168,6 +191,8 @@ docker compose -f infra/docker-compose.yml logs settlement-service | grep "cid=<
   exception that lets it write `pix_transactions` directly, under guarded transitions only.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) / [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md)
   — hexagonal-lite; the queue consumer is an inbound adapter with no policy of its own.
+- [ADR-0013](../../docs/adr/0013-aws-credentials-and-iam-posture.md) — service-to-service auth posture; the
+  self-minted service token for the ledger call (step 33) is the sandbox stand-in until the step-45 sweep.
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — the `correlationId` is carried in
   the event and restored into the MDC around every message, so one `grep` still reconstructs a payment's
   whole path after the flow leaves the request thread.

@@ -9,8 +9,15 @@
 #   ACCOUNT#acc-002 (bob)     +1_000_000  ← credit leg of tx-seed-bob
 #   ACCOUNT#SEED             -2_000_000  ← the two debit legs (funding source)
 #   ACCOUNT#SPI_CLEARING              0  ← money in flight to/from BACEN, empty at rest
+#   ACCOUNT#SPI_SETTLED              0  ← money that has settled OUT to the SPI network
 #                            -----------
 #   Σ balanceCents                    0   ← the conservation invariant's baseline
+#
+# SPI_SETTLED (step 33) is the credit counterpart of a CLEARING_RELEASE posting:
+# when an external send settles at BACEN, `debit SPI_CLEARING / credit SPI_SETTLED`
+# draws the money back out of clearing and parks it as "gone to the network", so Σ
+# stays 0 both ways (a reversal instead credits the payer back). It starts at 0 and
+# is only ever credited, so it never needs the non-negative exemption.
 #
 # Σ = 0 is the property step 15 asserts under a concurrent debit storm: postings
 # MOVE money between partitions, they never create or destroy it. Seeding alice
@@ -81,6 +88,7 @@ put_balance() {
 put_balance acc-001       1000000
 put_balance acc-002       1000000
 put_balance SPI_CLEARING        0
+put_balance SPI_SETTLED         0
 put_balance SEED         -2000000
 
 # ── ENTRY items ───────────────────────────────────────────────────────────────
@@ -110,4 +118,4 @@ put_entry acc-002 "$BOB_FUNDED_AT"   tx-seed-bob   CREDIT  1000000 SEED    "Init
 
 # Last line of the last init script — the Testcontainers harness
 # (LocalStackTestBase) waits on it to know the whole world is seeded.
-echo "[seed] ledger ready: acc-001/acc-002 at 1000000 cents each, funded by ACCOUNT#SEED, SPI_CLEARING at 0 (sum 0)"
+echo "[seed] ledger ready: acc-001/acc-002 at 1000000 cents each, funded by ACCOUNT#SEED, SPI_CLEARING and SPI_SETTLED at 0 (sum 0)"

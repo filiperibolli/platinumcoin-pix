@@ -7,6 +7,7 @@ import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,9 +31,17 @@ import org.junit.jupiter.api.Test;
 class SettlePixUseCaseTest {
 
     private static final Instant NOW = Instant.parse("2026-08-13T10:15:30.500Z");
+    /**
+     * The debit instant, deliberately on a DIFFERENT São Paulo calendar day than {@link #NOW}: 02:00Z is
+     * 2026-08-12 23:00 in America/São_Paulo, while NOW is 2026-08-13. A reversal must release the daily
+     * limit against the debit day ({@link #RESERVATION_DAY}), never the day the reversal happens.
+     */
+    private static final Instant DEBITED_AT = Instant.parse("2026-08-13T02:00:00Z");
+    private static final LocalDate RESERVATION_DAY = LocalDate.parse("2026-08-12");
     private static final String EVENT_ID = "evt-1111";
     private static final String TX_ID = "tx-9f1c";
     private static final String E2E_ID = "E12345678202608131015abcdef01234";
+    private static final String CLEARING = "SPI_CLEARING";
     private static final String OUR_ISPB = "12345678";
 
     /** Every fake appends to this list, so a test can assert on the ORDER of the side effects. */
@@ -41,6 +50,8 @@ class SettlePixUseCaseTest {
     private FakeProcessedEvents processedEvents;
     private FakeSpiSettlementClient spi;
     private FakeSettlementTransactionStore transactions;
+    private FakeLedgerClient ledger;
+    private FakeDailyLimitRelease dailyLimits;
     private SettlePixUseCase useCase;
 
     @BeforeEach
@@ -48,13 +59,15 @@ class SettlePixUseCaseTest {
         processedEvents = new FakeProcessedEvents(trace);
         spi = new FakeSpiSettlementClient(trace);
         transactions = new FakeSettlementTransactionStore(trace);
-        useCase = new SettlePixUseCase(processedEvents, spi, transactions, OUR_ISPB,
+        ledger = new FakeLedgerClient(trace);
+        dailyLimits = new FakeDailyLimitRelease(trace);
+        useCase = new SettlePixUseCase(processedEvents, spi, transactions, ledger, dailyLimits, OUR_ISPB,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
     private static SettlePixCommand command() {
-        return new SettlePixCommand(EVENT_ID, TX_ID, E2E_ID, "acc-001", "bob@otherbank.com",
-                12_550L, "aluguel", "cid-abc");
+        return new SettlePixCommand(EVENT_ID, TX_ID, E2E_ID, "acc-001", "bob@otherbank.com", CLEARING,
+                12_550L, "aluguel", DEBITED_AT, "cid-abc");
     }
 
     @Test
@@ -81,7 +94,27 @@ class SettlePixUseCaseTest {
     void theClaimAndTheTransitionBothPrecedeTheSpiCall() {
         useCase.execute(command(), false);
 
-        assertThat(trace).containsExactly("claim", "markSentToSpi", "spi.settle", "markSettled");
+        assertThat(trace).containsExactly(
+                "claim", "markSentToSpi", "spi.settle", "ledger.releaseClearing", "markSettled");
+    }
+
+    /**
+     * On a confirmed settlement the clearing account is drawn down BEFORE the status is recorded (step 33,
+     * task 2): {@code debit clearing / credit SPI_SETTLED} under a {@code -rel} txId, so the clearing
+     * balance nets back to zero and Σ balances is invariant. Posting it before {@code markSettled} is what
+     * makes a crash between the two harmless — the redelivery replays the idempotent {@code -rel} posting.
+     */
+    @Test
+    void aSettlementReleasesTheClearingAccountBeforeRecordingSettled() {
+        useCase.execute(command(), false);
+
+        assertThat(ledger.releases()).hasSize(1);
+        FakeLedgerClient.Posting release = ledger.releases().get(0);
+        assertThat(release.txId()).as("the clearing release is keyed by <txId>-rel").isEqualTo(TX_ID + "-rel");
+        assertThat(release.debitAccount()).as("the exact clearing account the debit credited")
+                .isEqualTo(CLEARING);
+        assertThat(release.amountCents()).isEqualTo(12_550L);
+        assertThat(ledger.reversals()).as("a settlement never reverses").isEmpty();
     }
 
     @Test
@@ -144,7 +177,8 @@ class SettlePixUseCaseTest {
         assertThat(transactions.settledTxId()).isEqualTo(TX_ID);
         // No markSentToSpi: the transaction was already claimed by the attempt that timed out. The query,
         // then the atomic settle — nothing re-sent.
-        assertThat(trace).containsExactly("claim", "spi.findSettlement", "markSettled");
+        assertThat(trace).containsExactly(
+                "claim", "spi.findSettlement", "ledger.releaseClearing", "markSettled");
     }
 
     /**
@@ -159,21 +193,113 @@ class SettlePixUseCaseTest {
         assertThat(outcome).isEqualTo(SettleOutcome.SETTLED);
         assertThat(spi.calls()).as("the retry POST ran because the rail reported nothing settled")
                 .isEqualTo(1);
-        assertThat(trace)
-                .containsExactly("claim", "spi.findSettlement", "markSentToSpi", "spi.settle", "markSettled");
+        assertThat(trace).containsExactly("claim", "spi.findSettlement", "markSentToSpi", "spi.settle",
+                "ledger.releaseClearing", "markSettled");
     }
 
-    /** A permanent refusal is neither retryable nor settleable — the payer is made whole in step 33. */
+    /**
+     * A permanent refusal is neither retryable nor settleable — the payer is made whole (step 33): a
+     * compensating {@code debit clearing / credit payer} posting, the guarded transition to REVERSED, the
+     * daily-limit released, and PixReversed written. The refused Pix is never reported as settled.
+     */
     @Test
-    void aRejectedSettlementIsNeverMarkedSettled() {
+    void aRejectedSettlementReversesThePaymentAndRefundsThePayer() {
         spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
 
         SettleOutcome outcome = useCase.execute(command(), false);
 
-        assertThat(outcome).isEqualTo(SettleOutcome.REJECTED_BY_SPI);
+        assertThat(outcome).isEqualTo(SettleOutcome.REVERSED);
+        assertThat(outcome.messageMayBeDeleted()).as("the reversal is done, the message is acked").isTrue();
         assertThat(transactions.settledCalls())
                 .as("a refused Pix must never be reported as settled").isZero();
-        assertThat(processedEvents.releases()).isEqualTo(1);
+
+        // The compensating posting: debit clearing / credit payer, keyed by <txId>-rev.
+        assertThat(ledger.reversals()).hasSize(1);
+        FakeLedgerClient.Posting reversal = ledger.reversals().get(0);
+        assertThat(reversal.txId()).isEqualTo(TX_ID + "-rev");
+        assertThat(reversal.debitAccount()).isEqualTo(CLEARING);
+        assertThat(reversal.creditAccount()).as("the payer is made whole").isEqualTo("acc-001");
+        assertThat(reversal.amountCents()).isEqualTo(12_550L);
+
+        assertThat(transactions.reversedTxId()).isEqualTo(TX_ID);
+        assertThat(transactions.reversedFailureReason()).isEqualTo("CREDITOR_KEY_NOT_IN_DICT");
+        assertThat(ledger.releases()).as("a reversal never releases the clearing to SPI_SETTLED").isEmpty();
+    }
+
+    /** The order is the design: refund the payer, record REVERSED, then release the limit — once. */
+    @Test
+    void aReversalPostsBeforeTheTransitionAndReleasesTheLimitAfterItWins() {
+        spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
+
+        useCase.execute(command(), false);
+
+        assertThat(trace).containsExactly("claim", "markSentToSpi", "spi.settle",
+                "ledger.reverseToPayer", "markReversed", "dailyLimits.release");
+    }
+
+    /**
+     * The daily limit is released against the DEBIT day (the day payment-service reserved it), not the day
+     * the reversal happens — resolved in America/São_Paulo, so a debit late on the 12th UTC-evening
+     * releases the 12th, even though the reversal runs on the 13th.
+     */
+    @Test
+    void aReversalReleasesTheLimitAgainstTheDebitDayNotTheReversalDay() {
+        spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
+
+        useCase.execute(command(), false);
+
+        assertThat(dailyLimits.releases()).hasSize(1);
+        FakeDailyLimitRelease.Release release = dailyLimits.releases().get(0);
+        assertThat(release.accountId()).isEqualTo("acc-001");
+        assertThat(release.amountCents()).isEqualTo(12_550L);
+        assertThat(release.day()).isEqualTo(RESERVATION_DAY);
+    }
+
+    /** A reversal is terminal like a settlement: its claim survives so a redelivery is deduped. */
+    @Test
+    void aReversedEventKeepsItsClaim() {
+        spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
+
+        useCase.execute(command(), false);
+
+        assertThat(processedEvents.holdsClaimFor(EVENT_ID)).isTrue();
+        assertThat(processedEvents.releases()).isZero();
+    }
+
+    /**
+     * Idempotent reversal: if the transaction was already reversed (a redelivery), the guarded transition
+     * refuses, and the limit is NOT released a second time — the compensating posting above was an
+     * idempotent replay, so no money moved twice and the counter is not double-refunded.
+     */
+    @Test
+    void aReversalWhoseTransitionIsRefusedDoesNotReleaseTheLimitAgain() {
+        spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
+        transactions.refuseReversed();
+
+        SettleOutcome outcome = useCase.execute(command(), false);
+
+        assertThat(outcome).isEqualTo(SettleOutcome.NOT_ELIGIBLE);
+        assertThat(outcome.messageMayBeDeleted()).as("a duplicate reversal is acked").isTrue();
+        assertThat(dailyLimits.releases()).as("no second refund of the day's counter").isEmpty();
+    }
+
+    /**
+     * A ledger outage during a reversal is a retry, never a lost reversal: the compensating posting throws,
+     * nothing local is recorded, the exception propagates so the consumer leaves the message on the queue,
+     * and the redelivery replays the idempotent {@code -rev} posting.
+     */
+    @Test
+    void aLedgerOutageDuringAReversalLeavesTheMessageForRedelivery() {
+        spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
+        ledger.beUnavailable();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> useCase.execute(command(), false))
+                .isInstanceOf(com.platinumcoin.pix.settlement.domain.exception.LedgerUnavailableException.class);
+
+        assertThat(transactions.reversedCalls()).as("nothing recorded before the money moved").isZero();
+        assertThat(dailyLimits.releases()).isEmpty();
+        assertThat(processedEvents.holdsClaimFor(EVENT_ID))
+                .as("the claim is released so the redelivery is real work").isFalse();
     }
 
     /**

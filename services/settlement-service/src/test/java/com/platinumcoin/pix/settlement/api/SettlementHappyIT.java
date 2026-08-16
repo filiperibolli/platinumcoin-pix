@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.support.SettlementTestSupport;
+import com.platinumcoin.pix.settlement.support.StubLedgerClient;
 import com.platinumcoin.pix.settlement.support.StubSpiSettlementClient;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -79,6 +80,9 @@ class SettlementHappyIT extends LocalStackTestBase {
     @Autowired
     StubSpiSettlementClient spi;
 
+    @Autowired
+    StubLedgerClient ledger;
+
     @AfterAll
     static void closeClients() {
         SQS.close();
@@ -104,6 +108,7 @@ class SettlementHappyIT extends LocalStackTestBase {
                     .queueUrl(queueUrl()).receiptHandle(message.receiptHandle())));
         } while (!drained.isEmpty());
         spi.reset();
+        ledger.reset();
     }
 
     /** The headline: an external Pix reaches {@code SETTLED} with its event written, and is acked. */
@@ -146,6 +151,13 @@ class SettlementHappyIT extends LocalStackTestBase {
         assertThat(spi.attempts()).containsExactly(e2eId);
         assertThat(receivableEventIds()).as("a handled message is deleted, i.e. acked")
                 .doesNotContain(eventId);
+
+        // Step 33: settling drew the money out of the clearing account (CLEARING_RELEASE), keyed by
+        // <txId>-rel. The dedicated ClearingReleaseIT proves the balances net; here we only confirm the
+        // finalization posting rode along with the settlement.
+        assertThat(ledger.postings())
+                .extracting(StubLedgerClient.Posting::txId)
+                .contains(txId + "-rel");
     }
 
     /**
@@ -257,6 +269,7 @@ class SettlementHappyIT extends LocalStackTestBase {
         item.put("debtorAccountId", AttributeValue.fromS("acc-001"));
         item.put("creditorKey", AttributeValue.fromS("bob@otherbank.com"));
         item.put("creditorInternal", AttributeValue.fromBool(false));
+        item.put("clearingAccountId", AttributeValue.fromS("SPI_CLEARING"));
         item.put("amountCents", AttributeValue.fromN(Long.toString(amountCents)));
         item.put("status", AttributeValue.fromS("DEBITED"));
         item.put("description", AttributeValue.fromS("aluguel"));
@@ -271,7 +284,8 @@ class SettlementHappyIT extends LocalStackTestBase {
         String body = """
                 {"eventId":"%s","eventType":"PixDebited","occurredAt":"2026-08-13T10:15:00.000Z",
                  "correlationId":"%s","payload":{"txId":"%s","endToEndId":"%s",
-                 "debtorAccountId":"acc-001","creditorKey":"bob@otherbank.com","amountCents":%d,
+                 "debtorAccountId":"acc-001","creditorKey":"bob@otherbank.com",
+                 "clearingAccountId":"SPI_CLEARING","amountCents":%d,
                  "description":"aluguel","status":"DEBITED","occurredAt":"2026-08-13T10:15:00.000Z"}}
                 """.formatted(eventId, correlationId, txId, e2eId, amountCents);
 

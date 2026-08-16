@@ -264,6 +264,9 @@ services:
       # queue's 30s visibility timeout — a longer budget would let a hung call hold a message past its
       # visibility window and have SQS redeliver work still in progress.
       BACEN_BASE_URL: http://mock-bacen-spi:9090
+      # ledger-service, called on a definitive outcome (step 33): CLEARING_RELEASE on settlement, the
+      # compensating reversal on a permanent refusal. Reached by service name on the shared network.
+      LEDGER_BASE_URL: http://ledger-service:8085
       # Reach LocalStack by service name on the shared network (DynamoDB + SQS).
       AWS_ENDPOINT_URL: http://localstack:4566
       AWS_REGION: us-east-1
@@ -278,6 +281,12 @@ services:
       # for redelivery, which is exactly the designed behaviour) — gating here just means the first
       # external send in a demo settles immediately instead of after a retry.
       mock-bacen-spi:
+        condition: service_healthy
+      # ledger-service, needed to finalize a definitive outcome (step 33): CLEARING_RELEASE or the
+      # compensating reversal. Also not a correctness requirement — a ledger outage leaves the message
+      # for redelivery (the -rel/-rev txId makes the retry a replay) — but gating means finalization
+      # works the moment settlement starts consuming.
+      ledger-service:
         condition: service_healthy
     networks:
       - pix-net
