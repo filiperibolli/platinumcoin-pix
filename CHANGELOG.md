@@ -69,6 +69,18 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   the first click accepts a fresh payment and moves money once, every later click replays the same
   `transactionId`/`endToEndId` with **no** second debit (`409 IDEMPOTENCY_KEY_REUSED` if the body changes under
   the same key; `400 IDEMPOTENCY_KEY_REQUIRED` if omitted). Layer 1 of ADR-0002 made visible in two clicks.
+- **API explorer: path parameters are now editable and GET cards can auto-poll.** The explorer only
+  rendered an editable *body* textarea, so every card's path was frozen at its literal/derived value —
+  yet a dozen descriptions instructed the reader to *"edit the path to acc-002"*, *"edit the id in the
+  path"*, *"change creditorKey…"*, promising an affordance the UI never had, and there was no way to
+  inspect an arbitrary `transactionId` (only the last one auto-captured from a send). Every non-login
+  card now shows an **editable Request-path input** (change ids, keys, query params in place), a send
+  reads the live value, and a captured `transactionId` is pushed into the status card's field while
+  leaving it fully overwritable (paste any txId, incl. one from a prior run). GET cards also gain an
+  **Auto-poll** toggle that re-queries every 2s and stops on a terminal status (`SETTLED/FAILED/
+  REVERSED/REJECTED`) or a 40-poll cap — the missing tool for watching an **external** Pix flip
+  `PROCESSING → SETTLED` without hammering Send. Closes the "edit the path" doc/UI drift; the settlement
+  and DICT status cards inherit the same controls. Explorer-only; no service or contract change.
 - **Audit note — a fraud-denied send is not demonstrable through the public endpoint under default seeds,**
   so no card was added (recording the finding rather than shipping a card that cannot fire). The fraud
   `HIGH_AMOUNT` line and the daily limit are both `R$5,000.00` (`500000` cents), and the orchestration
@@ -77,6 +89,37 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   `POST /v1/payments/pix` needs a velocity build-up or a raised limit — out of scope for a single deterministic
   card. The DENY branch is already covered by `ScoreFraudUseCaseTest`; the fraud-service explorer/Postman card
   exercises the `/internal/fraud/score` seam directly.
+- **API explorer: full request transparency & control.** Follow-on to the editable-path work, driven by
+  hands-on review — the explorer is the human's primary way to drive and *understand* the platform, and it
+  hid too much of each call. Every non-login card now exposes, pre-filled and editable, the values it will
+  send: an **editable headers box** (`Key: Value` per line), an **editable body**, and a live **"This is what
+  will be sent"** preview (method + full target URL + headers + body, recomputed on every keystroke;
+  Authorization is summarised as `Bearer … (session: <accountId>)`, never dumped — it is a long opaque token).
+  Two ids are seeded as real, visible values instead of being minted invisibly at click time: the
+  **`Idempotency-Key`** on money-moving POSTs (same value = replay, per ADR-0002) and **`X-Correlation-Id` on
+  every call** — the client originates the trace, the service reuses the header it receives and echoes it back
+  (`CorrelationIdFilter`), so the id now also renders **under the response, click-to-copy**, and one
+  `grep <cid>` walks every service that handled the request (ADR-0012). Clear the line to let the server mint
+  one; the **`↻ new ids`** button re-mints only the ids the explorer generated, never an authored value (the
+  fixed replay-demo key survives). Each **Send** now raises a transient **toast** (top-right, auto-dismiss)
+  carrying the HTTP status, so an action always leaves a visible acknowledgement even when the body is empty;
+  a stopped **Auto-poll** toasts its reason (`reached SETTLED`). Explorer-only; no service or contract change.
+- **Verified, no change: only payment-service takes an `Idempotency-Key` header — and it should stay that
+  way.** A review question ("don't the other services need it too, like the ledger?") prompted a sweep: the
+  header is read in exactly one place in the whole codebase (`PaymentController`). Every other mutating
+  endpoint is idempotent by a **natural business key in the payload**, which is stronger than an opaque
+  client key because it is the operation's real identity and cannot be forgotten or mis-set: the ledger
+  posting by `txId` (conditional `attribute_not_exists` write — the controller documents "*No Idempotency-Key
+  header here*"), the SPI settlement by `endToEndId` ("first terminal outcome wins forever"), a Pix-key
+  registration by the key value itself (`409 KEY_ALREADY_EXISTS`), `DELETE` by HTTP semantics, and event
+  consumers by `eventId`. The header exists for the one untrusted, client-facing money-moving POST that has no
+  natural id (ADR-0002 / Domain Safety Rule #2); adding it to an internal write would be redundant and weaker.
+  The explorer already reflects this — only the five `/v1/payments/pix` cards seed an `Idempotency-Key`; the
+  ledger and SPI cards carry their `txId` / `endToEndId` in the editable body.
+  AI: est 2h / actual ~2.5h / ~90% generated / 5 issues caught in human review
+  (1: external send undemonstrated in the twin harnesses; 2: card paths not editable — no way to poll an
+  arbitrary `transactionId`; 3: outgoing request values not visible/verifiable before sending; 4: no
+  send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
 - settlement-service: consume settlement-queue, call SPI, guarded transition to SETTLED with PixSettled
