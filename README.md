@@ -190,6 +190,21 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 - **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 53).
 - **Messaging portability**: an explicit [SNS/SQS ↔ Kafka appendix](docs/messaging-kafka-appendix.md) mapping every concept used here to its Kafka equivalent.
 
+## Load measurement (ad hoc, ahead of the sprint plan)
+
+Before Sprint 12's full k6 SLO suite ([Step 47](docs/steps/step-47.md)), I ran a smaller,
+self-contained load-measurement pass against the real docker-compose stack — outside `PLAN.md`,
+done for its own sake — covering conservation under 50-way contention on a single account, a
+30-VU idempotency retry storm, and a 6-stage (5→200 VU) capacity curve.
+
+Money invariants held exactly under all of it: zero double postings, Σ balances conserved,
+exactly one real ledger posting per idempotency round. The capacity finding: throughput plateaus
+at ~8.5 req/s from the *lowest* concurrency tested, fitting Little's Law almost exactly — the
+ceiling isn't discovered by ramping up, it's already there at 5 concurrent clients.
+
+Full write-up (including how a WSL2 clock-drift artifact was characterized and factored out of
+the latency numbers, and what is/isn't portable off this dev machine): [`docs/load/RESULTS.md`](docs/load/RESULTS.md).
+
 ## OKRs & KPIs
 
 Framed as if this were a real platform: **OKRs** are the outcomes the architecture commits to, and **KPIs** are the steady-state signals you'd watch on the wall afterwards. The KRs are the SLOs from [The problem](#the-problem) made measurable.
