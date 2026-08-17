@@ -50,19 +50,25 @@ public interface SettlementTransactionStore {
     void markSettled(String txId, SettlementConfirmation confirmation, OutboxEvent event);
 
     /**
-     * {@code SENT_TO_SPI → REVERSED}, together with the {@code PixReversed} outbox event, in <b>one</b>
-     * atomic write (step 33). Guarded strictly on {@code SENT_TO_SPI}: only a transaction this consumer
-     * put on the rail and that BACEN then permanently refused may be reversed — and the guard is what
-     * makes the reversal idempotent at the state level, so a redelivery finds it already {@code REVERSED}
-     * and refuses rather than reversing again.
+     * {@code (DEBITED | SENT_TO_SPI) → REVERSED}, together with the {@code PixReversed} outbox event, in
+     * <b>one</b> atomic write (step 33; guard widened in step 35). Guarded on the <b>two stuck states</b>:
+     * the queue-driven reversal reaches it from {@code SENT_TO_SPI} (BACEN refused a POST), and the
+     * reconciliation resolver reaches it for a transaction whose settlement was never attempted and still
+     * sits at {@code DEBITED}. Both parked the payer's money in clearing at acceptance (step 27), so
+     * reversing from either is money-correct. The guard is what makes the reversal idempotent at the state
+     * level — a redelivery or a re-run finds it already {@code REVERSED} and refuses rather than reversing
+     * again — and it still refuses a terminal state, so a {@code SETTLED} transaction is never dragged to
+     * {@code REVERSED}.
      *
      * <p>The event is written, not published — the polling publisher (ADR-0004) drains the sparse index —
      * so the {@code PixReversed} announcement inherits the same atomicity as the state change: no crash
      * can leave a reversed payment nobody hears about, nor announce a reversal that did not commit.
      *
-     * @param failureReason BACEN's machine-readable refusal reason, stamped on the item for the status
-     *                      endpoint and audit
-     * @throws TransitionNotAllowedException when the transaction is no longer {@code SENT_TO_SPI}
+     * @param failureReason the machine-readable refusal reason (BACEN's, or the resolver's for a rail that
+     *                      never recorded the id past the safety window), stamped on the item for the
+     *                      status endpoint and audit
+     * @throws TransitionNotAllowedException when the transaction is neither {@code DEBITED} nor
+     *         {@code SENT_TO_SPI} (already terminal)
      */
     void markReversed(String txId, String failureReason, Instant at, OutboxEvent event);
 }

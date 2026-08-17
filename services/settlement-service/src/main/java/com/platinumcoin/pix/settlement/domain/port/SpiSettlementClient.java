@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.domain.port;
 
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
+import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import java.util.Optional;
 
@@ -52,4 +53,24 @@ public interface SpiSettlementClient {
      *         retry the {@code POST}"; it never means "failed".
      */
     Optional<SpiSettlement> findSettlement(String endToEndId);
+
+    /**
+     * The richer status query the reconciliation resolver (step 35) decides a transaction's fate on —
+     * {@code GET /spi/settlements/{endToEndId}} read for <b>all four</b> answers, not just "settled or
+     * not".
+     *
+     * <p>Where {@link #findSettlement} exists to let query-before-retry re-POST safely (so everything
+     * that is not a settlement collapses to empty), this one has to tell a definitive refusal
+     * ({@link SpiReconciliation.Kind#FAILED} ⇒ reverse) apart from a rail that merely could not answer
+     * ({@link SpiReconciliation.Kind#UNREACHABLE} ⇒ leave) and from an id the rail has no record of
+     * ({@link SpiReconciliation.Kind#UNKNOWN} ⇒ reverse only past the safety window). Collapsing those is
+     * how a transaction gets reversed while the money is gone, or retried forever while it is not — which
+     * is why the resolver needs the full answer and the retry loop does not.
+     *
+     * @return the four-way outcome; never throws for a rail that is down or refuses — an unreachable rail
+     *         is {@link SpiReconciliation.Kind#UNREACHABLE} and a refusal is
+     *         {@link SpiReconciliation.Kind#FAILED}, both values the resolver acts on rather than
+     *         exceptions it has to catch
+     */
+    SpiReconciliation reconcile(String endToEndId);
 }

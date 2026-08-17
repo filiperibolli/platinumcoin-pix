@@ -617,10 +617,16 @@
             body: JSON.stringify({ failureRate: 1.0 }, null, 2),
           },
           {
-            method: 'POST', path: '/admin/config', title: 'Disarm (back to compose defaults)', auth: false, capturesToken: false,
-            desc: 'Put the rail back: 2s latency, no injected failures. Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.',
+            method: 'POST', path: '/admin/config', title: 'Arm a settlement rejection (rejectKeys)', auth: false, capturesToken: false,
+            desc: 'The SEND-REACHABLE REVERSAL TRIGGER (step 35). Unlike failureRate (a transient 503 that records nothing) or an unknown creditor key (refused already at SEND time), this refuses a DICT-KNOWN key at SETTLEMENT — so a real external Pix to bob@otherbank.com debits to clearing, then settlement gets 422 SETTLEMENT_REJECTED_BY_ADMIN, and step 33\'s compensating reversal fires against the compose stack. Drill: arm this, send an external Pix to bob@otherbank.com (Send Pix card), then watch GET /payments/{id} reach REVERSED and the payer refunded. Clear it with {"rejectKeys": []}. Partial like every knob: an absent rejectKeys leaves the list unchanged.',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ latencyMs: 2000, failureRate: 0.0, timeoutRate: 0.0 }, null, 2),
+            body: JSON.stringify({ rejectKeys: ['bob@otherbank.com'] }, null, 2),
+          },
+          {
+            method: 'POST', path: '/admin/config', title: 'Disarm (back to compose defaults)', auth: false, capturesToken: false,
+            desc: 'Put the rail back: 2s latency, no injected failures, and an empty reject list. Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ latencyMs: 2000, failureRate: 0.0, timeoutRate: 0.0, rejectKeys: [] }, null, 2),
           },
           {
             method: 'GET', path: '/admin/config', title: 'Current config', auth: false, capturesToken: false,

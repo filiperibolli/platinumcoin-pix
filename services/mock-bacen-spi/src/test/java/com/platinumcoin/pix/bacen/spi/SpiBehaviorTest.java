@@ -2,6 +2,7 @@ package com.platinumcoin.pix.bacen.spi;
 
 import com.platinumcoin.pix.bacen.config.BacenProperties;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -16,7 +17,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpiBehaviorTest {
 
     private static SpiBehavior behaviorWith(long latencyMs, double failureRate, double timeoutRate) {
-        return new SpiBehavior(new BacenProperties(latencyMs, failureRate, timeoutRate, 15_000L, Map.of()));
+        return new SpiBehavior(
+                new BacenProperties(latencyMs, failureRate, timeoutRate, 15_000L, Map.of(), Set.of()));
     }
 
     @Test
@@ -52,6 +54,26 @@ class SpiBehaviorTest {
         // It must sit past the client's own timeout to mean anything, so no admin request can lower it
         // mid-drill and turn a "timeout" into a slow success.
         assertThat(behavior.timeoutHangMs()).isEqualTo(15_000L);
+    }
+
+    @Test
+    void aRejectKeyIsMatchedCaseAndWhitespaceInsensitivelyAndUpdatedWholesale() {
+        var behavior = behaviorWith(0L, 0.0, 0.0);
+        assertThat(behavior.shouldReject("bob@otherbank.com")).as("nothing rejected by default").isFalse();
+
+        behavior.updateRejectKeys(Set.of("  Bob@OtherBank.com  "));
+
+        // Normalised like the DICT: trimmed and lowercased, so the caller's exact casing does not matter.
+        assertThat(behavior.shouldReject("bob@otherbank.com")).isTrue();
+        assertThat(behavior.shouldReject("BOB@OTHERBANK.COM")).isTrue();
+        assertThat(behavior.shouldReject("alice@ourbank.com")).isFalse();
+
+        // A null leaves the set alone (partial update); an empty set clears it.
+        behavior.updateRejectKeys(null);
+        assertThat(behavior.shouldReject("bob@otherbank.com")).isTrue();
+        behavior.updateRejectKeys(Set.of());
+        assertThat(behavior.shouldReject("bob@otherbank.com")).as("an empty set clears the reject list")
+                .isFalse();
     }
 
     @Test

@@ -1,8 +1,11 @@
 package com.platinumcoin.pix.bacen.spi;
 
 import com.platinumcoin.pix.bacen.config.BacenProperties;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -35,17 +38,62 @@ public class SpiBehavior {
     private final AtomicReference<Snapshot> current;
     private final long timeoutHangMs;
 
+    /**
+     * Creditor keys refused at settlement even when the DICT resolves them (step 35). Held apart from the
+     * timing {@link Snapshot} because it is not part of the roll sequence a single settlement decides on —
+     * it is a set the DICT-lookup step consults — and mutated as a whole so a lookup never sees a half-built
+     * set. Normalised lowercase, like the DICT, so {@code Bob@OtherBank.com} and {@code bob@otherbank.com}
+     * are the same key.
+     */
+    private final AtomicReference<Set<String>> rejectKeys;
+
     public SpiBehavior(BacenProperties properties) {
         this.current = new AtomicReference<>(new Snapshot(
                 properties.latencyMs(), properties.failureRate(), properties.timeoutRate()));
         this.timeoutHangMs = properties.timeoutHangMs();
+        this.rejectKeys = new AtomicReference<>(normalise(properties.rejectKeys()));
         log.info("SPI behaviour armed from configuration, this is what settlement calls will experience "
-                        + "| latencyMs={} failureRate={} timeoutRate={} timeoutHangMs={}",
-                properties.latencyMs(), properties.failureRate(), properties.timeoutRate(), timeoutHangMs);
+                        + "| latencyMs={} failureRate={} timeoutRate={} timeoutHangMs={} rejectKeys={}",
+                properties.latencyMs(), properties.failureRate(), properties.timeoutRate(), timeoutHangMs,
+                this.rejectKeys.get());
     }
 
     public Snapshot current() {
         return current.get();
+    }
+
+    /** The creditor keys refused at settlement right now — reported by {@code GET /admin/config}. */
+    public Set<String> rejectKeys() {
+        return rejectKeys.get();
+    }
+
+    /**
+     * {@code true} ⇒ this creditor key must be refused at settlement even though the DICT knows it — the
+     * send-reachable reversal trigger of step 35. Normalises the incoming key so the match is case- and
+     * whitespace-insensitive, exactly like the DICT lookup it sits in front of.
+     */
+    public boolean shouldReject(String creditorKey) {
+        return creditorKey != null && rejectKeys.get().contains(creditorKey.trim().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Replace the reject-key set wholesale (a {@code null} from a partial admin update leaves it
+     * unchanged, like every other dial knob). Returns the new effective set.
+     */
+    public Set<String> updateRejectKeys(Set<String> keys) {
+        if (keys == null) {
+            return rejectKeys.get();
+        }
+        Set<String> updated = rejectKeys.updateAndGet(now -> normalise(keys));
+        log.info("SPI settlement reject-keys changed at runtime by an admin request, later settlements for "
+                + "these keys will be refused even though the DICT knows them | rejectKeys={}", updated);
+        return updated;
+    }
+
+    private static Set<String> normalise(Set<String> keys) {
+        return keys == null ? Set.of() : keys.stream()
+                .map(key -> key.trim().toLowerCase(Locale.ROOT))
+                .collect(Collectors.toUnmodifiableSet());
     }
 
     /**

@@ -155,10 +155,14 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
     }
 
     /**
-     * {@code SENT_TO_SPI → REVERSED} plus the {@code PixReversed} outbox item, in one
-     * {@code TransactWriteItems} (step 33). Guarded strictly on {@code SENT_TO_SPI}: only a transaction
-     * this consumer put on the rail and that BACEN then permanently refused may be reversed — the same
-     * shape as {@link #markSettled}, because a reversal is the failure-branch twin of a settlement.
+     * {@code (DEBITED | SENT_TO_SPI) → REVERSED} plus the {@code PixReversed} outbox item, in one
+     * {@code TransactWriteItems} (step 33; guard widened in step 35). Guarded on the <b>two stuck
+     * states</b>: the queue-driven reversal reaches it from {@code SENT_TO_SPI} (BACEN refused a POST),
+     * and the reconciliation resolver (step 35) reaches it for a transaction whose settlement was never
+     * attempted and still sits at {@code DEBITED}. Both have the payer's money parked in clearing since
+     * acceptance (step 27), so reversing from either is money-correct; what the guard still refuses is a
+     * terminal state — a {@code SETTLED} transaction dragged to {@code REVERSED} would double-move money,
+     * and a {@code REVERSED} one reversed again is the redelivery this guard turns into a no-op.
      */
     @Override
     public void markReversed(String txId, String failureReason, Instant at, OutboxEvent event) {
@@ -179,11 +183,11 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
             // already reversed it, or a racing settle) or the event id already exists. Both mean this
             // consumer may not record the reversal, and in both cases NOTHING was written: the outbox item
             // rolled back with the status.
-            log.warn("Atomic reversal write was cancelled, the transaction is no longer SENT_TO_SPI or the "
-                            + "event was already recorded, nothing was written (status and outbox both "
-                            + "rolled back) | txId={} eventId={} reasons={}",
+            log.warn("Atomic reversal write was cancelled, the transaction is no longer in a stuck state "
+                            + "(DEBITED/SENT_TO_SPI) or the event was already recorded, nothing was written "
+                            + "(status and outbox both rolled back) | txId={} eventId={} reasons={}",
                     txId, event.eventId(), e.cancellationReasons().stream().map(r -> r.code()).toList());
-            throw new TransitionNotAllowedException(txId, TransactionStatus.SENT_TO_SPI.name(),
+            throw new TransitionNotAllowedException(txId, "DEBITED or SENT_TO_SPI",
                     TransactionStatus.REVERSED.name());
         }
 
@@ -197,19 +201,24 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
      * the stuck-transaction scan stops seeing a finished payment) and stamp {@code failureReason} — the
      * one attribute a reversal adds, read back by the status endpoint's external {@code REVERSED}
      * vocabulary (step 22). No {@code settledAt}: nothing settled.
+     *
+     * <p>The condition accepts <b>either</b> stuck state — {@code SENT_TO_SPI} (the queue-driven reversal)
+     * or {@code DEBITED} (the resolver reversing a send whose settlement was never attempted, step 35) —
+     * and refuses every terminal one, which is what makes the reversal idempotent at the state level.
      */
     private static Update reversedUpdate(String txId, String failureReason, String now) {
         Map<String, AttributeValue> values = Map.of(
                 ":target", AttributeValue.fromS(TransactionStatus.REVERSED.name()),
                 ":targetIndex", AttributeValue.fromS(STATUS_PREFIX + TransactionStatus.REVERSED.name()),
                 ":sentToSpi", AttributeValue.fromS(TransactionStatus.SENT_TO_SPI.name()),
+                ":debited", AttributeValue.fromS(TransactionStatus.DEBITED.name()),
                 ":now", AttributeValue.fromS(now),
                 ":reason", AttributeValue.fromS(failureReason));
 
         log.debug("DynamoDB Update of the transaction META item | table={} pk={}{} sk={} "
                         + "update=SET status,gsi2pk,gsi2sk,updatedAt,failureReason "
-                        + "condition=attribute_exists(pk) AND status=SENT_TO_SPI reversedAt={} "
-                        + "failureReason={}",
+                        + "condition=attribute_exists(pk) AND (status=SENT_TO_SPI OR status=DEBITED) "
+                        + "reversedAt={} failureReason={}",
                 TABLE, TX_PREFIX, txId, META_SK, now, failureReason);
 
         return Update.builder()
@@ -217,7 +226,8 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
                 .key(metaKey(txId))
                 .updateExpression("SET #status = :target, gsi2pk = :targetIndex, gsi2sk = :now, "
                         + "updatedAt = :now, failureReason = :reason")
-                .conditionExpression("attribute_exists(pk) AND #status = :sentToSpi")
+                .conditionExpression(
+                        "attribute_exists(pk) AND (#status = :sentToSpi OR #status = :debited)")
                 .expressionAttributeNames(STATUS_ALIAS)
                 .expressionAttributeValues(values)
                 .build();

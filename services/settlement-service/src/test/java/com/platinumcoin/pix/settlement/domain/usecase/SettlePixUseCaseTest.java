@@ -61,7 +61,9 @@ class SettlePixUseCaseTest {
         transactions = new FakeSettlementTransactionStore(trace);
         ledger = new FakeLedgerClient(trace);
         dailyLimits = new FakeDailyLimitRelease(trace);
-        useCase = new SettlePixUseCase(processedEvents, spi, transactions, ledger, dailyLimits, OUR_ISPB,
+        var finalizer = new com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer(
+                transactions, ledger, dailyLimits);
+        useCase = new SettlePixUseCase(processedEvents, spi, transactions, finalizer, OUR_ISPB,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

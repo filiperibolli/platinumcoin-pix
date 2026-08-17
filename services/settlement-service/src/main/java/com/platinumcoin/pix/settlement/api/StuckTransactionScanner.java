@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.settlement.api;
 
+import com.platinumcoin.pix.settlement.domain.service.ReconciliationSloAlert;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanOutcome;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCase;
 import io.micrometer.core.instrument.Gauge;
@@ -39,20 +40,23 @@ public class StuckTransactionScanner {
     private static final Logger log = LoggerFactory.getLogger(StuckTransactionScanner.class);
 
     private final ScanStuckTransactionsUseCase scanStuckTransactions;
+    private final ReconciliationSloAlert sloAlert;
 
     /** Age of the oldest stuck transaction at the last scan; read by the gauge, written by each scan. */
     private final AtomicLong oldestAgeSeconds = new AtomicLong();
 
     public StuckTransactionScanner(ScanStuckTransactionsUseCase scanStuckTransactions,
-            MeterRegistry meterRegistry) {
+            ReconciliationSloAlert sloAlert, MeterRegistry meterRegistry) {
         this.scanStuckTransactions = scanStuckTransactions;
+        this.sloAlert = sloAlert;
         Gauge.builder("reconciliation.oldest.seconds", oldestAgeSeconds, AtomicLong::doubleValue)
                 .description("Age of the oldest DEBITED/SENT_TO_SPI transaction — the leading indicator of "
                         + "the <5-min reconciliation SLO (step 34, ADR-0003)")
                 .baseUnit("seconds")
                 .register(meterRegistry);
-        log.info("Stuck-transaction scanner ready, it will scan the reconciliation index on a schedule and "
-                + "report the oldest stuck age as reconciliation.oldest.seconds");
+        log.info("Stuck-transaction scanner ready, it will scan the reconciliation index on a schedule, "
+                + "resolve each stuck transaction and report the oldest stuck age as "
+                + "reconciliation.oldest.seconds while evaluating the <5-min SLO alert");
     }
 
     /**
@@ -68,6 +72,9 @@ public class StuckTransactionScanner {
         try {
             ScanOutcome outcome = scanStuckTransactions.execute();
             oldestAgeSeconds.set(outcome.oldestAgeSeconds());
+            // Fold the same number the gauge shows into the SLO alert, so a breach fires (and later
+            // resolves) off the very figure step 44's Prometheus alert reads — one definition of "late".
+            sloAlert.evaluate(outcome.oldestAgeSeconds());
             return outcome;
         } catch (RuntimeException e) {
             log.error("The reconciliation scan tick failed, the oldest-age gauge keeps its last value", e);

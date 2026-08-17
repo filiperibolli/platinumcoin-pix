@@ -21,6 +21,7 @@ modes are made first-class and armable at runtime:
 | `latencyMs` | burns that much wall-clock before answering (the real SPI SLA is ≤ 10s) |
 | `failureRate` | answers `503` and **records nothing** — transient, so the same `endToEndId` can still settle later |
 | `timeoutRate` | **settles, then hangs** past the caller's timeout — BACEN moved the money, the caller never heard |
+| `rejectKeys` | a set of creditor keys **refused permanently at settlement** (`422 SETTLEMENT_REJECTED_BY_ADMIN`) even though the DICT knows them — the send-reachable trigger for step 33's reversal (step 35) |
 
 The third row is the important one. It manufactures the nastiest state in distributed payments: the money
 moved and the caller believes it did not. A client that blindly re-`POST`s is saved only by `endToEndId`
@@ -33,7 +34,7 @@ tested against a dependency that lies in exactly this way.
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/spi/settlements` | none | Settle one Pix. **Idempotent by `endToEndId`**: the first terminal outcome wins forever and a replay is byte-for-byte the original answer. `200` on settlement, `503 SPI_UNAVAILABLE` / `504 SPI_TIMEOUT` when injected, `422 SPI_REJECTED` if the creditor key is in no participant's hands. |
 | `GET` | `/spi/settlements/{endToEndId}` | none | `SETTLED` / `FAILED` / `UNKNOWN`. **Always `200`** — "never heard of it" is an answer reconciliation acts on, and a `404` would be indistinguishable from a wrong URL. |
-| `POST` | `/admin/config` | none | Re-arm the dial at runtime. **Partial**: an absent field is left unchanged, so `{"failureRate":1.0}` does not reset the latency. Out-of-range ⇒ `400 VALIDATION_ERROR`. |
+| `POST` | `/admin/config` | none | Re-arm the dial at runtime. **Partial**: an absent field is left unchanged, so `{"failureRate":1.0}` does not reset the latency. Also carries `rejectKeys` (step 35): a DICT-known key on the list is refused at settlement, so a real send can be driven to a reversal — `{"rejectKeys":["bob@otherbank.com"]}` to arm, `{"rejectKeys":[]}` to clear. Out-of-range ⇒ `400 VALIDATION_ERROR`. |
 | `GET` | `/admin/config` | none | What is armed right now (including the read-only `timeoutHangMs`). |
 | `GET` | `/spi/dict/{key}` | none | Which participant holds a Pix key → `{key, keyType, ispb, participant}`; unknown ⇒ `404 DICT_KEY_NOT_FOUND`. |
 | `GET` | `/actuator/health` | none | Liveness/readiness for the compose healthcheck. |

@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.settlement.support;
 
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
+import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Instant;
@@ -36,6 +37,8 @@ public class StubSpiSettlementClient implements SpiSettlementClient {
     /** What the rail knows as SETTLED — populated only by a settle that actually committed. */
     private final Map<String, SpiSettlement> settledAtRail = new ConcurrentHashMap<>();
 
+    /** When set, the reconciliation query returns exactly this, regardless of what the rail settled. */
+    private volatile SpiReconciliation reconcileOverride;
     private volatile RuntimeException failure;
     /** {@code >0} makes the next N POSTs fail transiently (recording nothing), then settle for real. */
     private final AtomicInteger transientFailures = new AtomicInteger();
@@ -72,6 +75,43 @@ public class StubSpiSettlementClient implements SpiSettlementClient {
     public Optional<SpiSettlement> findSettlement(String endToEndId) {
         queries.add(endToEndId);
         return Optional.ofNullable(settledAtRail.get(endToEndId));
+    }
+
+    /**
+     * The reconciliation resolver's richer query (step 35). By default it derives the honest answer from
+     * what the stub rail settled — SETTLED if a POST committed, otherwise UNKNOWN — so a test that drove a
+     * real settle needs no extra arrangement. A test can override it with {@link #reconcilesFailed},
+     * {@link #reconcilesUnknown} or {@link #reconcilesUnreachable} to drive the reverse/leave branches.
+     */
+    @Override
+    public SpiReconciliation reconcile(String endToEndId) {
+        queries.add(endToEndId);
+        if (reconcileOverride != null) {
+            return reconcileOverride;
+        }
+        SpiSettlement settled = settledAtRail.get(endToEndId);
+        return settled != null ? SpiReconciliation.settled(settled) : SpiReconciliation.unknown();
+    }
+
+    /** Force the resolver's query to report the id already SETTLED at the rail (a settle whose ack was lost). */
+    public void reconcilesSettled(String endToEndId, long amountCents) {
+        this.reconcileOverride = SpiReconciliation.settled(
+                new SpiSettlement(endToEndId, amountCents, CREDITOR_ISPB, recordedAt));
+    }
+
+    /** Force the resolver's query to report a permanent refusal. */
+    public void reconcilesFailed(String reason) {
+        this.reconcileOverride = SpiReconciliation.failed(reason);
+    }
+
+    /** Force the resolver's query to report the rail has no record of the id. */
+    public void reconcilesUnknown() {
+        this.reconcileOverride = SpiReconciliation.unknown();
+    }
+
+    /** Force the resolver's query to report the rail could not be reached. */
+    public void reconcilesUnreachable() {
+        this.reconcileOverride = SpiReconciliation.unreachable();
     }
 
     public List<String> attempts() {
@@ -115,6 +155,7 @@ public class StubSpiSettlementClient implements SpiSettlementClient {
         queries.clear();
         settledAtRail.clear();
         failure = null;
+        reconcileOverride = null;
         withholdAnswer = false;
         transientFailures.set(0);
     }

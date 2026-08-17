@@ -39,11 +39,13 @@ public class AdminConfigController {
     @PostMapping
     public AdminConfigResponse update(@Valid @RequestBody AdminConfigRequest request) {
         log.info("An operator asked to re-arm the SPI dial, absent fields are left unchanged "
-                        + "| requestedLatencyMs={} requestedFailureRate={} requestedTimeoutRate={}",
-                request.latencyMs(), request.failureRate(), request.timeoutRate());
+                        + "| requestedLatencyMs={} requestedFailureRate={} requestedTimeoutRate={} "
+                        + "requestedRejectKeys={}",
+                request.latencyMs(), request.failureRate(), request.timeoutRate(), request.rejectKeys());
         SpiBehavior.Snapshot updated =
                 behavior.update(request.latencyMs(), request.failureRate(), request.timeoutRate());
-        return AdminConfigResponse.of(updated, behavior.timeoutHangMs());
+        var rejectKeys = behavior.updateRejectKeys(request.rejectKeys());
+        return AdminConfigResponse.of(updated, behavior.timeoutHangMs(), rejectKeys);
     }
 
     /** What is armed right now — so a confusing test run can be explained instead of guessed at. */
@@ -51,8 +53,9 @@ public class AdminConfigController {
     public AdminConfigResponse current() {
         SpiBehavior.Snapshot dial = behavior.current();
         log.info("Reporting the SPI dial currently armed | latencyMs={} failureRate={} timeoutRate={} "
-                        + "timeoutHangMs={}",
-                dial.latencyMs(), dial.failureRate(), dial.timeoutRate(), behavior.timeoutHangMs());
-        return AdminConfigResponse.of(dial, behavior.timeoutHangMs());
+                        + "timeoutHangMs={} rejectKeys={}",
+                dial.latencyMs(), dial.failureRate(), dial.timeoutRate(), behavior.timeoutHangMs(),
+                behavior.rejectKeys());
+        return AdminConfigResponse.of(dial, behavior.timeoutHangMs(), behavior.rejectKeys());
     }
 }

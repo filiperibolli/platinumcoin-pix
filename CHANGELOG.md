@@ -122,6 +122,54 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Reconciliation resolver (query SPI → finalize/reverse), idempotent, with the <5-min SLO alert (step 35)
+  **The resolver half of reconciliation: turning "eventual" into "eventually *bounded*".** The step-34 scan
+  finds stuck transactions; step 35 resolves them. `StuckTransactionResolver` (the real
+  `StuckTransactionReconciler`, replacing step 34's logging placeholder) loads each stuck transaction, asks
+  BACEN what became of it, and forces it to a terminal state — no external send stays undecided past the
+  5-minute SLO (ADR-0003). This answers the failure half of design Question 4.
+  - **Four rail answers, one decision each.** A new three-way `SpiSettlementClient.reconcile(endToEndId)`
+    (distinct from step 32's binary `findSettlement`) returns `SETTLED` / `FAILED` / `UNKNOWN` /
+    `UNREACHABLE`: SETTLED ⇒ finalize (clearing release + record SETTLED + `PixSettled`); FAILED ⇒ reverse
+    immediately (compensating credit + record REVERSED + `PixReversed` + release the limit); UNKNOWN ⇒
+    reverse **only past a safety window**, else leave; UNREACHABLE ⇒ leave. Collapsing FAILED and
+    UNREACHABLE is exactly how a transfer gets reversed while the money is gone — the type keeps them apart.
+  - **The safety window is a correctness mechanism, not just patience.** BACEN's rail is idempotent per
+    `endToEndId`, so a genuine SETTLED and a genuine FAILED can never both be produced for one id and
+    reconciliation cannot race the queue into double-moving money on those. The one branch that could is
+    UNKNOWN: reversing the instant the rail reports "no record" could race a still-in-flight POST that then
+    settles, and the `-rev`/`-rel` postings (different `txId`s, so posting idempotency does **not** cover
+    them) would both draw the clearing account down — money created. Waiting out the window
+    (`reverse-safety-window-seconds`, default 240s — past the 12s SPI timeout + retry backoff + DLQ
+    threshold, inside the 300s SLO) closes it; the guarded transition is the backstop if two paths still
+    collide.
+  - **Idempotent by construction.** The resolver claims nothing and dedupes on nothing: its safety is the
+    guarded transition (at most one path moves the state) plus posting idempotency (the `-rel`/`-rev` `txId`
+    replays as a no-op). So a resolver run that races a late SQS redelivery or a DLQ redrive is harmless, and
+    a re-run on an already-terminal transaction is a no-op it detects before even querying the rail.
+  - **`SettlementFinalizer` extracted** (`domain/service/`) so the queue-driven settle and the resolver share
+    **one** implementation of finalize and reverse — the ordering that keeps money from moving twice lives
+    once. `SettlePixUseCase` delegates to it; all 18 of its unit tests stay green.
+  - **The reversal guard widened** from strictly `SENT_TO_SPI` to *either* stuck state
+    (`DEBITED OR SENT_TO_SPI`): a send whose settlement was never attempted still has money parked in
+    clearing, so reversing from `DEBITED` is money-correct. Terminal states are still refused
+    (`SettlementTransitionsIT`).
+  - **`reconciliation.resolved{action}`** counter (settled|reversed), the reconciliation angle of the
+    send/settle funnel (step 44), counted only when a run actually moved the state.
+  - **`<5-min` SLO alert** (`ReconciliationSloAlert`): `reconciliation.oldest.seconds > slo-breach-seconds`
+    (300s) fires (and resolves on catch-up) on the transition, logging one `ALERT … FIRING`/`RESOLVED` line.
+    In-code here; step 44 points Prometheus at the same gauge and threshold, so the code and the dashboard
+    never disagree on what "late" means.
+  - **mock-bacen reject-key knob** (`bacen.reject-keys` / `POST /admin/config {"rejectKeys":[…]}`): a
+    DICT-known creditor key can now be **refused at settlement**, the first send-reachable trigger for step
+    33's reversal against the compose stack (previously reachable only via the automated `ReversalIT` stub).
+  `ReconciliationIT` proves all four branches over real DynamoDB/SQS with a stubbed rail and ledger:
+  settle-lost ⇒ finalize; genuine-fail ⇒ reverse + refund; rail-never-recorded-past-window ⇒ reverse; re-run
+  ⇒ no double refund; resolver + a late queue delivery ⇒ single outcome; and the SLO alert firing then
+  resolving end to end. `StuckTransactionResolverTest` pins the decision matrix in plain Java through the
+  real finalizer. `SettlementArchitectureTest` stays green — the resolver is a `domain/service/` collaborator
+  reached through the existing port; the scanner still calls one use case.
+  AI: est 5h / actual <Yh> / ~88% generated / <N> issues caught in human review
 - Stuck-transaction scanner (GSI2 status+age, 60s) feeding reconciliation, with an oldest-age metric (step 34)
   **The scanner half of reconciliation: finding what fell through the cracks.** SQS retries and the DLQ
   (step 32) catch messages that keep failing, but a transaction can go stuck with no live message behind it
