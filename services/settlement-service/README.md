@@ -71,6 +71,16 @@ reversal is a new posting, never an edit. Σ balances is invariant on both branc
 token to forward off a queue, so it mints its own short-lived service token (shared secret) for the ledger
 call — a sandbox stand-in for a real service credential (ADR-0013; step-45 hardening).
 
+**Finding what fell through the cracks (step 34).** SQS retries and the DLQ catch messages that keep
+failing, but a transaction can go stuck without a live message behind it — a consumer that crashed after
+`markSentToSpi`, an SPI answer that never arrived. A `@Scheduled` scan (`StuckTransactionScanner`, every
+60s) queries GSI2 (`STATUS#DEBITED`/`STATUS#SENT_TO_SPI`, `updatedAt < now-2min`) for exactly those, hands
+each to the reconciliation path (a port; step 35 replaces the logging placeholder with real
+finalize-or-reverse resolution), and publishes the age of the oldest as the `reconciliation.oldest.seconds`
+gauge — the **leading** indicator of the <5-min SLO (ADR-0003), rising before anything reaches the DLQ. The
+scan is bounded per tick (`max-per-tick`) so a backlog drains over ticks; at very large scale the status GSI
+would be sharded (`STATUS#DEBITED#<0-15>`), N=1 locally.
+
 ## Endpoints
 
 | Method | Path | Auth | Description |
@@ -96,7 +106,10 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 | `SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS` | `60` | Upper bound on the retry backoff window |
 | `SETTLEMENT_DLQ_NAME` / `pix.settlement.dlq.queue-name` | `settlement-queue-dlq` | DLQ measured by the `settlement.dlq.depth` gauge (never consumed) |
 | `SETTLEMENT_DLQ_REFRESH_MS` | `15000` | How often the DLQ depth gauge is refreshed via `GetQueueAttributes` |
-| `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs (queue consumer + DLQ gauge); ITs set it `false` and drive a tick explicitly |
+| `RECONCILIATION_SCAN_DELAY_MS` / `pix.settlement.reconciliation.scan-fixed-delay-ms` | `60000` | How often the stuck-transaction scan runs (step 34); `fixedDelay`, so a slow scan never overlaps the next |
+| `RECONCILIATION_STUCK_AFTER_SECONDS` / `…stuck-after-seconds` | `120` | How long a transaction may sit in `DEBITED`/`SENT_TO_SPI` before the scan treats it as stuck |
+| `RECONCILIATION_MAX_PER_TICK` / `…max-per-tick` | `200` | Per-tick bound (per status) on the GSI2 scan, so a backlog drains over ticks instead of blowing up one |
+| `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs (queue consumer + DLQ gauge + reconciliation scanner); ITs set it `false` and drive a tick explicitly |
 | `BACEN_BASE_URL` | `http://localhost:9090` | mock-bacen-spi (compose: `http://mock-bacen-spi:9090`) |
 | `BACEN_READ_TIMEOUT_MS` | `12000` | ADR-0003's budget: above BACEN's 10s, below the queue's 30s visibility timeout |
 | `BACEN_CONNECT_TIMEOUT_MS` | `2000` | Connect budget |
@@ -111,17 +124,22 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 
 ```
 api/               SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
-                   SettlementDlqDepthGauge (@Scheduled DLQ depth probe), SettlementMessage (inbound adapter)
-domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus                 (plain Java)
+                   SettlementDlqDepthGauge (@Scheduled DLQ depth probe),
+                   StuckTransactionScanner (@Scheduled 60s reconciliation scan + oldest-age gauge, step 34),
+                   SettlementMessage (inbound adapter)
+domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus, StuckTransaction    (plain Java)
 domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore,
-                   LedgerClient, DailyLimitRelease                                   (outbound interfaces)
+                   LedgerClient, DailyLimitRelease, StuckTransactionStore,
+                   StuckTransactionReconciler                                        (outbound interfaces)
 domain/exception/  TransitionNotAllowedException, SpiCallFailedException,
                    SpiSettlementRejectedException, LedgerUnavailableException                (plain Java)
 domain/service/    SettlementOutboxEvents (mints PixSettled / PixReversed)                   (plain Java)
-domain/usecase/    SettlePixUseCase + SettlePixCommand + SettleOutcome                      (plain Java)
+domain/usecase/    SettlePixUseCase + SettlePixCommand + SettleOutcome,
+                   ScanStuckTransactionsUseCase + ScanOutcome (step 34)                      (plain Java)
 infra/client/      HttpSpiSettlementClient (12s read timeout), HttpSettlementLedgerClient (step 33)
 infra/persistence/ DynamoSettlementTransactionStore (the guarded writes), DynamoDailyLimitRelease,
-                   DynamoProcessedEvents
+                   DynamoProcessedEvents, DynamoStuckTransactionStore (GSI2 scan, step 34),
+                   LoggingStuckTransactionReconciler (step-35 seam placeholder)
 infra/security/    ServiceTokenIssuer (mints the HS256 service token for the ledger call, step 33)
 infra/config/      AwsClientsConfig, AwsProperties, SettlementBeansConfig, SchedulingConfig
 ```

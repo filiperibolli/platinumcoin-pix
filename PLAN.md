@@ -85,7 +85,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 32](docs/steps/step-32.md) — retries with query-before-retry, visibility backoff, DLQ redrive
 - [x] [Step 33](docs/steps/step-33.md) — settlement finalization: SETTLED clearing release; FAILED → REVERSED (compensating posting)
-- [ ] [Step 34](docs/steps/step-34.md) — stuck-transaction scanner (GSI2 status+age) on a 60s schedule
+- [x] [Step 34](docs/steps/step-34.md) — stuck-transaction scanner (GSI2 status+age) on a 60s schedule
 - [ ] [Step 35](docs/steps/step-35.md) — reconciliation resolution: query SPI, finalize or reverse; < 5-min SLO metric + alert
 
 ## Sprint 8 — Receive Pix & real-time notification
