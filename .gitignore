@@ -36,3 +36,8 @@ Thumbs.db
 # LocalStack / docker runtime volumes
 infra/.localstack/
 volume/
+
+# k6 raw output (docs/load/RESULTS.md's numbers are derived from these; regenerate with
+# tools/k6/run-s*.sh instead of committing multi-MB captures — the small *-result.json /
+# *-summary.json / *-winners.log derived files ARE committed as the evidence trail)
+docs/load/raw/*.ndjson

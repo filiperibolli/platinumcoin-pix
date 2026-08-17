@@ -7,11 +7,17 @@
 // COMPLETED, so the winner's completion timestamp is always the smallest (see
 // tools/k6/s3-idempotency.js's header comment for the full argument).
 //
+// Claim and replay latency each get the same raw/trimmed split (tools/k6/lib/trim-node.js) used
+// by S0/S1/S2 — a WSL2 clock-jump stall (docs/load/RESULTS.md's "Environment limitation" section)
+// would distort a claim-vs-replay latency comparison exactly as much as it distorts S2's capacity
+// curve, since it can land on either a winner's or a replay's request with equal probability.
+//
 // Usage: node tools/k6/analyze-s3.js docs/load/raw/s3.log > docs/load/raw/s3-result.json
 // Also writes docs/load/raw/s3-winners.log (TXID lines) alongside, for
 // tools/k6/verify/check-double-postings.sh to cross-check each round posted exactly once.
 const fs = require('fs');
 const path = require('path');
+const { summarizeDurations } = require('./lib/trim-node');
 
 const logPath = process.argv[2];
 if (!logPath) {
@@ -80,13 +86,6 @@ for (const [round, data] of [...rounds.entries()].sort((a, b) => a[0] - b[0])) {
   if (winner.txId) winnerTxIds.push(winner.txId);
 }
 
-function percentile(values, p) {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1);
-  return sorted[Math.max(0, idx)];
-}
-
 const result = {
   rounds: rounds.size,
   vus_per_round: 30,
@@ -95,10 +94,8 @@ const result = {
   conflicts_409: totalConflicts409,
   other_errors: otherErrors,
   rounds_with_no_winner: roundsWithNoWinner,
-  p99_claim_ms: percentile(claimDurations, 99),
-  p99_replay_ms: percentile(replayDurations, 99),
-  claim_sample_count: claimDurations.length,
-  replay_sample_count: replayDurations.length,
+  claim_latency: summarizeDurations(claimDurations),
+  replay_latency: summarizeDurations(replayDurations),
 };
 
 const outDir = path.dirname(logPath);

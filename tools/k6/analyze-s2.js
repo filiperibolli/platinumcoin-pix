@@ -8,10 +8,18 @@
 // `saturation_signal` is this script's own ASSESSMENT, not a measurement: a heuristic comparing
 // each stage's error rate and p99 against the previous stage's, labelled honestly as a guess.
 //
+// Every stage reports BOTH raw and trimmed latency (tools/k6/lib/trim-node.js) — raw includes the
+// WSL2 clock-jump stalls (docs/load/RESULTS.md's "Environment limitation" section), trimmed
+// excludes samples at/above the fixed 10s threshold. `saturation_signal` is assessed off the
+// TRIMMED p99: the raw p99 is dominated by whether a stage happened to draw a stall in its top 1%
+// of samples, which would make every stage's raw p99 look identical (~30s) regardless of actual
+// capacity — trimmed p99 is what actually tracks load.
+//
 // Usage: node tools/k6/analyze-s2.js docs/load/raw/s2-raw.ndjson > docs/load/raw/s2-result.json
 const fs = require('fs');
 const readline = require('readline');
 const path = require('path');
+const { summarizeDurations } = require('./lib/trim-node');
 
 const ndjsonPath = process.argv[2];
 if (!ndjsonPath) {
@@ -29,12 +37,6 @@ const TOMCAT_DEFAULT_MAX_THREADS = 200;
 // stage (number) -> { durations: [ms], statuses: {status: count} }
 const stages = new Map();
 for (const vus of STAGE_ORDER) stages.set(vus, { durations: [], statuses: {} });
-
-function percentile(sortedAsc, p) {
-  if (sortedAsc.length === 0) return null;
-  const idx = Math.min(sortedAsc.length - 1, Math.ceil((p / 100) * sortedAsc.length) - 1);
-  return Math.round(sortedAsc[Math.max(0, idx)] * 100) / 100;
-}
 
 async function main() {
   const rl = readline.createInterface({ input: fs.createReadStream(ndjsonPath), crlfDelay: Infinity });
@@ -60,17 +62,17 @@ async function main() {
   }
 
   const results = [];
-  let prevP99 = null;
+  let prevTrimmedP99 = null;
   for (const vus of STAGE_ORDER) {
     const bucket = stages.get(vus);
     const total = bucket.durations.length;
-    const sorted = [...bucket.durations].sort((a, b) => a - b);
     const errorCount = Object.entries(bucket.statuses)
       .filter(([status]) => status !== '202')
       .reduce((sum, [, count]) => sum + count, 0);
     const errorRate = total > 0 ? errorCount / total : null;
     const tps = total > 0 ? Math.round((total / HOLD_DURATION_S) * 100) / 100 : 0;
-    const p99 = percentile(sorted, 99);
+    const latency = summarizeDurations(bucket.durations);
+    const trimmedP99 = latency.trimmed.p99_ms;
 
     let saturationSignal;
     if (total === 0) {
@@ -78,30 +80,28 @@ async function main() {
     } else if (errorRate > 0.01) {
       saturationSignal =
         'error-driven: error rate crossed 1%, capacity genuinely exceeded at this stage';
-    } else if (prevP99 !== null && p99 > prevP99 * 2 && errorRate < 0.005) {
+    } else if (prevTrimmedP99 !== null && trimmedP99 > prevTrimmedP99 * 2 && errorRate < 0.005) {
       saturationSignal =
         vus >= TOMCAT_DEFAULT_MAX_THREADS
-          ? `latency-driven (queueing, no errors yet): p99 more than doubled vs the previous stage, ` +
+          ? `latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage, ` +
             `at/above Tomcat's default max-threads=${TOMCAT_DEFAULT_MAX_THREADS} (no override found in ` +
             `any service's application.yml) — a plausible cause, not confirmed without thread-pool metrics`
-          : 'latency-driven (queueing, no errors yet): p99 more than doubled vs the previous stage; ' +
+          : 'latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; ' +
             'cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB ' +
             'emulator, JVM GC, CPU contention across the 7 co-located services)';
-    } else if (prevP99 === null && p99 !== null && p99 > 500) {
+    } else if (prevTrimmedP99 === null && trimmedP99 !== null && trimmedP99 > 500) {
       saturationSignal =
         'already elevated at the LOWEST measured stage — see docs/load/RESULTS.md caveats: ' +
         'LocalStack DynamoDB emulator latency under ANY concurrent transactional load is the ' +
         'leading candidate, not application-layer capacity';
     } else {
-      saturationSignal = 'no saturation signal: latency and error rate stayed flat vs the previous stage';
+      saturationSignal = 'no saturation signal: trimmed latency and error rate stayed flat vs the previous stage';
     }
 
     results.push({
       vus,
       tps,
-      p50_ms: percentile(sorted, 50),
-      p95_ms: percentile(sorted, 95),
-      p99_ms: p99,
+      latency,
       error_rate: errorRate === null ? null : Math.round(errorRate * 10000) / 10000,
       errors_by_type: Object.fromEntries(
         Object.entries(bucket.statuses).filter(([status]) => status !== '202')
@@ -111,7 +111,7 @@ async function main() {
     });
 
     if (total > 0) {
-      prevP99 = p99;
+      prevTrimmedP99 = trimmedP99;
     }
   }
 

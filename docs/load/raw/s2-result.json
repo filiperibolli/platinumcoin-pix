@@ -1,0 +1,162 @@
+[
+  {
+    "vus": 5,
+    "tps": 8.25,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 495,
+      "removed_count": 28,
+      "removed_rate": 0.0566,
+      "raw": {
+        "p50_ms": 609.57,
+        "p95_ms": 30901.13,
+        "p99_ms": 31019.57,
+        "max_ms": 31073.2
+      },
+      "trimmed": {
+        "p50_ms": 605.33,
+        "p95_ms": 698.3,
+        "p99_ms": 736.5,
+        "max_ms": 829.75
+      }
+    },
+    "error_rate": 0,
+    "errors_by_type": {},
+    "sample_count": 495,
+    "saturation_signal": "already elevated at the LOWEST measured stage — see docs/load/RESULTS.md caveats: LocalStack DynamoDB emulator latency under ANY concurrent transactional load is the leading candidate, not application-layer capacity"
+  },
+  {
+    "vus": 10,
+    "tps": 8.42,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 505,
+      "removed_count": 26,
+      "removed_rate": 0.0515,
+      "raw": {
+        "p50_ms": 1198.48,
+        "p95_ms": 31397.83,
+        "p99_ms": 31576.22,
+        "max_ms": 31662.5
+      },
+      "trimmed": {
+        "p50_ms": 1194.94,
+        "p95_ms": 1318.49,
+        "p99_ms": 1728.02,
+        "max_ms": 1812.31
+      }
+    },
+    "error_rate": 0,
+    "errors_by_type": {},
+    "sample_count": 505,
+    "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+  },
+  {
+    "vus": 25,
+    "tps": 8.67,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 520,
+      "removed_count": 42,
+      "removed_rate": 0.0808,
+      "raw": {
+        "p50_ms": 2970.92,
+        "p95_ms": 33283.36,
+        "p99_ms": 33394.94,
+        "max_ms": 33494.98
+      },
+      "trimmed": {
+        "p50_ms": 2959.9,
+        "p95_ms": 3180.57,
+        "p99_ms": 3577.63,
+        "max_ms": 4045.77
+      }
+    },
+    "error_rate": 0,
+    "errors_by_type": {},
+    "sample_count": 520,
+    "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+  },
+  {
+    "vus": 50,
+    "tps": 8.85,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 531,
+      "removed_count": 26,
+      "removed_rate": 0.049,
+      "raw": {
+        "p50_ms": 6013.35,
+        "p95_ms": 7762.33,
+        "p99_ms": 36429.78,
+        "max_ms": 37722.75
+      },
+      "trimmed": {
+        "p50_ms": 6005.76,
+        "p95_ms": 6183.25,
+        "p99_ms": 7423.3,
+        "max_ms": 7762.33
+      }
+    },
+    "error_rate": 0,
+    "errors_by_type": {},
+    "sample_count": 531,
+    "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+  },
+  {
+    "vus": 100,
+    "tps": 8.82,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 529,
+      "removed_count": 380,
+      "removed_rate": 0.7183,
+      "raw": {
+        "p50_ms": 11157.64,
+        "p95_ms": 37887.69,
+        "p99_ms": 43966.37,
+        "max_ms": 46098.73
+      },
+      "trimmed": {
+        "p50_ms": 9170.26,
+        "p95_ms": 9960.35,
+        "p99_ms": 9988.05,
+        "max_ms": 9995.13
+      }
+    },
+    "error_rate": 0.0151,
+    "errors_by_type": {
+      "500": 8
+    },
+    "sample_count": 529,
+    "saturation_signal": "error-driven: error rate crossed 1%, capacity genuinely exceeded at this stage"
+  },
+  {
+    "vus": 200,
+    "tps": 8.63,
+    "latency": {
+      "threshold_ms": 10000,
+      "sample_count": 518,
+      "removed_count": 430,
+      "removed_rate": 0.8301,
+      "raw": {
+        "p50_ms": 22044.48,
+        "p95_ms": 51129.67,
+        "p99_ms": 62072.8,
+        "max_ms": 71048.26
+      },
+      "trimmed": {
+        "p50_ms": 0.17,
+        "p95_ms": 9619.03,
+        "p99_ms": 9955.02,
+        "max_ms": 9955.02
+      }
+    },
+    "error_rate": 0.251,
+    "errors_by_type": {
+      "500": 130
+    },
+    "sample_count": 518,
+    "saturation_signal": "error-driven: error rate crossed 1%, capacity genuinely exceeded at this stage"
+  }
+]

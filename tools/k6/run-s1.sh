@@ -11,9 +11,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-K6_BIN="${K6_BIN:-k6}"
-RAW_DIR="$REPO_ROOT/docs/load/raw"
+source "$SCRIPT_DIR/run-common.sh"
 mkdir -p "$RAW_DIR"
 
 run_subsection() {
@@ -22,10 +20,11 @@ run_subsection() {
   bash "$SCRIPT_DIR/verify/ledger-snapshot.sh" > "$RAW_DIR/s1-${mode}-before.json"
 
   echo "=== S1 [$label] — k6 run ==="
-  "$K6_BIN" run \
-    --summary-export="$RAW_DIR/s1-${mode}-summary.json" \
+  k6_run run \
+    --summary-export="$RAW_DIR_REL/s1-${mode}-summary.json" \
+    --out "json=$RAW_DIR_REL/s1-${mode}-raw.ndjson" \
     -e S1_MODE="$mode" \
-    "$SCRIPT_DIR/s1-conservation.js" 2>&1 | tee "$RAW_DIR/s1-${mode}.log"
+    "tools/k6/s1-conservation.js" 2>&1 | tee "$RAW_DIR/s1-${mode}.log"
 
   echo "=== S1 [$label] — snapshot after ==="
   bash "$SCRIPT_DIR/verify/ledger-snapshot.sh" > "$RAW_DIR/s1-${mode}-after.json"
@@ -33,6 +32,10 @@ run_subsection() {
   echo "=== S1 [$label] — double-posting check ==="
   bash "$SCRIPT_DIR/verify/check-double-postings.sh" "$RAW_DIR/s1-${mode}.log" \
     > "$RAW_DIR/s1-${mode}-double-postings.json"
+
+  echo "=== S1 [$label] — clock-jump artifact check ==="
+  node "$SCRIPT_DIR/analyze-s1-latency.js" "$RAW_DIR/s1-${mode}-raw.ndjson" \
+    > "$RAW_DIR/s1-${mode}-latency.json"
 }
 
 run_subsection balance "balance-guard (acc-lt-s1bal)"
@@ -44,30 +47,33 @@ jq -n \
   --slurpfile balanceBefore "$RAW_DIR/s1-balance-before.json" \
   --slurpfile balanceAfter "$RAW_DIR/s1-balance-after.json" \
   --slurpfile balanceDouble "$RAW_DIR/s1-balance-double-postings.json" \
+  --slurpfile balanceLatency "$RAW_DIR/s1-balance-latency.json" \
   --slurpfile limitSummary "$RAW_DIR/s1-limit-summary.json" \
   --slurpfile limitBefore "$RAW_DIR/s1-limit-before.json" \
   --slurpfile limitAfter "$RAW_DIR/s1-limit-after.json" \
   --slurpfile limitDouble "$RAW_DIR/s1-limit-double-postings.json" \
+  --slurpfile limitLatency "$RAW_DIR/s1-limit-latency.json" \
   '
-  def subsection(summary; before; after; double; account):
+  def subsection(summary; before; after; double; latency; account):
     {
       account: account,
-      settled: (summary.metrics.s1_settled.values.count // 0),
-      rejected_insufficient_funds: (summary.metrics.s1_rejected_insufficient_funds.values.count // 0),
-      rejected_limit_exceeded: (summary.metrics.s1_rejected_limit_exceeded.values.count // 0),
-      other_errors: (summary.metrics.s1_other_errors.values.count // 0),
+      settled: (summary.metrics.s1_settled.count // 0),
+      rejected_insufficient_funds: (summary.metrics.s1_rejected_insufficient_funds.count // 0),
+      rejected_limit_exceeded: (summary.metrics.s1_rejected_limit_exceeded.count // 0),
+      other_errors: (summary.metrics.s1_other_errors.count // 0),
       sum_balances_before: before.sumBalanceCents,
       sum_balances_after: after.sumBalanceCents,
       negative_balance_observed: ((before.negativeAccounts | length) + (after.negativeAccounts | length) > 0),
-      double_postings: double.doublePostings
+      double_postings: double.doublePostings,
+      latency: latency
     };
   {
     vus: 50,
     duration_s: 60,
     warmup_s: 30,
     amount_cents: 10000,
-    balance_guard: subsection($balanceSummary[0]; $balanceBefore[0]; $balanceAfter[0]; $balanceDouble[0]; "acc-lt-s1bal"),
-    limit_guard: subsection($limitSummary[0]; $limitBefore[0]; $limitAfter[0]; $limitDouble[0]; "acc-001 (alice)")
+    balance_guard: subsection($balanceSummary[0]; $balanceBefore[0]; $balanceAfter[0]; $balanceDouble[0]; $balanceLatency[0]; "acc-lt-s1bal"),
+    limit_guard: subsection($limitSummary[0]; $limitBefore[0]; $limitAfter[0]; $limitDouble[0]; $limitLatency[0]; "acc-001 (alice)")
   }' > "$RAW_DIR/s1-result.json"
 
 echo "=== S1 done: $RAW_DIR/s1-result.json ==="

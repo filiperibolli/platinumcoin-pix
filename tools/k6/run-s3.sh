@@ -10,13 +10,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-K6_BIN="${K6_BIN:-k6}"
-RAW_DIR="$REPO_ROOT/docs/load/raw"
+source "$SCRIPT_DIR/run-common.sh"
 mkdir -p "$RAW_DIR"
 
 echo "=== S3 — k6 run ==="
-"$K6_BIN" run -e S3_RUN_ID="$(date +%s)" "$SCRIPT_DIR/s3-idempotency.js" 2>&1 | tee "$RAW_DIR/s3.log"
+k6_run run -e S3_RUN_ID="$(date +%s)" "tools/k6/s3-idempotency.js" 2>&1 | tee "$RAW_DIR/s3.log"
 
 echo "=== S3 — analyzing retry-storm log ==="
 node "$SCRIPT_DIR/analyze-s3.js" "$RAW_DIR/s3.log" > "$RAW_DIR/s3-result.json"

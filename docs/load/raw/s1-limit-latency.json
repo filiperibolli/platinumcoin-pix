@@ -1,0 +1,18 @@
+{
+  "threshold_ms": 10000,
+  "sample_count": 2364,
+  "removed_count": 174,
+  "removed_rate": 0.0736,
+  "raw": {
+    "p50_ms": 1166.21,
+    "p95_ms": 31473.92,
+    "p99_ms": 31769.88,
+    "max_ms": 34767.13
+  },
+  "trimmed": {
+    "p50_ms": 1162.99,
+    "p95_ms": 1614.35,
+    "p99_ms": 5704.41,
+    "max_ms": 6650.89
+  }
+}
