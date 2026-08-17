@@ -64,6 +64,22 @@ pix:
       # failing. ITs set the base to 0 for immediate redelivery so a retry drill does not wait on time.
       retry-backoff-base-seconds: ${SETTLEMENT_RETRY_BACKOFF_BASE_SECONDS:5}
       retry-backoff-cap-seconds: ${SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS:60}
+    # The stuck-transaction scanner (step 34): a scheduled GSI2 query for external sends parked too long in
+    # DEBITED/SENT_TO_SPI, feeding them to the reconciliation path and reporting the oldest age as the
+    # reconciliation.oldest.seconds gauge.
+    reconciliation:
+      # How often the scan runs. 60s is far finer than the 5-min SLO it protects (ADR-0003), and one bounded
+      # GSI2 query per status is cheap. fixedDelay, so a slow scan never overlaps the next.
+      scan-fixed-delay-ms: ${RECONCILIATION_SCAN_DELAY_MS:60000}
+      # How long a transaction may sit in DEBITED/SENT_TO_SPI before it is considered stuck. 2 minutes: a
+      # healthy settlement walks it to SETTLED/REVERSED in seconds, and BACEN's own budget is up to 10s
+      # (ADR-0003), so 2 minutes is well past any legitimate in-flight time yet leaves ample room inside the
+      # 5-min resolution SLO.
+      stuck-after-seconds: ${RECONCILIATION_STUCK_AFTER_SECONDS:120}
+      # The per-tick bound: the most stuck transactions one scan (per status) reads. A backlog larger than
+      # this drains over successive ticks rather than blowing up a single tick. Oldest-first, so the ones
+      # nearest the SLO breach are always picked first.
+      max-per-tick: ${RECONCILIATION_MAX_PER_TICK:200}
   # Master switch for every background job in this service (today: the queue consumer). True in every
   # real run; integration tests set it false and drive one tick explicitly, because Spring caches
   # contexts across test classes and a live consumer would drain the shared queue mid-assertion.

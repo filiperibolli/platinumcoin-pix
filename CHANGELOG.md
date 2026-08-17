@@ -122,6 +122,35 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Stuck-transaction scanner (GSI2 status+age, 60s) feeding reconciliation, with an oldest-age metric (step 34)
+  **The scanner half of reconciliation: finding what fell through the cracks.** SQS retries and the DLQ
+  (step 32) catch messages that keep failing, but a transaction can go stuck with no live message behind it
+  — a consumer that crashed after `markSentToSpi`, an SPI answer that never arrived. A `@Scheduled` scan
+  (`StuckTransactionScanner`, every 60s) now queries `pix_transactions` GSI2 (`STATUS#DEBITED` and
+  `STATUS#SENT_TO_SPI`, `gsi2sk = updatedAt < now-2min`) for exactly those, and hands each to the
+  reconciliation path.
+  - **The clock is policy and stays in the use case.** `ScanStuckTransactionsUseCase` computes the cutoff
+    (`now − stuck-after-seconds`) from the injected `Clock` and passes it to the store as a query bound, so
+    the "how old is too old" decision is pinned in a plain-Java test and the DynamoDB adapter reads no clock
+    (ADR-0010/0011). It scans exactly the two non-terminal statuses — `SETTLED`/`REVERSED` can never be
+    stuck — proven by `ScanStuckTransactionsUseCaseTest`.
+  - **The hand-off is a port, not an inline log**, so the acceptance test asserts on *which* transactions
+    were picked (a capturing fake) rather than on log text (ADR-0012). `StuckTransactionReconciler` ships a
+    `LoggingStuckTransactionReconciler` placeholder; **step 35 replaces it** with real finalize-or-reverse
+    resolution and nothing upstream changes.
+  - **`reconciliation.oldest.seconds`** gauge (age of the oldest stuck tx, `0` when none) is the **leading**
+    indicator of the <5-min SLO (ADR-0003) — it rises before anything reaches the DLQ; step 44 alerts on it.
+    Registered in the `api/` scanner behind an `AtomicLong` (same shape as `settlement.dlq.depth`), so a
+    Prometheus scrape never triggers a DynamoDB query.
+  - **Bounded per tick** by a `Limit` (`max-per-tick`, default 200) per status: a backlog larger than the cap
+    drains over successive ticks instead of blowing up one. Oldest-first, so the transactions nearest the SLO
+    breach are always picked first. Scale-out note: shard the status GSI (`STATUS#DEBITED#<0-15>`) at very
+    large scale; N=1 locally.
+  `StuckScannerIT` seeds stale and fresh transactions in both stuck statuses over real DynamoDB and proves
+  the scan picks exactly the stale ones, ignores the fresh, feeds them to the reconciliation path, and moves
+  the oldest age onto the gauge. All money-safety invariants untouched (the scan is read-only; it moves no
+  money). `SettlementArchitectureTest` stays green — the scanner calls one use case and reaches no port.
+  AI: est 2h / actual 1.5h / ~88% generated / 1 issue caught in human review
 - Settlement finalization: clearing release on SETTLED, compensating reversal (append-only) on FAILED with PixReversed (step 33)
   **The money loop closes on definitive outcomes.** Until step 33 an external send that BACEN permanently
   refused was left to redrive to the DLQ, and a settled one never drew its money out of the clearing
