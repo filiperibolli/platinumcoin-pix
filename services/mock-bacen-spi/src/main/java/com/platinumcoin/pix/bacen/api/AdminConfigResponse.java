@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.bacen.api;
 
 import com.platinumcoin.pix.bacen.spi.SpiBehavior;
+import java.util.Set;
 
 /**
  * The dial as it stands after a change (or on a plain read). Always the <b>full effective</b>
@@ -12,10 +13,11 @@ import com.platinumcoin.pix.bacen.spi.SpiBehavior;
  * a rolled timeout will actually outlast their client's own timeout.
  */
 public record AdminConfigResponse(
-        long latencyMs, double failureRate, double timeoutRate, long timeoutHangMs) {
+        long latencyMs, double failureRate, double timeoutRate, long timeoutHangMs, Set<String> rejectKeys) {
 
-    public static AdminConfigResponse of(SpiBehavior.Snapshot dial, long timeoutHangMs) {
+    public static AdminConfigResponse of(SpiBehavior.Snapshot dial, long timeoutHangMs,
+            Set<String> rejectKeys) {
         return new AdminConfigResponse(
-                dial.latencyMs(), dial.failureRate(), dial.timeoutRate(), timeoutHangMs);
+                dial.latencyMs(), dial.failureRate(), dial.timeoutRate(), timeoutHangMs, rejectKeys);
     }
 }

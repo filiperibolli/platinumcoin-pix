@@ -3,6 +3,7 @@ package com.platinumcoin.pix.bacen.config;
 import com.platinumcoin.pix.bacen.spi.DictEntry;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -20,6 +21,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param timeoutRate   fraction of settlement calls that settle and then hang past the caller's timeout
  * @param timeoutHangMs how long such a call hangs — must exceed the client's own timeout to mean anything
  * @param dict          the external-PSP keys this stub answers for, keyed by normalised key value
+ * @param rejectKeys    creditor keys the stub <b>refuses at settlement</b> even though the DICT knows
+ *                      them (step 35). This is the send-reachable trigger for step 33's reversal: a key
+ *                      the DICT resolves at send time but that this set names is settled against a
+ *                      permanent {@code 422}, so a real Pix can be driven all the way to a compensating
+ *                      reversal against the compose stack. Normalised lowercase at binding, like {@code dict}
  */
 @ConfigurationProperties(prefix = "bacen")
 public record BacenProperties(
@@ -27,10 +33,14 @@ public record BacenProperties(
         double failureRate,
         double timeoutRate,
         long timeoutHangMs,
-        Map<String, DictEntry> dict) {
+        Map<String, DictEntry> dict,
+        Set<String> rejectKeys) {
 
     public BacenProperties {
         dict = dict == null ? Map.of() : dict.entrySet().stream().collect(Collectors.toUnmodifiableMap(
                 e -> e.getKey().trim().toLowerCase(Locale.ROOT), Map.Entry::getValue));
+        rejectKeys = rejectKeys == null ? Set.of() : rejectKeys.stream()
+                .map(key -> key.trim().toLowerCase(Locale.ROOT))
+                .collect(Collectors.toUnmodifiableSet());
     }
 }

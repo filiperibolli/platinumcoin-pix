@@ -187,16 +187,41 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         assertThat(events.get(0).get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
     }
 
-    /** A reversal is guarded on SENT_TO_SPI, and its event rolls back with a refused transition. */
+    /**
+     * A {@code DEBITED} transaction — one whose settlement was never attempted — can be reversed by the
+     * reconciliation resolver (step 35): the payer's money has been parked in clearing since acceptance
+     * (step 27), so reversing from {@code DEBITED} is as money-correct as from {@code SENT_TO_SPI}. The
+     * guard was widened from strictly {@code SENT_TO_SPI} (step 33) to both stuck states here, and the
+     * status change still commits with its {@code PixReversed} event in one write.
+     */
     @Test
-    void aTransactionThatIsNotOnTheRailCannotBeReversedAndItsEventRollsBackWithIt() {
+    void aDebitedTransactionIsReversedByReconciliationTogetherWithItsEvent() {
         String txId = givenTransaction("DEBITED");
+        OutboxEvent event = pixReversed(txId);
+
+        store.markReversed(txId, "RECONCILED_NO_RAIL_RECORD_PAST_SAFETY_WINDOW", AT, event);
+
+        Map<String, AttributeValue> meta = meta(txId);
+        assertThat(meta.get("status").s()).isEqualTo("REVERSED");
+        assertThat(meta.get("failureReason").s())
+                .isEqualTo("RECONCILED_NO_RAIL_RECORD_PAST_SAFETY_WINDOW");
+        assertThat(meta.get("gsi2pk").s()).as("the index follows the state, off the stuck-tx scan")
+                .isEqualTo("STATUS#REVERSED");
+
+        List<Map<String, AttributeValue>> events = outboxEvents(txId);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).get("eventType").s()).isEqualTo("PixReversed");
+    }
+
+    /** A transaction that does not exist cannot be reversed — no ghost item is conjured. */
+    @Test
+    void anUnknownTransactionCannotBeReversed() {
+        String txId = "tx-" + UUID.randomUUID();
 
         assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
                 .isInstanceOf(TransitionNotAllowedException.class);
 
-        assertThat(meta(txId).get("status").s()).isEqualTo("DEBITED");
-        assertThat(outboxEvents(txId)).as("the outbox item rolled back with the status").isEmpty();
+        assertThat(meta(txId)).as("UpdateItem must not have conjured an item into existence").isEmpty();
     }
 
     /** Reversing twice is refused, and the second attempt announces nothing — the reversal is idempotent. */

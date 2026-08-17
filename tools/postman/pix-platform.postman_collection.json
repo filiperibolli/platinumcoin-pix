@@ -1691,7 +1691,7 @@
           }
         },
         {
-          "name": "Disarm (failureRate = 0.0, latency 2s)",
+          "name": "Arm a settlement rejection (rejectKeys)",
           "event": [
             {
               "listen": "test",
@@ -1699,7 +1699,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('rail healthy again', () => { const b = pm.response.json(); pm.expect(b.failureRate).to.eql(0.0); pm.expect(b.timeoutRate).to.eql(0.0); });"
+                  "pm.test('reject list armed', () => pm.expect(pm.response.json().rejectKeys).to.include('bob@otherbank.com'));"
                 ]
               }
             }
@@ -1714,7 +1714,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"latencyMs\": 2000,\n  \"failureRate\": 0.0,\n  \"timeoutRate\": 0.0\n}",
+              "raw": "{\n  \"rejectKeys\": [\"bob@otherbank.com\"]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1731,7 +1731,51 @@
                 "config"
               ]
             },
-            "description": "Put the rail back to the compose defaults. Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.\n\n`timeoutRate` is the interesting knob to try instead: a rolled timeout **settles and then hangs** past the caller's timeout, manufacturing the nastiest state in distributed payments — the money moved and the caller believes it did not. That is the case *Settlement status* exists to reveal."
+            "description": "The **send-reachable reversal trigger** (step 35). Unlike `failureRate` (a *transient* 503 that records nothing) or an unknown creditor key (refused already at *send* time), this refuses a **DICT-known** key at *settlement* — so a real external Pix to `bob@otherbank.com` debits to clearing, then settlement gets `422 SETTLEMENT_REJECTED_BY_ADMIN`, and step 33's compensating reversal fires against the compose stack.\n\nDrill: arm this, send an external Pix to `bob@otherbank.com` (*Send Pix*), then watch `GET /payments/{id}` reach `REVERSED` and the payer's balance restored. Clear it with `{\"rejectKeys\": []}`. Partial like every knob: an absent `rejectKeys` leaves the list unchanged."
+          }
+        },
+        {
+          "name": "Disarm (failureRate = 0.0, latency 2s, clear rejectKeys)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('rail healthy again', () => { const b = pm.response.json(); pm.expect(b.failureRate).to.eql(0.0); pm.expect(b.timeoutRate).to.eql(0.0); pm.expect(b.rejectKeys).to.eql([]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latencyMs\": 2000,\n  \"failureRate\": 0.0,\n  \"timeoutRate\": 0.0,\n  \"rejectKeys\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/admin/config",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "config"
+              ]
+            },
+            "description": "Put the rail back to the compose defaults, clearing every drill (latency, failure, timeout **and** the reject list). Run this after any drill — the dial is global mutable state and survives until changed or the container restarts.\n\n`timeoutRate` is the interesting knob to try instead: a rolled timeout **settles and then hangs** past the caller's timeout, manufacturing the nastiest state in distributed payments — the money moved and the caller believes it did not. That is the case *Settlement status* exists to reveal."
           }
         },
         {

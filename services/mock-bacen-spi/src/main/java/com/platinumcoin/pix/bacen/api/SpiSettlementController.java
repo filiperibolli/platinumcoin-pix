@@ -58,6 +58,13 @@ public class SpiSettlementController {
     /** Recorded on a refusal so the caller (and step 33's reversal) can act on the reason, not a guess. */
     static final String REJECTION_UNKNOWN_CREDITOR = "CREDITOR_KEY_NOT_IN_DICT";
 
+    /**
+     * The reason stamped when the admin reject-key knob refuses a settlement (step 35). Distinct from
+     * {@code CREDITOR_KEY_NOT_IN_DICT} on purpose: a key on this list <i>is</i> in the DICT (it resolved
+     * at send time), it is being refused at settlement to make step 33's reversal reachable end-to-end.
+     */
+    static final String REJECTION_BY_ADMIN = "SETTLEMENT_REJECTED_BY_ADMIN";
+
     private final SettlementStore store;
     private final SpiDirectory directory;
     private final SpiBehavior behavior;
@@ -155,6 +162,18 @@ public class SpiSettlementController {
     private SettlementStore.Registration decide(SettlementRequest request) {
         return store.register(request.endToEndId(), () -> {
             Instant now = clock.instant();
+            // The admin reject knob (step 35) is checked BEFORE the DICT lookup: a key on the reject list
+            // is refused at settlement even though the DICT resolves it, which is the whole point — a real
+            // send to a DICT-known key can be driven to step 33's compensating reversal against the compose
+            // stack. Recorded as a terminal FAILED, so a later GET reports it and reconciliation reverses.
+            if (behavior.shouldReject(request.creditorKey())) {
+                log.warn("Creditor key is on the admin reject-list, refusing this settlement permanently "
+                                + "even though the DICT knows it — the payer must be made whole by a "
+                                + "compensating posting | endToEndId={} creditorKey={} reason={}",
+                        request.endToEndId(), request.creditorKey(), REJECTION_BY_ADMIN);
+                return Settlement.rejected(request.endToEndId(), request.amountCents(),
+                        request.creditorKey(), REJECTION_BY_ADMIN, now);
+            }
             return directory.lookup(request.creditorKey())
                     .map(entry -> {
                         log.info("Creditor key answers to a participant in the DICT, settling "

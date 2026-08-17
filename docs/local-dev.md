@@ -763,6 +763,32 @@ docker compose -f infra/docker-compose.yml exec mock-bacen-spi \
   curl -s -X POST localhost:9090/admin/config -d '{"failureRate":0.0}' -H 'Content-Type: application/json'
 ```
 
+**Reversal drill (step 35) — the send-reachable path to a compensating reversal.** `failureRate` is a
+*transient* 503 (nothing recorded, retries, DLQ); it does **not** produce a permanent refusal. The
+send-reachable trigger for step 33's reversal is the **reject-key knob**: it refuses a **DICT-known** key
+(one that resolves fine at send time) at *settlement*, so a real external Pix can be driven all the way to
+a `REVERSED` with the payer refunded.
+
+```bash
+# 1) arm a settlement rejection for a key the DICT DOES know (so the send is accepted):
+docker compose -f infra/docker-compose.yml exec mock-bacen-spi \
+  curl -s -X POST localhost:9090/admin/config -d '{"rejectKeys":["bob@otherbank.com"]}' -H 'Content-Type: application/json'
+
+# 2) send an external Pix to that key — it debits to clearing and returns 202:
+TX=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"pixKey":"bob@otherbank.com","amount":"12.50","description":"reversal drill"}' | jq -r .transactionId)
+
+# 3) settlement gets 422 SETTLEMENT_REJECTED_BY_ADMIN → step 33 reverses; within ~5 min the status is REVERSED
+#    and the payer is refunded (SPI_CLEARING nets back to 0). The scanner (60s) + resolver drive it:
+watch -n2 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOKEN' | jq .status"
+docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'Reconciliation resolved|ALERT'
+
+# 4) clear the reject list so the key settles normally again:
+docker compose -f infra/docker-compose.yml exec mock-bacen-spi \
+  curl -s -X POST localhost:9090/admin/config -d '{"rejectKeys":[]}' -H 'Content-Type: application/json'
+```
+
 ### 5.6 Receive Pix + real-time notification
 
 ```bash

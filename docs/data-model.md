@@ -209,7 +209,7 @@ remove. Its write surface is exactly these **guarded** transitions and nothing e
 |---|---|---|
 | `DEBITED → SENT_TO_SPI` | `attribute_exists(pk) AND (status = DEBITED OR status = SENT_TO_SPI)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt` |
 | `SENT_TO_SPI → SETTLED` | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
-| `SENT_TO_SPI → REVERSED` (step 33) | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
+| `(DEBITED \| SENT_TO_SPI) → REVERSED` (step 33; guard widened step 35) | `attribute_exists(pk) AND (status = SENT_TO_SPI OR status = DEBITED)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
 
 - `settledAt` is **BACEN's** instant (the SPI's `recordedAt`), not ours: the money moved on the rail, and
   reconciliation (step 35) compares the two systems on exactly that fact.
@@ -221,7 +221,11 @@ remove. Its write surface is exactly these **guarded** transitions and nothing e
   On the **success** branch a settlement additionally posts a `CLEARING_RELEASE` (`debit clearing / credit
   SPI_SETTLED`, `txId=<orig>-rel`) so the clearing balance nets to zero; both postings are idempotent by
   their deterministic `txId`, so they run before the guarded status transition without ever double-moving
-  money.
+  money. **Step 35 widened the reversal guard** from strictly `SENT_TO_SPI` to *either* stuck state
+  (`DEBITED OR SENT_TO_SPI`): the reconciliation resolver reverses a send whose settlement was never
+  attempted and still sits at `DEBITED`, whose money has been parked in clearing since acceptance all the
+  same, so reversing from `DEBITED` is as money-correct as from `SENT_TO_SPI`. The guard still refuses any
+  terminal state, so a `SETTLED` transaction is never dragged to `REVERSED`.
 - `creditorIspb` is the participant that received the money, written only when the rail reported one. It
   is the external counterpart of `creditorAccountId` — an external payee has no account here.
 - `gsi2pk`/`gsi2sk` move with **every** transition, or a finished payment would keep showing up in the

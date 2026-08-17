@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.infra.client;
 
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
+import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Duration;
@@ -56,6 +57,9 @@ public class HttpSpiSettlementClient implements SpiSettlementClient {
 
     /** The only status a 2xx body may carry; anything else is an answer we do not understand. */
     private static final String SETTLED = "SETTLED";
+    /** The rail's two other verdicts, read by the reconciliation query (step 35). */
+    private static final String FAILED = "FAILED";
+    private static final String UNKNOWN = "UNKNOWN";
 
     private final RestClient restClient;
 
@@ -159,6 +163,73 @@ public class HttpSpiSettlementClient implements SpiSettlementClient {
                 view.endToEndId(), view.amountCents(), view.creditorIspb(), view.recordedAt());
         return Optional.of(new SpiSettlement(view.endToEndId(), view.amountCents(), view.creditorIspb(),
                 view.recordedAt()));
+    }
+
+    @Override
+    public SpiReconciliation reconcile(String endToEndId) {
+        log.info("Reconciliation is querying the SPI for the definitive fate of a stuck settlement | "
+                + "endToEndId={}", endToEndId);
+
+        SettlementView view;
+        try {
+            view = restClient.get()
+                    .uri("/spi/settlements/{endToEndId}", endToEndId)
+                    .retrieve()
+                    .body(SettlementView.class);
+        } catch (RuntimeException e) {
+            // The status query itself could not be completed. Reported as UNREACHABLE — nothing is
+            // decided, the resolver leaves the transaction for the next cycle. WARN, not ERROR: an
+            // unavailable dependency is a degradation reconciliation is designed to ride out.
+            log.warn("The SPI status query for reconciliation did not answer, treating the rail as "
+                            + "unreachable so the transaction is left for the next cycle | endToEndId={} "
+                            + "error={}", endToEndId, e.toString());
+            return SpiReconciliation.unreachable();
+        }
+
+        if (view == null || view.status() == null) {
+            // A body we cannot read is not a verdict to act on: reversing or finalizing on it would be
+            // deciding money on noise. Treated as unreachable — leave for the next cycle.
+            log.warn("The SPI answered the reconciliation query with a body this client cannot read as a "
+                    + "status, leaving the transaction for the next cycle | endToEndId={} body={}",
+                    endToEndId, view);
+            return SpiReconciliation.unreachable();
+        }
+
+        return switch (view.status()) {
+            case SETTLED -> settledReconciliation(endToEndId, view);
+            case FAILED -> {
+                String reason = view.rejectionReason() != null ? view.rejectionReason() : "unspecified";
+                log.info("Reconciliation found the SPI refused this transfer permanently, it must be "
+                        + "reversed | endToEndId={} reason={}", endToEndId, reason);
+                yield SpiReconciliation.failed(reason);
+            }
+            case UNKNOWN -> {
+                log.info("Reconciliation found the SPI has no record of this id — the send never landed "
+                        + "there | endToEndId={}", endToEndId);
+                yield SpiReconciliation.unknown();
+            }
+            default -> {
+                log.warn("The SPI answered the reconciliation query with a status this client does not "
+                        + "understand, treating the rail as unreachable | endToEndId={} status={}",
+                        endToEndId, view.status());
+                yield SpiReconciliation.unreachable();
+            }
+        };
+    }
+
+    /** A SETTLED reconciliation answer, or UNREACHABLE if the settled body is missing its amount. */
+    private static SpiReconciliation settledReconciliation(String endToEndId, SettlementView view) {
+        if (view.amountCents() == null) {
+            log.warn("The SPI reported SETTLED for reconciliation but without an amount, treating it as "
+                    + "unreachable rather than finalizing on a fabricated amount | endToEndId={}",
+                    endToEndId);
+            return SpiReconciliation.unreachable();
+        }
+        log.info("Reconciliation found the SPI had SETTLED this Pix, it can be finalized | endToEndId={} "
+                        + "amountCents={} creditorIspb={} recordedAt={}",
+                view.endToEndId(), view.amountCents(), view.creditorIspb(), view.recordedAt());
+        return SpiReconciliation.settled(new SpiSettlement(view.endToEndId(), view.amountCents(),
+                view.creditorIspb(), view.recordedAt()));
     }
 
     private static SpiSettlementRejectedException rejected(String endToEndId,

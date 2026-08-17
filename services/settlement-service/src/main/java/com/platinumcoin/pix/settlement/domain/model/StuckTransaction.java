@@ -10,9 +10,10 @@ import java.time.Instant;
  *
  * <p><b>Deliberately minimal</b> ({@code txId}, {@code status}, {@code updatedAt}). This step only needs to
  * <i>find</i> a stuck transaction, age it for the {@code reconciliation.oldest.seconds} metric, and hand it
- * off; it does not resolve it. Step 35 enriches the GSI2 projection with the fields a resolver needs to
- * re-drive a settlement ({@code endToEndId}, {@code amountCents}, …) when it needs them — building them here
- * ahead of a reader would be surface nothing yet consumes.
+ * off; it does not resolve it. Step 35's resolver reads the fields it needs to finalize or reverse
+ * ({@code endToEndId}, {@code amountCents}, …) with a point read per stuck transaction
+ * ({@link com.platinumcoin.pix.settlement.domain.model.ReconcilableTransaction}) rather than widening every
+ * scanned row's projection — the exceptional path pays for its own detail instead of every scan carrying it.
  *
  * @param txId      the transaction's identity ({@code TX#<txId>})
  * @param status    the stuck status it was found under — {@code DEBITED} or {@code SENT_TO_SPI}

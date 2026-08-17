@@ -3,10 +3,15 @@ package com.platinumcoin.pix.settlement.infra.config;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
+import com.platinumcoin.pix.settlement.domain.port.ReconciliationMetrics;
+import com.platinumcoin.pix.settlement.domain.port.ReconciliationTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionReconciler;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionStore;
+import com.platinumcoin.pix.settlement.domain.service.ReconciliationSloAlert;
+import com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer;
+import com.platinumcoin.pix.settlement.domain.service.StuckTransactionResolver;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixUseCase;
 import java.time.Clock;
@@ -35,6 +40,19 @@ public class SettlementBeansConfig {
     }
 
     /**
+     * The money moves a definitive outcome commands (step 33), shared by the queue-driven settle and the
+     * reconciliation resolver (step 35) so both finalize and reverse identically — a single home for the
+     * ordering that keeps money from moving twice.
+     */
+    @Bean
+    SettlementFinalizer settlementFinalizer(
+            SettlementTransactionStore transactions,
+            LedgerClient ledger,
+            DailyLimitRelease dailyLimits) {
+        return new SettlementFinalizer(transactions, ledger, dailyLimits);
+    }
+
+    /**
      * The one capability of this service. {@code pix.ispb} is PlatinumCoin's participant id, sent to the
      * rail as the debtor participant — configuration rather than a constant, because it is the same
      * value payment-service bakes into every {@code endToEndId} and it changes per deployment, never per
@@ -45,12 +63,43 @@ public class SettlementBeansConfig {
             ProcessedEvents processedEvents,
             SpiSettlementClient spi,
             SettlementTransactionStore transactions,
-            LedgerClient ledger,
-            DailyLimitRelease dailyLimits,
+            SettlementFinalizer finalizer,
             @Value("${pix.ispb}") String ispb,
             Clock clock) {
         return new SettlePixUseCase(
-                processedEvents, spi, transactions, ledger, dailyLimits, ispb, clock);
+                processedEvents, spi, transactions, finalizer, ispb, clock);
+    }
+
+    /**
+     * The reconciliation resolver (step 35): the real {@link StuckTransactionReconciler} the scan hands
+     * each stuck transaction to, replacing step 34's logging placeholder. It queries the rail and forces
+     * the transaction to a terminal state — finalize on SETTLED, reverse on a permanent refusal or a rail
+     * that still has no record past {@code reverse-safety-window-seconds}, leave on an unreachable rail or
+     * a still-young UNKNOWN. The safety window is configuration, not a constant: it must sit comfortably
+     * past the {@code stuck-after-seconds} threshold (so a transaction is not reversed the instant it is
+     * noticed stuck) yet inside the 5-min SLO. Same {@link Clock} as the settle use case.
+     */
+    @Bean
+    StuckTransactionResolver stuckTransactionResolver(
+            ReconciliationTransactionStore reconciliationTransactions,
+            SpiSettlementClient spi,
+            SettlementFinalizer finalizer,
+            ReconciliationMetrics metrics,
+            @Value("${pix.settlement.reconciliation.reverse-safety-window-seconds}") long safetyWindowSeconds,
+            Clock clock) {
+        return new StuckTransactionResolver(reconciliationTransactions, spi, finalizer, metrics,
+                Duration.ofSeconds(safetyWindowSeconds), clock);
+    }
+
+    /**
+     * The &lt;5-min reconciliation SLO alert (step 35): evaluates {@code reconciliation.oldest.seconds}
+     * against its breach threshold every scan and fires/resolves on the transition. In-code here; step 44
+     * wires the same threshold into Prometheus so the graph and the code agree on one number.
+     */
+    @Bean
+    ReconciliationSloAlert reconciliationSloAlert(
+            @Value("${pix.settlement.reconciliation.slo-breach-seconds}") long breachSeconds) {
+        return new ReconciliationSloAlert(breachSeconds);
     }
 
     /**

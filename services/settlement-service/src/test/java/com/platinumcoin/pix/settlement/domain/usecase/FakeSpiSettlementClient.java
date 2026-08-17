@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.settlement.domain.usecase;
 
+import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Instant;
@@ -46,6 +47,13 @@ final class FakeSpiSettlementClient implements SpiSettlementClient {
     public Optional<SpiSettlement> findSettlement(String endToEndId) {
         trace.add("spi.findSettlement");
         return Optional.ofNullable(queryAnswer);
+    }
+
+    /** The resolver's richer query — unused by SettlePixUseCaseTest; mirrors {@link #findSettlement}. */
+    @Override
+    public SpiReconciliation reconcile(String endToEndId) {
+        trace.add("spi.reconcile");
+        return queryAnswer != null ? SpiReconciliation.settled(queryAnswer) : SpiReconciliation.unknown();
     }
 
     /** Arrange the rail so a query-before-retry discovers this id already SETTLED (a timeout that landed). */

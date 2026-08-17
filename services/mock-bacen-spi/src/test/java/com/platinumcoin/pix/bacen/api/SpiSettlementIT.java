@@ -46,8 +46,10 @@ class SpiSettlementIT {
 
     @BeforeEach
     void armTheDefaultDial() throws Exception {
+        // Also clears the reject list, since the SPI's behaviour is deliberately global mutable state shared
+        // across the class — a leftover reject key from one test would refuse a settlement in the next.
         mvc.perform(post("/admin/config").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"latencyMs\":0,\"failureRate\":0.0,\"timeoutRate\":0.0}"))
+                        .content("{\"latencyMs\":0,\"failureRate\":0.0,\"timeoutRate\":0.0,\"rejectKeys\":[]}"))
                 .andExpect(status().isOk());
     }
 
@@ -189,6 +191,35 @@ class SpiSettlementIT {
                         .content(body(e2e, 4_200L, "ghost@nowhere.com")))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code", is("SPI_REJECTED")));
+    }
+
+    @Test
+    void aDictKnownKeyOnTheRejectListIsRefusedAtSettlementSoTheReversalIsReachable() throws Exception {
+        // The send-reachable reversal trigger (step 35): bob@otherbank.com resolves in the DICT (it settles
+        // by default, proven above), but arming it on the reject list makes settlement refuse it — which is
+        // exactly what lets a real Pix to a known key be driven all the way to step 33's reversal.
+        arm("{\"rejectKeys\":[\"bob@otherbank.com\"]}");
+        String e2e = "E12345678202608121000reject01";
+
+        mvc.perform(post("/spi/settlements").contentType(MediaType.APPLICATION_JSON)
+                        .content(body(e2e, 20_000L, KNOWN_KEY)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.code", is("SPI_REJECTED")));
+
+        // FAILED, not UNKNOWN — reconciliation reverses on precisely this, and the reason distinguishes an
+        // admin refusal from a genuinely unknown creditor key.
+        mvc.perform(get("/spi/settlements/{e2e}", e2e))
+                .andExpect(jsonPath("$.status", is("FAILED")))
+                .andExpect(jsonPath("$.rejectionReason", is("SETTLEMENT_REJECTED_BY_ADMIN")));
+
+        // Clearing the reject list lets the same key settle again — the knob is a drill switch, not a
+        // permanent state (and the recorded FAILED for this e2e stays FAILED, being terminal).
+        arm("{\"rejectKeys\":[]}");
+        mvc.perform(post("/spi/settlements").contentType(MediaType.APPLICATION_JSON)
+                        .content(body("E12345678202608121000reject02", 20_000L, KNOWN_KEY)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status", is("SETTLED")));
     }
 
     @Test

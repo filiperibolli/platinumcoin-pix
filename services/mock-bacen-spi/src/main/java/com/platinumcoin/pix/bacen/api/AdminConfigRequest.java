@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import java.util.Set;
 
 /**
  * A <b>partial</b> update of the SPI dial. Every field is boxed and nullable, and an absent field leaves
@@ -27,5 +28,10 @@ public record AdminConfigRequest(
 
         @DecimalMin(value = "0.0", message = "timeoutRate must be >= 0.0")
         @DecimalMax(value = "1.0", message = "timeoutRate must be <= 1.0")
-        Double timeoutRate) {
+        Double timeoutRate,
+
+        // Creditor keys refused at settlement even when the DICT knows them (step 35) — the send-reachable
+        // reversal trigger. Absent leaves the current set unchanged; an empty array clears it, matching the
+        // partial-update convention of the three dials above (null = leave, present = replace).
+        Set<String> rejectKeys) {
 }

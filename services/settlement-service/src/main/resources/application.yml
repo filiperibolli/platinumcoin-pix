@@ -80,6 +80,17 @@ pix:
       # this drains over successive ticks rather than blowing up a single tick. Oldest-first, so the ones
       # nearest the SLO breach are always picked first.
       max-per-tick: ${RECONCILIATION_MAX_PER_TICK:200}
+      # How old a transaction the rail reports UNKNOWN (no record) must be before the resolver reverses it
+      # (step 35). It sits past the 120s stuck threshold on purpose: a rail that has no record could still
+      # have a POST in flight, and reversing the instant we notice UNKNOWN could race a settle into moving
+      # money twice (the -rev and -rel postings have different txIds, so posting idempotency does not cover
+      # them). 240s is comfortably past the 12s SPI timeout + retry backoff + DLQ threshold, yet inside the
+      # 5-min SLO. FAILED (a definitive refusal) reverses immediately and ignores this window.
+      reverse-safety-window-seconds: ${RECONCILIATION_REVERSE_SAFETY_WINDOW_SECONDS:240}
+      # The <5-min reconciliation SLO breach threshold (ADR-0003): reconciliation.oldest.seconds above this
+      # fires the in-code SLO alert (step 35) and, from step 44, the Prometheus alert on the same gauge —
+      # one number, so the code and the dashboard never disagree on what "late" means.
+      slo-breach-seconds: ${RECONCILIATION_SLO_BREACH_SECONDS:300}
   # Master switch for every background job in this service (today: the queue consumer). True in every
   # real run; integration tests set it false and drive one tick explicitly, because Spring caches
   # contexts across test classes and a live consumer would drain the shared queue mid-assertion.
