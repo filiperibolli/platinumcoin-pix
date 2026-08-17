@@ -3,7 +3,7 @@
   "vus_per_round": 30,
   "real_postings": 20,
   "replays": 580,
-  "conflicts_409": 58,
+  "conflicts_409": 29,
   "other_errors": 0,
   "rounds_with_no_winner": [],
   "claim_latency": {
@@ -12,34 +12,34 @@
     "removed_count": 0,
     "removed_rate": 0,
     "raw": {
-      "p50_ms": 217.79,
-      "p95_ms": 642.65,
-      "p99_ms": 678.22,
-      "max_ms": 678.22
+      "p50_ms": 19.13,
+      "p95_ms": 21.56,
+      "p99_ms": 31.76,
+      "max_ms": 31.76
     },
     "trimmed": {
-      "p50_ms": 217.79,
-      "p95_ms": 642.65,
-      "p99_ms": 678.22,
-      "max_ms": 678.22
+      "p50_ms": 19.13,
+      "p95_ms": 21.56,
+      "p99_ms": 31.76,
+      "max_ms": 31.76
     }
   },
   "replay_latency": {
     "threshold_ms": 10000,
     "sample_count": 580,
-    "removed_count": 29,
-    "removed_rate": 0.05,
+    "removed_count": 0,
+    "removed_rate": 0,
     "raw": {
-      "p50_ms": 150.71,
-      "p95_ms": 216.15,
-      "p99_ms": 30526.57,
-      "max_ms": 30539.8
+      "p50_ms": 9.55,
+      "p95_ms": 13.44,
+      "p99_ms": 15.68,
+      "max_ms": 18.22
     },
     "trimmed": {
-      "p50_ms": 148.45,
-      "p95_ms": 188.11,
-      "p99_ms": 196.43,
-      "max_ms": 216.15
+      "p50_ms": 9.55,
+      "p95_ms": 13.44,
+      "p99_ms": 15.68,
+      "max_ms": 18.22
     }
   }
 }

@@ -2,22 +2,22 @@
   "vus": 1,
   "target_rate": "~1 req/s",
   "threshold_ms": 10000,
-  "sample_count": 261,
-  "removed_count": 11,
-  "removed_rate": 0.0421,
+  "sample_count": 293,
+  "removed_count": 3,
+  "removed_rate": 0.0102,
   "raw": {
-    "p50_ms": 144.2,
-    "p95_ms": 202.77,
-    "p99_ms": 30458.71,
-    "max_ms": 30507.75
+    "p50_ms": 23.3,
+    "p95_ms": 26.92,
+    "p99_ms": 30972.41,
+    "max_ms": 30989.96
   },
   "trimmed": {
-    "p50_ms": 143.71,
-    "p95_ms": 162.35,
-    "p99_ms": 202.77,
-    "max_ms": 1035.92
+    "p50_ms": 23.23,
+    "p95_ms": 26.88,
+    "p99_ms": 31.66,
+    "max_ms": 41.54
   },
   "statuses": {
-    "202": 261
+    "202": 293
   }
 }

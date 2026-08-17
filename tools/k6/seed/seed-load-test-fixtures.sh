@@ -9,8 +9,9 @@
 # is glob-mounted verbatim into EVERY service's Testcontainers LocalStack container
 # (services/common-lib/.../LocalStackTestBase globs `*.sh` with no exclusion list) — anything
 # dropped there runs on every `mvn verify` across the repo, not just before a load test. This
-# script instead talks to the already-published LocalStack port on the HOST
-# (http://localhost:4566), exactly like a human running the docs/local-dev.md runbook commands
+# script instead talks to the already-published dynamodb-local port on the HOST
+# (http://localhost:8000 — DynamoDB moved out of LocalStack into its own standalone container,
+# docs/load/BOTTLENECK.md), exactly like a human running the docs/local-dev.md runbook commands
 # would, so it never touches the Testcontainers path at all.
 #
 # What it seeds, and why (docs/load/RESULTS.md explains the numbers in context):
@@ -61,7 +62,7 @@ set -euo pipefail
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="${LOCALSTACK_ENDPOINT:-http://localhost:4566}"
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:8000}"
 
 RING_SIZE=200
 RING_BALANCE_CENTS=100000000        # R$ 1,000,000.00 per ring account

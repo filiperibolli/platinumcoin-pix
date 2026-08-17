@@ -14,10 +14,12 @@
 # so `up` recreates a clean world.
 set -euo pipefail
 
+# The script runs INSIDE the LocalStack container, but talks to the standalone dynamodb-local
+# container (docs/load/BOTTLENECK.md) over the shared network — LocalStack no longer serves DynamoDB.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="http://localhost:4566"
+ENDPOINT="http://dynamodb-local:8000"
 
 create_table_if_absent() {
   local table="$1"; shift

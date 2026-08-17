@@ -14,10 +14,19 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * credentials-provider chain for all services at once in step 45; until then every new client copies
  * this shape, because two competing shapes mid-migration are worse than one uniform shape awaiting a
  * single reviewable change.
+ *
+ * <p>{@code dynamoDbEndpointUrl} exists because the compose stack's DynamoDB client points at a
+ * standalone {@code amazon/dynamodb-local} container instead of LocalStack (docs/load/BOTTLENECK.md):
+ * LocalStack proxies every DynamoDB call through an internal Python HTTP client with a fixed,
+ * non-configurable connection-pool cap, which became the load-test throughput ceiling. SQS still goes
+ * through LocalStack (see {@code AwsClientsConfig#sqsClient}, which keeps using {@code endpointUrl}).
+ * Defaults to {@code endpointUrl} ({@code ${DYNAMODB_ENDPOINT_URL:${aws.endpoint-url}}} in
+ * application.yml) so ITs (which only override {@code aws.endpoint-url}) are unaffected.
  */
 @ConfigurationProperties(prefix = "aws")
 public record AwsProperties(
         String endpointUrl,
+        String dynamoDbEndpointUrl,
         String region,
         String accessKeyId,
         String secretAccessKey) {

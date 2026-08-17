@@ -1,47 +1,49 @@
 {
+  "fix_applied": {
+    "summary": "DynamoDB moved out of LocalStack into a standalone amazon/dynamodb-local container (infra/docker-compose.yml), reachable at a separate AWS_ENDPOINT_URL-style property (AwsProperties#dynamoDbEndpointUrl) than SNS/SQS (which stay on LocalStack). Root cause and diagnostic ladder: docs/load/BOTTLENECK.md.",
+    "root_cause": "LocalStack's own DynamoDB support proxies every call through an internal Python HTTP client (a plain requests.Session, via rolo's SimpleRequestsClient) to the same DynamoDBLocal.jar this fix runs directly -- but that internal proxy has a fixed, non-configurable connection-pool cap (requests' library default, pool_maxsize=10) that became the throughput ceiling under load.",
+    "raw_throughput_before_after": "~45 ops/s (LocalStack-proxied, file-backed heap=256MB) -> ~400 ops/s (LocalStack-proxied, in-memory heap=1g) -> ~800-950 ops/s (standalone dynamodb-local, no proxy) -- three separate confirmed measurements, each a distinct fix layered on the last.",
+    "app_throughput_before_after": "~8.5-8.9 req/s -> ~158-201 req/s (S2, this document) -- roughly a 19x improvement, comfortably clearing the >=100 req/s target."
+  },
   "trimming_rule": {
     "threshold_ms": 10000,
-    "rationale": "docs/load/artifacts/s2-dry-run-*.ndjson showed a clean bimodal split before any load test ran: every sample fell either under ~2.5s or in a 30-33s band (matching timedatectl offset ~-30s). 10000ms sits in the empty gap between those two populations, so at low concurrency the split is exact, not a percentile guess.",
-    "validity_breaks_down_at_high_concurrency": "At s2_capacity vus=100 and vus=200, removed_rate reaches 71.8% and 83.0% (vs ~4-8% everywhere else, matching s0_artifact_baseline). Real queueing latency has grown to overlap and exceed the 10s threshold there, so the trim no longer separates artifact from real latency; treat trimmed.* at those two stages as NOT meaningful (the trim just clips the top of a genuinely-growing distribution) and read raw.* instead, aware raw also carries the ~5% baseline artifact.",
-    "recompute": "Every *-raw.ndjson under docs/load/raw/ is kept; rerun tools/k6/lib/trim-node.js summarizeDurations() with a different threshold to disagree with this rule."
+    "rationale": "Unchanged from the original pass: docs/load/artifacts/s2-dry-run-*.ndjson showed a clean bimodal split before any load test ran. 10000ms sits in the empty gap between the two populations.",
+    "status_after_fix": "The trim rule stays valid across every stage tested in this pass (removed_rate stayed in a 0-4% band throughout S0/S1/S2/S3 -- no stage showed the >50% breakdown seen pre-fix at S2 vus=100/200, because trimmed latencies now stay far below the 10s threshold even at the highest stage tested)."
   },
   "environment_limitation": {
-    "summary": "This machine (WSL2 on Windows) has an unstable VM clock: journalctl -k shows recurring \"Time jumped backwards, rotating\" and timedatectl timesync-status reports System clock synchronized: no with an offset around -30s even after a full wsl --shutdown. A fixed fraction of HTTP requests (see s0_artifact_baseline: 4.2% at 1 VU with essentially no load) stall for ~30-33s end to end.",
-    "ruled_out": "http_req_blocked stayed under 0.5ms on every sample (rules out k6 client-side/connection-level causes). All stalled requests in the dry runs still returned 202 (rules out an application-level failure -- the request succeeds, just very late).",
-    "root_cause_confirmed": false,
-    "fix_attempted": "sudo systemctl restart systemd-timesyncd and a full wsl --shutdown from the Windows host were both tried; neither resolved the offset/jitter (offset stayed within a few seconds of -30s, jitter single-digit seconds, both before and after).",
-    "decision": "Per explicit user instruction, further root-cause investigation of the WSL2 clock itself was stopped in favor of characterising the effect (load-independent, ~4-8% of requests, ~30s stall, no effect on correctness) and trimming it out of the reported latency figures using the stated rule above -- with raw figures always kept alongside so the trim is falsifiable.",
-    "portability": "The capacity KNEE (where p99 starts climbing relative to earlier stages, where errors start appearing, the shape of the throughput-vs-concurrency curve) is measurable and portable as a qualitative finding. The absolute latency and TPS numbers are NOT portable off this specific machine/run -- a different WSL2 VM, a bare-metal Linux host, or a different day on this same machine would produce different absolute figures."
+    "summary": "The WSL2 clock-jump artifact (docs/load/BOTTLENECK.md RUNG 4: real, periodic multi-second stalls inside whichever DynamoDB-serving process is under load, not a measurement artifact) is still present post-fix, at a lower rate: S0's stall rate dropped from 4.21% to 1.02% at the same 1 VU / ~1 req/s baseline. The artifact is orthogonal to the throughput fix -- both are real, independently confirmed, and this pass does not re-litigate RUNG 4's finding.",
+    "portability": "Unchanged: the shape of the capacity behavior (a flat throughput ceiling, Little's-Law-consistent queueing beneath it) is portable; the absolute ~160-200 req/s number is specific to this dynamodb-local container on this machine."
   },
   "caveats": [
-    "LocalStack DynamoDB emulator is a single-process emulator, not real AWS DynamoDB -- its latency characteristics under concurrent transactional load do not represent production DynamoDB.",
+    "dynamodb-local (the standalone container) is still a single-process DynamoDB Local instance, not real AWS DynamoDB -- its latency/throughput characteristics under concurrent transactional load do not represent production DynamoDB, even after removing LocalStack's proxy layer.",
     "Only 2 of the 208 seeded accounts (alice/acc-001, bob/acc-002) are \"real\" fixtures reused from earlier steps; the other 206 are load-test-only ring/exhaustible accounts created by tools/k6/seed/seed-load-test-fixtures.sh.",
-    "fraud-service has no runtime latency/failure-injection knob (unlike mock-bacen-spi's AdminConfigController) -- s4_fraud below did not run; see docs/steps/step-64.md (proposed, unimplemented).",
-    "No HTTP connection-pool or thread-pool tuning was found in any service's application.yml -- Tomcat runs its Spring Boot default (max-threads=200), which numerically coincides with where s2_capacity errors start appearing (100-200 VUs); flagged as a plausible but unconfirmed cause (no thread-pool metrics were collected).",
-    "This is WSL2 on Windows, not bare-metal Linux -- CPU/IO scheduling, and the clock issue above, are both properties of that virtualization layer, not of the application."
+    "fraud-service has no runtime latency/failure-injection knob -- s4_fraud below did not run; see docs/steps/step-64.md (proposed, unimplemented).",
+    "No HTTP connection-pool or thread-pool tuning was found in any service's application.yml -- Tomcat runs its Spring Boot default (max-threads=200); not implicated in this pass (S2 never showed a genuine capacity error up to 150 VUs).",
+    "This is WSL2 on Windows (Docker Desktop backend), not bare-metal Linux.",
+    "S2's fraud_denied_rate is NOT monotonic in VUs and is NOT a capacity signal -- see the s2_capacity section below and docs/load/RESULTS.md for the mechanism (ring-account concentration at low VU counts crosses fraud-service's velocity threshold faster than at high VU counts, which spread load across more distinct accounts)."
   ],
   "s0_artifact_baseline": {
-    "purpose": "Tests whether the WSL2 clock-jump stall (see environment_limitation) is load-independent, before trusting the raw/trimmed split applied to s1/s2/s3.",
+    "purpose": "Tests whether the WSL2 clock-jump stall is load-independent, before trusting the raw/trimmed split applied to s1/s2/s3.",
     "vus": 1,
     "target_rate": "~1 req/s",
     "threshold_ms": 10000,
-    "sample_count": 261,
-    "removed_count": 11,
-    "removed_rate": 0.0421,
+    "sample_count": 293,
+    "removed_count": 3,
+    "removed_rate": 0.0102,
     "raw": {
-      "p50_ms": 144.2,
-      "p95_ms": 202.77,
-      "p99_ms": 30458.71,
-      "max_ms": 30507.75
+      "p50_ms": 23.3,
+      "p95_ms": 26.92,
+      "p99_ms": 30972.41,
+      "max_ms": 30989.96
     },
     "trimmed": {
-      "p50_ms": 143.71,
-      "p95_ms": 162.35,
-      "p99_ms": 202.77,
-      "max_ms": 1035.92
+      "p50_ms": 23.23,
+      "p95_ms": 26.88,
+      "p99_ms": 31.66,
+      "max_ms": 41.54
     },
     "statuses": {
-      "202": 261
+      "202": 293
     }
   },
   "s1_conservation": {
@@ -54,35 +56,35 @@
       "settled": 10,
       "rejected_insufficient_funds": 194,
       "rejected_limit_exceeded": 0,
-      "other_errors": 676,
+      "other_errors": 33455,
       "sum_balances_before": 0,
       "sum_balances_after": 0,
       "negative_balance_observed": false,
       "double_postings": 0,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 880,
-        "removed_count": 48,
-        "removed_rate": 0.0545,
+        "sample_count": 33659,
+        "removed_count": 550,
+        "removed_rate": 0.0163,
         "raw": {
-          "p50_ms": 3447.68,
-          "p95_ms": 32187.57,
-          "p99_ms": 33927.59,
-          "max_ms": 34519.39
+          "p50_ms": 86.33,
+          "p95_ms": 109.6,
+          "p99_ms": 31068.09,
+          "max_ms": 31148.67
         },
         "trimmed": {
-          "p50_ms": 3442.7,
-          "p95_ms": 4067.33,
-          "p99_ms": 5307.39,
-          "max_ms": 6095.75
+          "p50_ms": 86.23,
+          "p95_ms": 105.08,
+          "p99_ms": 135.27,
+          "max_ms": 896.67
         }
       }
     },
     "limit_guard": {
       "account": "acc-001 (alice)",
-      "settled": 50,
+      "settled": 49,
       "rejected_insufficient_funds": 0,
-      "rejected_limit_exceeded": 2314,
+      "rejected_limit_exceeded": 70583,
       "other_errors": 0,
       "sum_balances_before": 0,
       "sum_balances_after": 0,
@@ -90,20 +92,20 @@
       "double_postings": 0,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 2364,
-        "removed_count": 174,
-        "removed_rate": 0.0736,
+        "sample_count": 70632,
+        "removed_count": 508,
+        "removed_rate": 0.0072,
         "raw": {
-          "p50_ms": 1166.21,
-          "p95_ms": 31473.92,
-          "p99_ms": 31769.88,
-          "max_ms": 34767.13
+          "p50_ms": 42.62,
+          "p95_ms": 58.23,
+          "p99_ms": 87.17,
+          "max_ms": 31059.6
         },
         "trimmed": {
-          "p50_ms": 1162.99,
-          "p95_ms": 1614.35,
-          "p99_ms": 5704.41,
-          "max_ms": 6650.89
+          "p50_ms": 42.58,
+          "p95_ms": 56.88,
+          "p99_ms": 72.77,
+          "max_ms": 382.64
         }
       }
     }
@@ -111,163 +113,171 @@
   "s2_capacity": [
     {
       "vus": 5,
-      "tps": 8.25,
+      "tps": 201.13,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 495,
-        "removed_count": 28,
-        "removed_rate": 0.0566,
+        "sample_count": 12068,
+        "removed_count": 69,
+        "removed_rate": 0.0057,
         "raw": {
-          "p50_ms": 609.57,
-          "p95_ms": 30901.13,
-          "p99_ms": 31019.57,
-          "max_ms": 31073.2
+          "p50_ms": 27.67,
+          "p95_ms": 37.66,
+          "p99_ms": 49.27,
+          "max_ms": 31058.08
         },
         "trimmed": {
-          "p50_ms": 605.33,
-          "p95_ms": 698.3,
-          "p99_ms": 736.5,
-          "max_ms": 829.75
+          "p50_ms": 27.29,
+          "p95_ms": 37.42,
+          "p99_ms": 43.55,
+          "max_ms": 70.91
         }
       },
       "error_rate": 0,
       "errors_by_type": {},
-      "sample_count": 495,
-      "saturation_signal": "already elevated at the LOWEST measured stage — see docs/load/RESULTS.md caveats: LocalStack DynamoDB emulator latency under ANY concurrent transactional load is the leading candidate, not application-layer capacity"
+      "fraud_denied_count": 5400,
+      "fraud_denied_rate": 0.4475,
+      "sample_count": 12068,
+      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
     },
     {
       "vus": 10,
-      "tps": 8.42,
+      "tps": 164.13,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 505,
-        "removed_count": 26,
-        "removed_rate": 0.0515,
+        "sample_count": 9848,
+        "removed_count": 69,
+        "removed_rate": 0.007,
         "raw": {
-          "p50_ms": 1198.48,
-          "p95_ms": 31397.83,
-          "p99_ms": 31576.22,
-          "max_ms": 31662.5
+          "p50_ms": 59.84,
+          "p95_ms": 76.64,
+          "p99_ms": 99.18,
+          "max_ms": 31097.93
         },
         "trimmed": {
-          "p50_ms": 1194.94,
-          "p95_ms": 1318.49,
-          "p99_ms": 1728.02,
-          "max_ms": 1812.31
+          "p50_ms": 59.78,
+          "p95_ms": 75.74,
+          "p99_ms": 86.89,
+          "max_ms": 122.77
         }
       },
       "error_rate": 0,
       "errors_by_type": {},
-      "sample_count": 505,
-      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+      "fraud_denied_count": 0,
+      "fraud_denied_rate": 0,
+      "sample_count": 9848,
+      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
     },
     {
       "vus": 25,
-      "tps": 8.67,
+      "tps": 163.35,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 520,
-        "removed_count": 42,
-        "removed_rate": 0.0808,
+        "sample_count": 9801,
+        "removed_count": 350,
+        "removed_rate": 0.0357,
         "raw": {
-          "p50_ms": 2970.92,
-          "p95_ms": 33283.36,
-          "p99_ms": 33394.94,
-          "max_ms": 33494.98
+          "p50_ms": 151.6,
+          "p95_ms": 196.11,
+          "p99_ms": 31173.07,
+          "max_ms": 31205.92
         },
         "trimmed": {
-          "p50_ms": 2959.9,
-          "p95_ms": 3180.57,
-          "p99_ms": 3577.63,
-          "max_ms": 4045.77
+          "p50_ms": 151.03,
+          "p95_ms": 179.65,
+          "p99_ms": 200.17,
+          "max_ms": 275.48
         }
       },
       "error_rate": 0,
       "errors_by_type": {},
-      "sample_count": 520,
-      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+      "fraud_denied_count": 0,
+      "fraud_denied_rate": 0,
+      "sample_count": 9801,
+      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
     },
     {
       "vus": 50,
-      "tps": 8.85,
+      "tps": 184,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 531,
-        "removed_count": 26,
-        "removed_rate": 0.049,
+        "sample_count": 11040,
+        "removed_count": 409,
+        "removed_rate": 0.037,
         "raw": {
-          "p50_ms": 6013.35,
-          "p95_ms": 7762.33,
-          "p99_ms": 36429.78,
-          "max_ms": 37722.75
+          "p50_ms": 285.42,
+          "p95_ms": 342.25,
+          "p99_ms": 31326.06,
+          "max_ms": 31373.28
         },
         "trimmed": {
-          "p50_ms": 6005.76,
-          "p95_ms": 6183.25,
-          "p99_ms": 7423.3,
-          "max_ms": 7762.33
+          "p50_ms": 284.44,
+          "p95_ms": 324.51,
+          "p99_ms": 345.71,
+          "max_ms": 448.44
         }
       },
       "error_rate": 0,
       "errors_by_type": {},
-      "sample_count": 531,
-      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: LocalStack single-process DynamoDB emulator, JVM GC, CPU contention across the 7 co-located services)"
+      "fraud_denied_count": 1657,
+      "fraud_denied_rate": 0.1501,
+      "sample_count": 11040,
+      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
     },
     {
       "vus": 100,
-      "tps": 8.82,
+      "tps": 160.75,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 529,
-        "removed_count": 380,
-        "removed_rate": 0.7183,
+        "sample_count": 9645,
+        "removed_count": 334,
+        "removed_rate": 0.0346,
         "raw": {
-          "p50_ms": 11157.64,
-          "p95_ms": 37887.69,
-          "p99_ms": 43966.37,
-          "max_ms": 46098.73
+          "p50_ms": 601.13,
+          "p95_ms": 1065.1,
+          "p99_ms": 31712.42,
+          "max_ms": 32208.03
         },
         "trimmed": {
-          "p50_ms": 9170.26,
-          "p95_ms": 9960.35,
-          "p99_ms": 9988.05,
-          "max_ms": 9995.13
+          "p50_ms": 594.36,
+          "p95_ms": 932.02,
+          "p99_ms": 1118.94,
+          "max_ms": 1546.62
         }
       },
-      "error_rate": 0.0151,
-      "errors_by_type": {
-        "500": 8
-      },
-      "sample_count": 529,
-      "saturation_signal": "error-driven: error rate crossed 1%, capacity genuinely exceeded at this stage"
+      "error_rate": 0,
+      "errors_by_type": {},
+      "fraud_denied_count": 660,
+      "fraud_denied_rate": 0.0684,
+      "sample_count": 9645,
+      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
     },
     {
-      "vus": 200,
-      "tps": 8.63,
+      "vus": 150,
+      "tps": 158.25,
       "latency": {
         "threshold_ms": 10000,
-        "sample_count": 518,
-        "removed_count": 430,
-        "removed_rate": 0.8301,
+        "sample_count": 9495,
+        "removed_count": 320,
+        "removed_rate": 0.0337,
         "raw": {
-          "p50_ms": 22044.48,
-          "p95_ms": 51129.67,
-          "p99_ms": 62072.8,
-          "max_ms": 71048.26
+          "p50_ms": 892.68,
+          "p95_ms": 1816.64,
+          "p99_ms": 32038.32,
+          "max_ms": 33478.7
         },
         "trimmed": {
-          "p50_ms": 0.17,
-          "p95_ms": 9619.03,
-          "p99_ms": 9955.02,
-          "max_ms": 9955.02
+          "p50_ms": 876.19,
+          "p95_ms": 1564.69,
+          "p99_ms": 1947.9,
+          "max_ms": 2805.82
         }
       },
-      "error_rate": 0.251,
-      "errors_by_type": {
-        "500": 130
-      },
-      "sample_count": 518,
-      "saturation_signal": "error-driven: error rate crossed 1%, capacity genuinely exceeded at this stage"
+      "error_rate": 0,
+      "errors_by_type": {},
+      "fraud_denied_count": 408,
+      "fraud_denied_rate": 0.043,
+      "sample_count": 9495,
+      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
     }
   ],
   "s3_idempotency": {
@@ -275,7 +285,7 @@
     "vus_per_round": 30,
     "real_postings": 20,
     "replays": 580,
-    "conflicts_409": 58,
+    "conflicts_409": 29,
     "other_errors": 0,
     "rounds_with_no_winner": [],
     "claim_latency": {
@@ -284,34 +294,34 @@
       "removed_count": 0,
       "removed_rate": 0,
       "raw": {
-        "p50_ms": 217.79,
-        "p95_ms": 642.65,
-        "p99_ms": 678.22,
-        "max_ms": 678.22
+        "p50_ms": 19.13,
+        "p95_ms": 21.56,
+        "p99_ms": 31.76,
+        "max_ms": 31.76
       },
       "trimmed": {
-        "p50_ms": 217.79,
-        "p95_ms": 642.65,
-        "p99_ms": 678.22,
-        "max_ms": 678.22
+        "p50_ms": 19.13,
+        "p95_ms": 21.56,
+        "p99_ms": 31.76,
+        "max_ms": 31.76
       }
     },
     "replay_latency": {
       "threshold_ms": 10000,
       "sample_count": 580,
-      "removed_count": 29,
-      "removed_rate": 0.05,
+      "removed_count": 0,
+      "removed_rate": 0,
       "raw": {
-        "p50_ms": 150.71,
-        "p95_ms": 216.15,
-        "p99_ms": 30526.57,
-        "max_ms": 30539.8
+        "p50_ms": 9.55,
+        "p95_ms": 13.44,
+        "p99_ms": 15.68,
+        "max_ms": 18.22
       },
       "trimmed": {
-        "p50_ms": 148.45,
-        "p95_ms": 188.11,
-        "p99_ms": 196.43,
-        "max_ms": 216.15
+        "p50_ms": 9.55,
+        "p95_ms": 13.44,
+        "p99_ms": 15.68,
+        "max_ms": 18.22
       }
     },
     "double_postings_on_winners": 0,
@@ -319,6 +329,6 @@
   },
   "s4_fraud": {
     "ran": false,
-    "reason": "fraud-service has no runtime latency/failure-injection knob (unlike mock-bacen-spi's AdminConfigController) — confirmed absent in Phase 1 inventory. Proposed as docs/steps/step-64.md (PLAN.md Sprint 12), not implemented; user decision was to document the gap, not touch fraud-service or use tc netem."
+    "reason": "fraud-service has no runtime latency/failure-injection knob (unlike mock-bacen-spi's AdminConfigController) -- confirmed absent in Phase 1 inventory. Proposed as docs/steps/step-64.md (PLAN.md Sprint 12), not implemented."
   }
 }

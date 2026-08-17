@@ -195,15 +195,18 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 Before Sprint 12's full k6 SLO suite ([Step 47](docs/steps/step-47.md)), I ran a smaller,
 self-contained load-measurement pass against the real docker-compose stack — outside `PLAN.md`,
 done for its own sake — covering conservation under 50-way contention on a single account, a
-30-VU idempotency retry storm, and a 6-stage (5→200 VU) capacity curve.
+30-VU idempotency retry storm, and a capacity curve.
 
 Money invariants held exactly under all of it: zero double postings, Σ balances conserved,
-exactly one real ledger posting per idempotency round. The capacity finding: throughput plateaus
-at ~8.5 req/s from the *lowest* concurrency tested, fitting Little's Law almost exactly — the
-ceiling isn't discovered by ramping up, it's already there at 5 concurrent clients.
+exactly one real ledger posting per idempotency round. The first capacity pass found a flat
+~8.5 req/s ceiling and fitted Little's Law almost exactly to it; a follow-up diagnostic
+([`docs/load/BOTTLENECK.md`](docs/load/BOTTLENECK.md)) traced that ceiling to LocalStack's own
+DynamoDB support (an internal proxy with a fixed, non-configurable connection-pool cap) and fixed
+it by running DynamoDB in its own standalone container instead — **throughput went from ~8.5 req/s
+to ~158-201 req/s**, re-verified with the same methodology, money invariants still holding exactly.
 
-Full write-up (including how a WSL2 clock-drift artifact was characterized and factored out of
-the latency numbers, and what is/isn't portable off this dev machine): [`docs/load/RESULTS.md`](docs/load/RESULTS.md).
+Full write-up (including the corrected root cause of the environment's ~30s tail stalls, and what
+is/isn't portable off this dev machine): [`docs/load/RESULTS.md`](docs/load/RESULTS.md).
 
 ## OKRs & KPIs
 

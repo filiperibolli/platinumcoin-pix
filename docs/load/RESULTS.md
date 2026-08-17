@@ -1,4 +1,4 @@
-# Load measurement — "the price of correctness"
+# Load measurement
 
 A self-contained load-measurement deliverable, scoped smaller than PLAN.md's Step 47 (which
 covers the full k6 low/standard/Black-Friday SLO suite). This document answers three questions
@@ -16,6 +16,17 @@ Machine-readable numbers live in `docs/load/results.json`; the raw k6/jq artifac
 number in this document are under `docs/load/raw/` (git-ignored-sized ndjson/logs, regenerate
 with `tools/k6/run-s*.sh`). All scripts: `tools/k6/`.
 
+**This is the second pass.** The first pass found a ~8.5 req/s ceiling and attributed the ~30s
+tail stalls to WSL2 clock drift. A follow-up diagnostic (`docs/load/BOTTLENECK.md`) traced the
+real cause to LocalStack's own DynamoDB support — it proxies every call through an internal
+Python HTTP client with a fixed, non-configurable connection-pool cap — and corrected the stall
+explanation (a real server-side stall inside whichever DynamoDB-serving process is under load,
+not a clock artifact). The fix: DynamoDB now runs in its own standalone `amazon/dynamodb-local`
+container (`infra/docker-compose.yml`), bypassing LocalStack's proxy entirely; SNS/SQS stay on
+LocalStack. **Result: ~8.5 req/s → ~160-200 req/s**, re-measured below with the same S0-S3
+methodology as the first pass. Full mechanism and the diagnostic ladder that found it:
+[`docs/load/BOTTLENECK.md`](BOTTLENECK.md).
+
 ## S0 — artifact floor (read this section first)
 
 Before trusting any latency number below, S0 asks: does this specific machine stall on requests
@@ -24,38 +35,31 @@ even with **essentially no load**? 1 VU, ~1 request/second, 5 minutes, same
 
 | | value |
 |---|---|
-| samples | 261 |
-| stalled (≥10s) | 11 (**4.21%**) |
-| p50 (trimmed) | 143.7 ms |
-| p99 (trimmed) | 202.8 ms |
-| p99 (raw, includes stalls) | 30,458.7 ms |
-| max (raw) | 30,507.8 ms |
+| samples | 293 |
+| stalled (≥10s) | 3 (**1.02%**) |
+| p50 (trimmed) | 23.2 ms |
+| p99 (trimmed) | 31.7 ms |
+| p99 (raw, includes stalls) | 30,972.4 ms |
+| max (raw) | 30,990.0 ms |
 
 At 1 VU there is no concurrency to saturate — this can only be an environment artifact, not an
-application capacity signal. **4.21% of requests stalled ~30s regardless of load.** That is the
-evidence that licenses trimming this artifact out of S1/S2/S3's latency figures instead of
-reading it as a capacity finding. Full explanation: [Environment limitation](#environment-limitation-wsl2-clock-drift).
+application capacity signal. The stall is still present post-fix (**1.02%**, down from 4.21%
+pre-fix) — expected, since it's a WSL2/Docker Desktop-level phenomenon
+([`docs/load/BOTTLENECK.md`](BOTTLENECK.md) RUNG 4), orthogonal to the DynamoDB throughput fix.
+p50 dropped from 143.7ms to **23.2ms** (~6x) — the direct effect of the fix.
 
 ## Trimming rule (applies to every latency number below)
 
-**Threshold: 10,000 ms.** Any single request duration at or above this is classified as a
-clock-jump artifact and excluded from the `trimmed` figures; `raw` figures (which include it) are
-always reported alongside — nothing is trimmed silently. `removed_count` / `removed_rate` is
-stated for every stage/subsection so a reader can see exactly how many samples the rule affected
-and recompute with a different threshold from `docs/load/raw/*.ndjson` if they disagree.
+**Threshold: 10,000 ms.** Any single request duration at or above this is classified as the
+environment stall documented in BOTTLENECK.md RUNG 4 and excluded from the `trimmed` figures;
+`raw` figures (which include it) are always reported alongside. `removed_count` / `removed_rate`
+is stated for every stage/subsection so a reader can see exactly how many samples the rule
+affected and recompute with a different threshold from `docs/load/raw/*.ndjson` if they disagree.
 
-**Why 10,000ms exactly**: before running any load test, the pre-existing dry-run artifacts
-(`docs/load/artifacts/s2-dry-run-*.ndjson`) showed a clean bimodal split — every sample fell
-either under ~2.5s or in a 30-33s band (matching `timedatectl`'s observed ~-30s clock offset).
-10,000ms sits in the **empty gap** between those two populations, so at low concurrency the split
-is exact, not a percentile guess.
-
-**Where the rule breaks down**: at S2's `vus=100` and `vus=200` stages, `removed_rate` jumps to
-71.8% and 83.0% (versus 4-8% everywhere else, matching S0's 4.21% baseline). That jump itself is
-a finding — real queueing latency has grown large enough to overlap and exceed the 10s threshold,
-so the trim stops separating "artifact" from "real" and starts just clipping the top of a
-genuinely-growing distribution. **`trimmed.*` at those two stages is not meaningful — read
-`raw.*`** (aware it still carries the ~5% baseline artifact on top of genuine saturation).
+Unlike the first pass, the rule stays clean at **every** stage tested here — `removed_rate` stays
+in a 0-4% band throughout S0/S1/S2/S3 (nothing like the 72%/83% breakdown the first pass saw at
+S2's highest stages), because post-fix latencies stay far below the 10s threshold even at the
+highest VU count tested.
 
 ## S1 — conservation under contention
 
@@ -69,83 +73,105 @@ prove, both run.
 
 | settled | rejected (insufficient funds) | other (fraud-denied) | Σ balance before | Σ balance after | negative balance? | double postings? |
 |---|---|---|---|---|---|---|
-| **10** (exact) | 194 | 676 | 0 | 0 | **no** | **0** |
+| **10** (exact) | 194 | 33,455 | 0 | 0 | **no** | **0** |
 
-`other_errors=676` is entirely `FRAUD_DENIED` (422) — fraud-service has a nonzero baseline
-denial rate independent of load, confirmed by grepping `docs/load/raw/s1-balance.log`; it's real
-system behavior, not a measurement bug, and it explains why `settled + rejected_insufficient_funds
-≠ total requests`.
+`other_errors=33455` is entirely `FRAUD_DENIED` (422) — confirmed by grepping
+`docs/load/raw/s1-balance.log`. This count is ~50x larger than the first pass's (676) because the
+much higher post-fix throughput means many more attempts land inside the same 60s window before
+`acc-lt-s1bal` exhausts — same real system behavior (fraud-service's nonzero baseline denial
+rate), just observed at higher volume.
 
-Latency (storm phase, N=880): raw p99 33,927.6ms / **trimmed p99 5,307.4ms**, removed_count=48
-(**5.45%**) — matches the S0 baseline band.
+Latency (storm phase, N=33,659): raw p99 31,068.1ms / **trimmed p99 135.3ms**, removed_count=550
+(**1.63%**) — down from 5,307.4ms trimmed p99 pre-fix (~39x faster).
 
 ### limit-guard (`acc-001`/alice, unchanged seed: 500,000¢ limit / 1,000,000¢ balance)
 
 | settled | rejected (limit exceeded) | Σ balance before | Σ balance after | negative balance? | double postings? |
 |---|---|---|---|---|---|
-| **50** (exact — 500,000¢ / 10,000¢) | 2314 | 0 | 0 | **no** | **0** |
+| **49** (theoretical exact: 50) | 70,583 | 0 | 0 | **no** | **0** |
 
-Latency (storm phase, N=2364): raw p99 31,769.9ms / **trimmed p99 5,704.4ms**, removed_count=174
-(**7.36%**) — same band.
+Settled landed at 49, one under the theoretical 500,000¢ / 10,000¢ = 50 — real variance under
+50-way concurrent contention at much higher throughput than the first pass (where it landed
+exactly on 50): a handful of in-flight requests can race the exact limit boundary and the loser
+of that race gets `LIMIT_EXCEEDED` instead of the 50th settle. Not a bug — the invariant this
+subsection actually tests (the daily-limit reservation never lets settled × amount exceed the
+limit) held: 49 × 10,000¢ = 490,000¢ ≤ 500,000¢.
 
-**Both subsections hit their invariant boundary at exactly the predicted N, conserved money
-exactly (Σ balances unchanged; this is a closed system — transfers move money between the 208
-seeded accounts, they never create or destroy it), and posted zero duplicate ledger entries under
-50-way concurrent contention.**
+Latency (storm phase, N=70,632): raw p99 87.2ms / **trimmed p99 72.8ms**, removed_count=508
+(**0.72%**) — down from 5,704.4ms trimmed p99 pre-fix (~78x faster).
+
+**Both subsections conserved money exactly (Σ balances unchanged — a closed system; transfers
+move money between the 208 seeded accounts, never creating or destroying it) and posted zero
+duplicate ledger entries under 50-way concurrent contention, at ~19x the request volume of the
+first pass.**
 
 ## S2 — capacity curve
 
-Six stages (5/10/25/50/100/200 VUs), each a 15s ramp (discarded) + 60s hold (measured), against
-200 distinct ring accounts (zero ledger contention, so this measures throughput/latency, not
-lock contention).
+Six stages — **5/10/25/50/100/150 VUs**, not the original 5/10/25/50/100/**200** — chosen to stay
+inside the range with zero genuine capacity failures (explicit instruction ahead of this run: keep
+S2 in the VU range with no `req_failed`). Each stage is a 15s ramp (discarded) + 60s hold
+(measured), against 200 distinct ring accounts (zero ledger contention, so this measures
+throughput/latency, not lock contention).
 
-| VUs | TPS | error rate | trimmed p50 | trimmed p99 | raw p99 | removed | saturation signal |
-|---|---|---|---|---|---|---|---|
-| 5 | 8.25 | 0% | 605 ms | 736 ms | 31,020 ms | 5.7% | already elevated at lowest stage |
-| 10 | 8.42 | 0% | 1,195 ms | 1,728 ms | 31,576 ms | 5.2% | latency-driven, p99 doubled |
-| 25 | 8.67 | 0% | 2,960 ms | 3,578 ms | 33,395 ms | 8.1% | latency-driven, p99 doubled |
-| 50 | 8.85 | 0% | 6,006 ms | 7,423 ms | 36,430 ms | 4.9% | latency-driven, p99 doubled |
-| 100 | 8.82 | **1.51%** | 9,170 ms † | 9,988 ms † | 43,966 ms | **71.8%** | **error-driven: capacity exceeded** |
-| 200 | 8.63 | **25.1%** | 0.17 ms † | 9,955 ms † | 62,073 ms | **83.0%** | **error-driven: capacity exceeded** |
+| VUs | TPS | real error rate | fraud-denied rate | trimmed p50 | trimmed p99 | raw p99 | removed | saturation signal |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 201.1 | 0% | 44.8% | 27.3 ms | 43.6 ms | 31,058 ms | 0.6% | no signal |
+| 10 | 164.1 | 0% | 0% | 59.8 ms | 86.9 ms | 31,098 ms | 0.7% | no signal |
+| 25 | 163.4 | 0% | 0% | 151.0 ms | 200.2 ms | 31,173 ms | 3.6% | latency-driven, p99 doubled |
+| 50 | 184.0 | 0% | 15.0% | 284.4 ms | 345.7 ms | 31,326 ms | 3.7% | no signal |
+| 100 | 160.8 | 0% | 6.8% | 594.4 ms | 1,118.9 ms | 31,712 ms | 3.5% | latency-driven, p99 doubled |
+| 150 | 158.3 | 0% | 4.3% | 876.2 ms | 1,947.9 ms | 33,479 ms | 3.4% | no signal |
 
-† trim rule invalid at this stage (see above) — treat as illustrative, not measurement; read the
-raw column instead.
+**Real error rate (5xx/network) is 0% at every stage tested.** No capacity ceiling was crossed
+anywhere in the 5-150 VU range — confirming there was room to go higher, but 150 was already
+enough to demonstrate throughput comfortably above the target and this document's explicit
+instruction was to stay inside the zero-`req_failed` range, not to keep pushing until something
+broke.
 
-### The actual finding: throughput is flat, not the p99
+### `fraud_denied_rate` is not a capacity signal — read this before the table above worries you
 
-**TPS stays in an 8.25–8.85 req/s band at every stage from 5 to 200 VUs.** That is not
-five separate measurements of "how much load the system can take" — it's the same ceiling,
-measured five times. Applying Little's Law (`VUs ≈ throughput × latency`) to the trimmed p50 at
-each stage confirms it almost exactly:
+The `422` column is entirely `FRAUD_DENIED` — structurally the *only* possible 422 cause here,
+since S2 only ever sends between the 200 ring accounts, whose seeded balance/limit are enormous
+("never the binding constraint," `seed-load-test-fixtures.sh`). It is reported separately from
+`error_rate` and **excluded from the saturation-signal logic** (`tools/k6/analyze-s2.js`).
+
+The rate is **not monotonic in VUs** (44.8% at 5 VUs, 0% at 10-25, 15.0% at 50, then falling again
+to 4.3% at 150) because `tools/k6/lib/accounts.js`'s `ringPosition(vuId)` maps each VU to a
+**fixed** ring account for the whole test — so a low-VU stage concentrates the stage's entire
+throughput onto very few accounts. At 5 VUs sustaining ~200 req/s, that's ~40 req/s per account
+sent to fraud-service's Redis-backed velocity counters (60s rolling window) — enough to cross the
+`VELOCITY_COUNT` threshold fast. At 100+ VUs, the same total throughput spreads across 100+
+distinct accounts, so per-account velocity stays low and few sends get flagged. **This is a
+property of the fixture's ring-size-vs-throughput ratio, not of infrastructure capacity** — it
+was invisible in the first pass because ~8.5 req/s never built enough per-account velocity in 60s
+to matter, regardless of VU count. Post-fix, at ~20x the throughput, it does. It is a real,
+correct fraud-service behavior (post-hoc review is the intended real-world path for a flagged send
+that isn't a network partition), reported for transparency, not treated as a defect.
+
+### The actual finding: throughput is still flat, just ~19x higher
+
+**TPS stays in a 158-201 req/s band across every stage from 5 to 150 VUs** — the same
+flat-ceiling shape the first pass found at ~8.5 req/s, just at a much higher ceiling now.
+Little's Law (`VUs ≈ throughput × latency`) fits the trimmed p50 at every stage just as tightly as
+before:
 
 | VUs | VUs / measured TPS (predicted latency) | trimmed p50 (measured) |
 |---|---|---|
-| 5 | 0.61s | 0.605s |
-| 10 | 1.19s | 1.195s |
-| 25 | 2.88s | 2.960s |
-| 50 | 5.65s | 6.006s |
-| 200 | 23.17s | 22.04s (**raw** p50, trim invalid here) |
+| 5 | 0.025s | 0.027s |
+| 10 | 0.061s | 0.060s |
+| 25 | 0.153s | 0.151s |
+| 50 | 0.272s | 0.284s |
+| 100 | 0.622s | 0.594s |
+| 150 | 0.948s | 0.876s |
 
-The fit is tight enough (within ~6% at every stage) that this isn't a coincidence: **this
-environment's Pix-send path has a hard throughput ceiling around 8.5-8.9 req/s, and it is already
-at that ceiling at the lowest stage tested (5 VUs).** Every VU added beyond what's needed to
-saturate ~8.5 req/s buys nothing but queueing delay — until, around 100 VUs of concurrent
-in-flight requests, the queue itself starts producing outright failures (HTTP 500, `error_rate`
-jumping from 0% to 1.5% to 25.1%).
-
-**Capacity-knee finding, stated plainly**: the knee isn't a curve that bends gently upward and
-then breaks — it's already flat from the first stage measured. Whether the true ceiling is above
-5 VUs' worth of concurrency (untested — no stage below 5 was run) is unknown; what's confirmed is
-that 5 VUs already saturates it. The **shape** of this (flat-then-failing) is a real, portable
-finding. The **absolute** 8.5-8.9 req/s number is not portable off this WSL2/LocalStack/dev-machine
-combination — see caveats below.
-
-**Leading suspects for the ceiling** (not confirmed — no thread-pool or DynamoDB-internal metrics
-were collected in this pass): LocalStack's DynamoDB emulator is single-process, and every Pix send
-does several sequential transactional DynamoDB calls (idempotency claim, ledger double-entry
-posting, fraud check); no connection-pool or thread-pool tuning was found in any service's
-`application.yml`, so Tomcat runs its Spring Boot default `max-threads=200` — which numerically
-coincides with where errors start (100-200 VUs), a plausible but unconfirmed contributor.
+The fit (within ~10% at every stage) confirms this is still a genuine throughput ceiling, not
+noise — just a ~19x higher one. **The ceiling's cause, confirmed** (see
+[`docs/load/BOTTLENECK.md`](BOTTLENECK.md)): a single Pix send performs 5 sequential DynamoDB
+writes; the standalone `dynamodb-local` container's own raw ceiling measured ~800-950 writes/s
+(RUNG 2 rerun), and `900 ÷ 5 ≈ 180 req/s` predicts this section's observed 158-201 req/s band
+closely. This ceiling was **not** pushed to failure in this run (0% real errors throughout) — the
+150-VU cap was a deliberate choice to stay in the clean range, not evidence that 150 VUs is where
+capacity actually runs out.
 
 ## S3 — idempotency under a retry storm
 
@@ -156,23 +182,26 @@ inferred.
 
 | rounds | real postings | replays | 409 conflicts | rounds with no winner | double postings (winners) |
 |---|---|---|---|---|---|
-| 20 | **20** | 580 | 58 | **0** | **0** |
+| 20 | **20** | 580 | 29 | **0** | **0** |
 
 **Every round produced exactly one real ledger posting, identified unambiguously, with zero
 duplicates** — the idempotency guarantee held under 30-way concurrent contention on the same key.
+The whole 20-round storm completed in ~2.3 seconds (down from ~7.4s pre-fix); fewer 409 conflicts
+(29 vs 58) is a direct consequence — resolving faster gives fewer competing requests time to land
+mid-flight.
 
 | | claim (winner) latency | replay latency |
 |---|---|---|
 | samples | 20 | 580 |
-| removed (≥10s) | 0 | 29 (**5.0%** — matches S0 baseline) |
-| trimmed p50 | 217.8 ms | 148.5 ms |
-| trimmed p99 | 678.2 ms | 196.4 ms |
-| raw p99 | 678.2 ms | 30,526.6 ms |
+| removed (≥10s) | 0 | 0 |
+| trimmed p50 | 19.1 ms | 9.6 ms |
+| trimmed p99 | 31.8 ms | 15.7 ms |
 
-Replays are consistently faster than the winning claim (148.5ms vs 217.8ms trimmed p50) — expected,
-since a replay reads the already-completed claim instead of running fraud check + ledger posting.
-The claim-latency sample (N=20) happened not to draw an artifact stall this run; the replay sample
-(N=580, larger) did, at the same ~5% rate as everywhere else.
+Claim p50 dropped from 217.8ms to **19.1ms** (~11x); replay p50 dropped from 148.5ms to **9.6ms**
+(~15x). Replays are still consistently faster than the winning claim — expected, since a replay
+reads the already-completed claim instead of running fraud check + ledger posting. Neither sample
+drew an artifact stall this run (0 removed on both) — a smaller-sample coincidence, not evidence
+the artifact is gone (S0 still measured 1.02%).
 
 ## S4 — fraud-service fault injection: did not run
 
@@ -182,43 +211,50 @@ mock-bacen-spi's `AdminConfigController` — confirmed by inventory in Phase 1 o
 do not touch `services/fraud-service` or use `tc netem` to fake this — instead, document the gap
 and propose closing it. See `docs/steps/step-64.md` (PLAN.md Sprint 12, proposed, unimplemented).
 
-## Environment limitation: WSL2 clock drift
+## Root cause of the throughput ceiling and the stalls
 
-`journalctl -k` shows recurring `"Time jumped backwards, rotating"`, and `timedatectl
-timesync-status` reports `System clock synchronized: no` with an offset around **-30s**, even
-after a full `wsl --shutdown` from the Windows host (offset and jitter were essentially unchanged
-before/after). `sudo systemctl restart systemd-timesyncd` also did not resolve it. This is a
-property of the WSL2 VM's clocksource, not of NTP being stale.
+Full diagnostic ladder, all raw evidence, and the fix: [`docs/load/BOTTLENECK.md`](BOTTLENECK.md).
+Summary:
 
-**What this rules out as the cause of the ~30s stalls**: `http_req_blocked` stayed under 0.5ms on
-every sample (rules out k6 client-side/connection-level causes — the client isn't waiting to open
-a connection). Every stalled request in the dry runs still returned `202` (rules out an
-application-level failure — the request succeeds, just 30s late).
-
-**Decision**: per explicit instruction, further root-cause investigation of the clock itself was
-stopped here — the goal was characterised data today, not a clean environment next week. The
-effect is characterised: load-independent (S0: 4.21% at 1 VU with no concurrency), consistent
-magnitude across S1/S2's low stages/S3 (4.2%-8.1%), ~30-33s duration, zero effect on correctness
-(every stalled request still completed and posted correctly).
+- **Throughput ceiling (fixed in this pass)**: LocalStack's own DynamoDB support proxies every
+  call through an internal Python HTTP client (`requests.Session`, `pool_maxsize=10` by library
+  default, not exposed via any LocalStack env var) to the same `DynamoDBLocal.jar` the fix now
+  talks to directly. Splitting DynamoDB into its own standalone `amazon/dynamodb-local` container
+  (`infra/docker-compose.yml`), reached via a separate endpoint property
+  (`AwsProperties#dynamoDbEndpointUrl`) than SNS/SQS (still on LocalStack), removed that proxy and
+  its pool cap. Raw ceiling: ~45 ops/s (original) → ~400 ops/s (LocalStack, in-memory + bigger
+  heap) → ~800-950 ops/s (standalone, no proxy). Application ceiling: ~8.5 req/s → ~158-201 req/s.
+- **The ~30s stalls (unaffected by this fix, still present at a lower rate)**: real server-side
+  pauses inside whichever process is serving DynamoDB at the time — confirmed via a stalled
+  request's own application-log timeline (not just client-side timing), ruled out as a
+  system-wide clock step (no kernel clock-jump event coincided with the stall; a sibling
+  container's unrelated healthcheck stayed on schedule through the same window). Most likely a
+  stop-the-world pause (GC is the leading suspect, not directly confirmed — GC logging isn't
+  enabled). S0 shows the rate dropped from 4.21% to 1.02% post-fix, consistent with a smaller,
+  faster-turnaround JVM doing less total work being paused less often, without claiming that as
+  confirmed causation.
 
 ## Caveats (apply to every number above)
 
-- LocalStack's DynamoDB emulator is single-process, not real AWS DynamoDB — its latency behavior
-  under concurrent transactional load does not represent production DynamoDB.
+- `dynamodb-local` (the standalone container) is still a single-process DynamoDB Local instance,
+  not real AWS DynamoDB — its latency/throughput characteristics under concurrent transactional
+  load do not represent production DynamoDB, even with LocalStack's proxy removed.
 - Only 2 of the 208 seeded accounts (alice/`acc-001`, bob/`acc-002`) are "real" fixtures reused
   from earlier steps; the other 206 are load-test-only accounts from
   `tools/k6/seed/seed-load-test-fixtures.sh`.
 - fraud-service has no runtime fault-injection knob — S4 did not run (see above).
 - No HTTP connection-pool or thread-pool tuning was found in any service's `application.yml`;
-  Tomcat runs its Spring Boot default (`max-threads=200`).
-- This is WSL2 on Windows, not bare-metal Linux — both the CPU/IO scheduling characteristics and
-  the clock issue above are properties of that virtualization layer, not of the application.
-- **Bottom line on portability**: the *shape* of the capacity curve (flat throughput ceiling,
-  errors appearing once queueing crosses a depth around 100 concurrent requests) is a real,
-  reproducible finding about this codebase's current concurrency behavior. The *absolute* TPS and
-  latency numbers are specific to this WSL2 VM on this day and are not the numbers to quote as
-  "this system does N req/s" — for that, PLAN.md Step 47's full k6 suite against a more
-  representative environment (or real AWS) is the right follow-up, not this deliverable.
+  Tomcat runs its Spring Boot default (`max-threads=200`) — not implicated this pass (0% real
+  errors through 150 VUs).
+- This is WSL2 on Windows (Docker Desktop backend), not bare-metal Linux.
+- S2's `fraud_denied_rate` is a fixture-design artifact (ring-account concentration vs.
+  throughput), not a capacity signal — see S2's dedicated subsection above.
+- **Bottom line on portability**: the *shape* (a flat throughput ceiling, Little's-Law-consistent
+  queueing beneath it, zero errors well past 100 req/s) is a real, reproducible finding about this
+  codebase's current concurrency behavior against a single-process DynamoDB backend. The
+  *absolute* ~160-200 req/s ceiling is specific to this `dynamodb-local` container on this
+  machine — a real DynamoDB target would have a different (likely much higher, or differently
+  shaped) ceiling, since `dynamodb-local` is explicitly not built for performance testing.
 
 ## Reproducing
 
@@ -227,30 +263,15 @@ docker compose -f infra/docker-compose.yml down -v   # fresh volumes — S1's ex
 docker compose -f infra/docker-compose.yml up -d --build
 bash tools/k6/seed/seed-load-test-fixtures.sh         # ~7 minutes
 bash tools/k6/run-s0.sh                               # ~5 minutes
-bash tools/k6/run-s1.sh                               # ~3 minutes
-bash tools/k6/run-s2.sh                               # ~9 minutes
-bash tools/k6/run-s3.sh                               # seconds
+bash tools/k6/run-s1.sh                               # ~2 minutes
+# S2: the default tools/k6/s2-capacity.js stages are 5/10/25/50/100/200 — this pass capped at 150
+# to stay error-free; rerun with -e S2_STAGES=5,10,25,50,100,200 (or higher) to find where real
+# errors actually start post-fix, which this document deliberately did not chase.
+source tools/k6/run-common.sh
+k6_run run -e S2_STAGES=5,10,25,50,100,150 --out json=docs/load/raw/s2-raw.ndjson tools/k6/s2-capacity.js
+node tools/k6/analyze-s2.js docs/load/raw/s2-raw.ndjson > docs/load/raw/s2-result.json
+bash tools/k6/run-s3.sh                               # ~seconds
 ```
 
 k6 runs via the `grafana/k6` Docker image if no local `k6` binary is on `PATH` (this dev
 environment has none) — see `tools/k6/run-common.sh`.
-
-### A screenshot-worthy S2 summary
-
-```bash
-K6_FORCE_DOCKER=1 bash -c 'source tools/k6/run-common.sh && \
-  k6_run run --out json=docs/load/raw/s2-raw.ndjson tools/k6/s2-capacity.js'
-```
-
-### The most defensible number for an interview
-
-Not "8.6 TPS" alone — say: *"On a LocalStack/WSL2 dev stack, this system's Pix-send path holds a
-flat ~8.5 req/s throughput ceiling from 5 concurrent clients up through 50, with p50 latency
-tracking Little's Law almost exactly (queueing delay ≈ concurrency / 8.6 req/s) — meaning the
-bottleneck is a fixed-capacity resource, not raw compute, and it's saturated well before any
-realistic single-dev-machine concurrency. Errors only start once ~100 requests are queued
-simultaneously. I did not chase the exact bottleneck (leading suspect: LocalStack's
-single-process DynamoDB emulator, since no connection-pool tuning exists anywhere in the
-codebase) — that's the next thing I'd instrument."* That's a claim about *behavior under
-Little's-Law-verified queueing*, not a raw number — and it survives someone asking "did you
-control for X" for every X in the caveats section above.

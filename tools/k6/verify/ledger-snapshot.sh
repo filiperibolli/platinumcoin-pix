@@ -14,7 +14,8 @@ set -euo pipefail
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="${LOCALSTACK_ENDPOINT:-http://localhost:4566}"
+# DynamoDB now lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md).
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:8000}"
 
 # Mirrors ledger-service's AccountPolicy.java allowlist (SEED exact, SPI_CLEARING* prefix) plus
 # LOADTEST_SEED — this script's own funding source (tools/k6/seed/seed-load-test-fixtures.sh),

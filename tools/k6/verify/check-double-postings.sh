@@ -14,7 +14,8 @@ set -euo pipefail
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="${LOCALSTACK_ENDPOINT:-http://localhost:4566}"
+# DynamoDB now lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md).
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:8000}"
 
 LOGFILE="${1:?usage: check-double-postings.sh <k6-stdout-logfile>}"
 

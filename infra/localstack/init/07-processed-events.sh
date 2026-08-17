@@ -19,10 +19,15 @@
 # safe to re-run on container restart. `down -v` wipes the volume and recreates a clean world.
 set -euo pipefail
 
+# The script runs INSIDE the LocalStack container, but talks to the standalone dynamodb-local
+# container (docs/load/BOTTLENECK.md) over the shared network — LocalStack no longer serves DynamoDB.
+# Being the LAST script (see above) still makes this table the readiness marker: the `localstack`
+# service's own healthcheck now runs `aws dynamodb describe-table` against dynamodb-local's endpoint
+# FROM INSIDE the localstack container, over this same shared network.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="http://localhost:4566"
+ENDPOINT="http://dynamodb-local:8000"
 
 create_table_if_absent() {
   local table="$1"; shift
