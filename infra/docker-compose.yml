@@ -353,6 +353,10 @@ services:
       # line); compose and the tests now agree on what readiness means.
       #
       # IF YOU ADD A SCRIPT THAT SORTS AFTER 07, MOVE THIS PROBE (and the harness's marker) TO IT.
+      # (tools/k6/seed/ deliberately does NOT live here, even though it seeds LocalStack too: this
+      # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
+      # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
+      # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
       test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && awslocal dynamodb describe-table --table-name pix_processed_events >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s

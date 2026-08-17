@@ -1,0 +1,25 @@
+Aug 17 14:47:31 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:47:36 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:47:41 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:48:31 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:48:36 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:48:41 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:49:32 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:49:37 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:49:42 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:50:32 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:50:37 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:50:42 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:51:32 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:51:37 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:51:42 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:52:32 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:52:37 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:52:42 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:53:32 RiboBru systemd-journald[39]: Time jumped backwards, rotating. (Dropped 11 similar message(s))
+Aug 17 14:53:37 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+Aug 17 14:53:42 RiboBru systemd-journald[39]: Time jumped backwards, rotating.
+2026-08-17T17:54:14.889Z
+--- host vs container time at capture ---
+host: 2026-08-17T17:54:14.891Z
+2026-08-17T17:54:14.970Z
