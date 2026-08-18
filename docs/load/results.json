@@ -1,52 +1,116 @@
 {
+  "run_metadata": {
+    "pass": "third — clean re-run on a freshly reseeded environment (docker compose down -v; rebuild; reseed)",
+    "calendar_day_sao_paulo": "2026-08-17",
+    "note_on_date": "America/Sao_Paulo is the daily-limit's own zone (SendPixUseCase.LIMIT_ZONE); the whole run stayed within one calendar day, so S1's limit-guard counter is scoped to a single LIMIT#acc-001/DAY#2026-08-17 item.",
+    "scenario_accounts": {
+      "s0": "acc-lt-001 (ring position 1)",
+      "s1_balance_guard": "acc-lt-s1bal",
+      "s1_limit_guard": "acc-001 (alice)",
+      "s2": "acc-lt-001..acc-lt-200 (200-account ring)",
+      "s3": "acc-lt-001 (a ring account — distinct from S1's acc-001/alice)",
+      "s5": "senders: 200-account ring; destinations: bob@otherbank.com / carol@otherbank.com (external DICT keys, ISPB 99999999)"
+    },
+    "clean_start_confirmed": "before the run: whole-table sum(balanceCents)=0 across 208 accounts; alice's LIMIT#acc-001/DAY#2026-08-17 counter ABSENT (zero same-day consumption) — the clean state the limit-guard derivation in EXPECTATIONS.md requires."
+  },
+  "what_was_proven": [
+    {
+      "claim": "Atomic double-entry: every ledger posting is exactly one DEBIT + one CREDIT, never a half-posting.",
+      "evidence": "Whole-table scan after all scenarios: 82,663 distinct txIds, 165,326 ENTRY items = exactly 2 per txId; 82,663 healthy {DEBIT,CREDIT} pairs; 0 orphaned legs, 0 malformed pairs (docs/load/raw/ledger-integrity-final.json). Asserted from data, not from an error counter."
+    },
+    {
+      "claim": "Conservation of money (synchronous/internal path): transfers move money between accounts, never create or destroy it.",
+      "evidence": "S1 both subsections: whole-table sum(balanceCents) = 0 before and after (delta 0); 0 accounts negative. Closed system across all 208 accounts (docs/load/raw/s1-*-before.json / *-after.json)."
+    },
+    {
+      "claim": "Conservation of money (asynchronous/external path): money parked in the clearing account at accept-time always leaves it — to SPI_SETTLED on settlement OR back to the payer on reversal — never stranded. BOTH branches proven.",
+      "evidence": "Settlement branch (S5, no fault injection): 515 external sends all reached SETTLED; SPI_CLEARING 0->0; SPI_SETTLED delta 515,000c = 515 x 1,000c; 0 orphaned. Reversal branch (S5b, mock-bacen reject-keys + failure-rate 0.2): 541 accepted -> 271 SETTLED + 270 REVERSED, 0 in flight; SPI_CLEARING returned to 0; SPI_SETTLED delta 271,000c = settled x 1,000c only (reversals do not credit SPI_SETTLED); whole-table sum delta 0; and PER TRANSACTION, all 270 reversals credited the EXACT original amount back to their OWN payer (270/270 verified, 0 mismatches) via a complete debit-clearing/credit-payer pair (docs/load/raw/s5b-result.json, docs/load/raw/s5b-reversal-pertx.json)."
+    },
+    {
+      "claim": "Non-negative balance under contention: the ledger's balance guard, inside the TransactWriteItems, stops overdraft exactly at the funded amount.",
+      "evidence": "S1 balance-guard: acc-lt-s1bal funded for exactly 10 sends at 10,000c each settled exactly 10 under a 50-VU storm; 11,586 further attempts refused INSUFFICIENT_FUNDS; 0 negative balances observed (docs/load/raw/s1-result.json)."
+    },
+    {
+      "claim": "Daily-limit reservation is exact and leak-free: settled x amount never exceeds the limit, and no reservation is lost.",
+      "evidence": "S1 limit-guard on a FRESHLY reseeded alice (counter absent): settled exactly 50 = 500,000c / 10,000c; alice's LIMIT#acc-001/DAY#2026-08-17 counter read 500,000c afterward (= 50 x 10,000c). This resolves the prior run's 49 as leftover same-day usage, NOT a reservation leak (see verdict.limit_guard_49_vs_50)."
+    },
+    {
+      "claim": "Idempotency under a retry storm: exactly one real ledger posting per business operation, however many clients race the same key.",
+      "evidence": "S3: 30 VUs racing one Idempotency-Key per round x 20 rounds -> 20 real postings (one per round), 580 byte-identical replays, 29 in-progress 409s, 0 rounds with no winner, 0 double postings on winners (docs/load/raw/s3-result.json)."
+    }
+  ],
+  "verdict": [
+    {"invariant": "S1 balance-guard settled count", "expected": 10, "observed": 10, "result": "PASS", "derivation": "funded 100,000c / 10,000c per send = 10"},
+    {"invariant": "S1 limit-guard settled count", "expected": 50, "observed": 50, "result": "PASS", "derivation": "dailyLimit 500,000c / 10,000c per send = 50, on a counter that started absent"},
+    {"invariant": "S1 conservation (sum balances delta, both subsections)", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S1 negative balances", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S1 duplicate/orphaned postings (whole-ledger query)", "expected": 0, "observed": 0, "result": "PASS", "note": "82,663 txIds all exactly {1 DEBIT, 1 CREDIT}"},
+    {"invariant": "S3 real postings per round", "expected": 1, "observed": 1, "result": "PASS"},
+    {"invariant": "S3 total real postings (20 rounds)", "expected": 20, "observed": 20, "result": "PASS"},
+    {"invariant": "S3 rounds with no winner", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S3 double postings on winners", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S5 accepted sends reaching SETTLED (no fault injection)", "expected": "all accepted (515)", "observed": 515, "result": "PASS"},
+    {"invariant": "S5 REVERSED / still-in-flight at final snapshot", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S5 conservation (sum balances delta incl. clearing)", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S5 orphaned clearing money", "expected": "none", "observed": "none", "result": "PASS", "note": "SPI_CLEARING 0->0, SPI_SETTLED delta 515,000c = 515 x 1,000c"},
+    {"invariant": "S5b settled + reversed = accepted (fault injection)", "expected": "= accepted (541)", "observed": "271 + 270 = 541", "result": "PASS"},
+    {"invariant": "S5b still in DEBITED/SENT_TO_SPI after recon window", "expected": 0, "observed": 0, "result": "PASS"},
+    {"invariant": "S5b SPI_CLEARING returns to before value exactly", "expected": 0, "observed": 0, "result": "PASS", "note": "0 -> 0"},
+    {"invariant": "S5b SPI_SETTLED delta = settled x amount exactly", "expected": 271000, "observed": 271000, "result": "PASS", "note": "reversals do not credit SPI_SETTLED"},
+    {"invariant": "S5b each reversal returns exact amount to its OWN payer (per-tx)", "expected": "270/270", "observed": "270/270", "result": "PASS", "note": "0 mismatches; asserted per transaction, not on the aggregate"},
+    {"invariant": "S5b every reversal is a complete DEBIT+CREDIT pair", "expected": "270/270", "observed": "270/270", "result": "PASS", "note": "each -rev = debit SPI_CLEARING / credit payer"},
+    {"invariant": "S5b whole-table sum(balanceCents) delta = 0", "expected": 0, "observed": 0, "result": "PASS"}
+  ],
+  "limit_guard_49_vs_50": {
+    "prior_run": 49,
+    "this_run": 50,
+    "decision_rule": "limit-guard settling 50 confirms the prior run's 49 was leftover same-day usage. Settling 49 again on a freshly reseeded environment rules that out and makes a reservation leak the leading hypothesis - investigate before any of these numbers are published.",
+    "outcome": "Settled 50 on the freshly reseeded environment, with alice's daily-limit counter confirmed ABSENT before the run. Per the rule, this confirms the prior 49 was leftover same-day consumption (a request against alice earlier that same calendar day), NOT a reservation leak. Corroborated by the code review in RESULTS.md (the reserve is a single conditional UpdateItem with no read-then-write race; the prior run's counter state that would have proven it directly was already gone before the audit - see EXPECTATIONS.md's limitation note)."
+  },
   "fix_applied": {
-    "summary": "DynamoDB moved out of LocalStack into a standalone amazon/dynamodb-local container (infra/docker-compose.yml), reachable at a separate AWS_ENDPOINT_URL-style property (AwsProperties#dynamoDbEndpointUrl) than SNS/SQS (which stay on LocalStack). Root cause and diagnostic ladder: docs/load/BOTTLENECK.md.",
+    "summary": "DynamoDB moved out of LocalStack into a standalone amazon/dynamodb-local container (infra/docker-compose.yml), reachable at a separate property (AwsProperties#dynamoDbEndpointUrl) than SNS/SQS (which stay on LocalStack). Root cause and diagnostic ladder: docs/load/BOTTLENECK.md.",
     "root_cause": "LocalStack's own DynamoDB support proxies every call through an internal Python HTTP client (a plain requests.Session, via rolo's SimpleRequestsClient) to the same DynamoDBLocal.jar this fix runs directly -- but that internal proxy has a fixed, non-configurable connection-pool cap (requests' library default, pool_maxsize=10) that became the throughput ceiling under load.",
-    "raw_throughput_before_after": "~45 ops/s (LocalStack-proxied, file-backed heap=256MB) -> ~400 ops/s (LocalStack-proxied, in-memory heap=1g) -> ~800-950 ops/s (standalone dynamodb-local, no proxy) -- three separate confirmed measurements, each a distinct fix layered on the last.",
-    "app_throughput_before_after": "~8.5-8.9 req/s -> ~158-201 req/s (S2, this document) -- roughly a 19x improvement, comfortably clearing the >=100 req/s target."
+    "app_throughput_before_after": "~8.5-8.9 req/s -> ~150-172 req/s (S2, this pass) -- roughly a 19x improvement, comfortably clearing the >=100 req/s target."
+  },
+  "outbox_publisher_backlog": {
+    "finding": "The outbox polling publisher (payment-service, default batch-size 25 per 1s tick => ~25/s) cannot keep pace with sustained internal-send throughput (~150 req/s in S2). After S0-S3 the sparse gsi3 held 55,538 unpublished PixSettled events; at 25/s that is ~37 minutes to drain at rest.",
+    "correctness_impact": "None on money-safety: at-least-once publish-then-mark on the sparse GSI loses nothing, and the internal PixSettled events match no existing subscription (settlement-queue filters eventType=PixDebited), so they fan out to SNS and go nowhere until Sprint 8/10 queues exist. The impact is latency: an external PixDebited event queued behind the backlog stays DEBITED long enough to cross the 120s stuck threshold and be REVERSED by reconciliation instead of settling (observed on a pre-S5 smoke send).",
+    "s5_mitigation": "For S5 the batch was bumped to 800 (infra/docker-compose.s5.yml) to drain the backlog in ~2 min, and BACEN settlement latency lowered to 100ms via /admin/config so the single-threaded settlement consumer kept pace; both restored to defaults after S5. This is a documented load-test-only knob, like the fraud loadtest profile - it changes throughput, not correctness.",
+    "production_note": "In production the publisher batch/tick and a multi-instance settlement consumer would be sized to the send rate; the single-process, single-consumer local stack is the constraint, not the design."
   },
   "trimming_rule": {
     "threshold_ms": 10000,
-    "rationale": "Unchanged from the original pass: docs/load/artifacts/s2-dry-run-*.ndjson showed a clean bimodal split before any load test ran. 10000ms sits in the empty gap between the two populations.",
-    "status_after_fix": "The trim rule stays valid across every stage tested in this pass (removed_rate stayed in a 0-4% band throughout S0/S1/S2/S3 -- no stage showed the >50% breakdown seen pre-fix at S2 vus=100/200, because trimmed latencies now stay far below the 10s threshold even at the highest stage tested)."
+    "headline_policy": "Raw is the headline figure everywhere; trimmed is a clearly-labelled secondary, diagnostic view. The ~31s stalls are real server-side latency (docs/load/BOTTLENECK.md RUNG 4, confirmed from application log timestamps), not a measurement artifact, so they are not 'corrected' away.",
+    "status_this_run": "removed_rate stayed in a 0-4% band across S0/S1/S2/S3 (S5 sends were not latency-analyzed - its claim is conservation, not latency). A 0-4% removed rate means 0-4% of requests genuinely took ~31s, so raw p99 is ~31s at almost every stage; the platform's <2s p99 send target is not met under this environment stall, and that is reported plainly rather than hidden behind the trimmed figure."
   },
   "environment_limitation": {
-    "summary": "The WSL2 clock-jump artifact (docs/load/BOTTLENECK.md RUNG 4: real, periodic multi-second stalls inside whichever DynamoDB-serving process is under load, not a measurement artifact) is still present post-fix, at a lower rate: S0's stall rate dropped from 4.21% to 1.02% at the same 1 VU / ~1 req/s baseline. The artifact is orthogonal to the throughput fix -- both are real, independently confirmed, and this pass does not re-litigate RUNG 4's finding.",
-    "portability": "Unchanged: the shape of the capacity behavior (a flat throughput ceiling, Little's-Law-consistent queueing beneath it) is portable; the absolute ~160-200 req/s number is specific to this dynamodb-local container on this machine."
+    "summary": "Real, periodic multi-second (~31s) stalls inside whichever process is serving DynamoDB under load (docs/load/BOTTLENECK.md RUNG 4, confirmed from the application's own server-side log timestamps, not just client timing) are present at ~1% even at 1 VU (S0). A stalled request still succeeds (same 202 Accepted, ~31s late) - money safety is unaffected, but the <2s p99 send target is blown on the affected requests.",
+    "portability": "The SHAPE (flat throughput ceiling, Little's-Law-consistent queueing, zero real errors past 100 req/s, and every money invariant holding) is a real, reproducible property of this codebase. The ABSOLUTE ~150-172 req/s ceiling and the ~31s stall are specific to single-process dynamodb-local on this WSL2/Docker-Desktop machine and would differ against real AWS DynamoDB."
   },
   "caveats": [
-    "dynamodb-local (the standalone container) is still a single-process DynamoDB Local instance, not real AWS DynamoDB -- its latency/throughput characteristics under concurrent transactional load do not represent production DynamoDB, even after removing LocalStack's proxy layer.",
-    "Only 2 of the 208 seeded accounts (alice/acc-001, bob/acc-002) are \"real\" fixtures reused from earlier steps; the other 206 are load-test-only ring/exhaustible accounts created by tools/k6/seed/seed-load-test-fixtures.sh.",
-    "fraud-service has no runtime latency/failure-injection knob -- s4_fraud below did not run; see docs/steps/step-64.md (proposed, unimplemented).",
-    "No HTTP connection-pool or thread-pool tuning was found in any service's application.yml -- Tomcat runs its Spring Boot default (max-threads=200); not implicated in this pass (S2 never showed a genuine capacity error up to 150 VUs).",
+    "dynamodb-local (the standalone container) is still a single-process DynamoDB Local instance, not real AWS DynamoDB.",
+    "settlement-service runs a SINGLE-THREADED sequential SQS consumer (batch 5), so with BACEN's default 2s latency it settles only ~0.5/s; S5 lowered BACEN latency to keep the pipeline ahead of its 120s stuck threshold. This is a local-stack sizing constraint, not a design limit.",
+    "Only 2 of the 208 seeded accounts (alice/acc-001, bob/acc-002) are 'real' fixtures; the other 206 are load-test-only ring/exhaustible accounts from tools/k6/seed/seed-load-test-fixtures.sh.",
+    "fraud-service has no runtime latency/failure-injection knob -- s4_fraud did not run; see docs/steps/step-64.md (proposed, unimplemented).",
+    "S1 ran under the fraud-service `loadtest` Spring profile (velocity thresholds only raised); S0/S2/S3/S5 ran on the default fraud profile. See RESULTS.md 'Fraud scoring under load'.",
     "This is WSL2 on Windows (Docker Desktop backend), not bare-metal Linux.",
-    "S2's fraud_denied_rate is NOT monotonic in VUs and is NOT a capacity signal -- see the s2_capacity section below and docs/load/RESULTS.md for the mechanism (ring-account concentration at low VU counts crosses fraud-service's velocity threshold faster than at high VU counts, which spread load across more distinct accounts)."
+    "S2's fraud_denied_rate is a fixture artifact (ring-account concentration vs throughput), not a capacity signal."
   ],
   "s0_artifact_baseline": {
-    "purpose": "Tests whether the WSL2 clock-jump stall is load-independent, before trusting the raw/trimmed split applied to s1/s2/s3.",
+    "purpose": "Near-zero-load floor: is the DynamoDB-serving stall load-independent? 'Artifact' names the SCENARIO, not a claim that the stall is a measurement artifact (it is real - see environment_limitation).",
+    "account": "acc-lt-001",
     "vus": 1,
     "target_rate": "~1 req/s",
     "threshold_ms": 10000,
-    "sample_count": 293,
+    "sample_count": 288,
     "removed_count": 3,
-    "removed_rate": 0.0102,
-    "raw": {
-      "p50_ms": 23.3,
-      "p95_ms": 26.92,
-      "p99_ms": 30972.41,
-      "max_ms": 30989.96
-    },
-    "trimmed": {
-      "p50_ms": 23.23,
-      "p95_ms": 26.88,
-      "p99_ms": 31.66,
-      "max_ms": 41.54
-    },
-    "statuses": {
-      "202": 293
-    }
+    "removed_rate": 0.0104,
+    "statuses": {"202": 288},
+    "raw": {"p50_ms": 39.91, "p95_ms": 53.09, "p99_ms": 31317.18, "max_ms": 31329.82},
+    "trimmed": {"p50_ms": 39.84, "p95_ms": 52.55, "p99_ms": 61.72, "max_ms": 951.57}
   },
   "s1_conservation": {
+    "profile": "fraud-service loadtest (velocity thresholds raised so a single-account storm measures the ledger, not fraud)",
     "vus": 50,
     "duration_s": 60,
     "warmup_s": 30,
@@ -54,281 +118,131 @@
     "balance_guard": {
       "account": "acc-lt-s1bal",
       "settled": 10,
-      "rejected_insufficient_funds": 194,
+      "expected_settled": 10,
+      "rejected_insufficient_funds": 11586,
       "rejected_limit_exceeded": 0,
-      "other_errors": 33455,
-      "sum_balances_before": 0,
-      "sum_balances_after": 0,
-      "negative_balance_observed": false,
-      "double_postings": 0,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 33659,
-        "removed_count": 550,
-        "removed_rate": 0.0163,
-        "raw": {
-          "p50_ms": 86.33,
-          "p95_ms": 109.6,
-          "p99_ms": 31068.09,
-          "max_ms": 31148.67
-        },
-        "trimmed": {
-          "p50_ms": 86.23,
-          "p95_ms": 105.08,
-          "p99_ms": 135.27,
-          "max_ms": 896.67
-        }
-      }
-    },
-    "limit_guard": {
-      "account": "acc-001 (alice)",
-      "settled": 49,
-      "rejected_insufficient_funds": 0,
-      "rejected_limit_exceeded": 70583,
       "other_errors": 0,
       "sum_balances_before": 0,
       "sum_balances_after": 0,
       "negative_balance_observed": false,
       "double_postings": 0,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 70632,
-        "removed_count": 508,
-        "removed_rate": 0.0072,
-        "raw": {
-          "p50_ms": 42.62,
-          "p95_ms": 58.23,
-          "p99_ms": 87.17,
-          "max_ms": 31059.6
-        },
-        "trimmed": {
-          "p50_ms": 42.58,
-          "p95_ms": 56.88,
-          "p99_ms": 72.77,
-          "max_ms": 382.64
-        }
-      }
+      "latency": {"threshold_ms": 10000, "sample_count": 11596, "removed_count": 411, "removed_rate": 0.0354,
+        "raw": {"p50_ms": 255.04, "p95_ms": 329.51, "p99_ms": 31589.08, "max_ms": 31734.73},
+        "trimmed": {"p50_ms": 254.19, "p95_ms": 301.11, "p99_ms": 348.59, "max_ms": 498.26}}
+    },
+    "limit_guard": {
+      "account": "acc-001 (alice)",
+      "settled": 50,
+      "expected_settled": 50,
+      "counter_after_cents": 500000,
+      "rejected_insufficient_funds": 0,
+      "rejected_limit_exceeded": 73684,
+      "other_errors": 0,
+      "sum_balances_before": 0,
+      "sum_balances_after": 0,
+      "negative_balance_observed": false,
+      "double_postings": 0,
+      "latency": {"threshold_ms": 10000, "sample_count": 73734, "removed_count": 644, "removed_rate": 0.0087,
+        "raw": {"p50_ms": 41.09, "p95_ms": 53.92, "p99_ms": 111.31, "max_ms": 31406.39},
+        "trimmed": {"p50_ms": 41.05, "p95_ms": 52.68, "p99_ms": 67.47, "max_ms": 379.16}}
     }
   },
+  "ledger_integrity_whole_table": {
+    "when": "after all scenarios (seed + S0 + S1 + S2 + S5 + smoke/validation sends)",
+    "method": "full scan of pix_ledger ENTRY items, grouped by txId (gsi1pk = TX#<txId>), leg count + direction multiset per group",
+    "total_txids": 82663,
+    "total_entries": 165326,
+    "healthy_debit_credit_pairs": 82663,
+    "duplicate_postings": 0,
+    "orphaned_legs": 0,
+    "malformed_pairs": 0,
+    "query": "scan pix_transactions is NOT this; this is scan pix_ledger where begins_with(sk,'ENTRY#') projecting txId+direction, then group_by txId and assert each group is exactly {DEBIT,CREDIT}"
+  },
   "s2_capacity": [
-    {
-      "vus": 5,
-      "tps": 201.13,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 12068,
-        "removed_count": 69,
-        "removed_rate": 0.0057,
-        "raw": {
-          "p50_ms": 27.67,
-          "p95_ms": 37.66,
-          "p99_ms": 49.27,
-          "max_ms": 31058.08
-        },
-        "trimmed": {
-          "p50_ms": 27.29,
-          "p95_ms": 37.42,
-          "p99_ms": 43.55,
-          "max_ms": 70.91
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 5400,
-      "fraud_denied_rate": 0.4475,
-      "sample_count": 12068,
-      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
-    },
-    {
-      "vus": 10,
-      "tps": 164.13,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 9848,
-        "removed_count": 69,
-        "removed_rate": 0.007,
-        "raw": {
-          "p50_ms": 59.84,
-          "p95_ms": 76.64,
-          "p99_ms": 99.18,
-          "max_ms": 31097.93
-        },
-        "trimmed": {
-          "p50_ms": 59.78,
-          "p95_ms": 75.74,
-          "p99_ms": 86.89,
-          "max_ms": 122.77
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 0,
-      "fraud_denied_rate": 0,
-      "sample_count": 9848,
-      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
-    },
-    {
-      "vus": 25,
-      "tps": 163.35,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 9801,
-        "removed_count": 350,
-        "removed_rate": 0.0357,
-        "raw": {
-          "p50_ms": 151.6,
-          "p95_ms": 196.11,
-          "p99_ms": 31173.07,
-          "max_ms": 31205.92
-        },
-        "trimmed": {
-          "p50_ms": 151.03,
-          "p95_ms": 179.65,
-          "p99_ms": 200.17,
-          "max_ms": 275.48
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 0,
-      "fraud_denied_rate": 0,
-      "sample_count": 9801,
-      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
-    },
-    {
-      "vus": 50,
-      "tps": 184,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 11040,
-        "removed_count": 409,
-        "removed_rate": 0.037,
-        "raw": {
-          "p50_ms": 285.42,
-          "p95_ms": 342.25,
-          "p99_ms": 31326.06,
-          "max_ms": 31373.28
-        },
-        "trimmed": {
-          "p50_ms": 284.44,
-          "p95_ms": 324.51,
-          "p99_ms": 345.71,
-          "max_ms": 448.44
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 1657,
-      "fraud_denied_rate": 0.1501,
-      "sample_count": 11040,
-      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
-    },
-    {
-      "vus": 100,
-      "tps": 160.75,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 9645,
-        "removed_count": 334,
-        "removed_rate": 0.0346,
-        "raw": {
-          "p50_ms": 601.13,
-          "p95_ms": 1065.1,
-          "p99_ms": 31712.42,
-          "max_ms": 32208.03
-        },
-        "trimmed": {
-          "p50_ms": 594.36,
-          "p95_ms": 932.02,
-          "p99_ms": 1118.94,
-          "max_ms": 1546.62
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 660,
-      "fraud_denied_rate": 0.0684,
-      "sample_count": 9645,
-      "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
-    },
-    {
-      "vus": 150,
-      "tps": 158.25,
-      "latency": {
-        "threshold_ms": 10000,
-        "sample_count": 9495,
-        "removed_count": 320,
-        "removed_rate": 0.0337,
-        "raw": {
-          "p50_ms": 892.68,
-          "p95_ms": 1816.64,
-          "p99_ms": 32038.32,
-          "max_ms": 33478.7
-        },
-        "trimmed": {
-          "p50_ms": 876.19,
-          "p95_ms": 1564.69,
-          "p99_ms": 1947.9,
-          "max_ms": 2805.82
-        }
-      },
-      "error_rate": 0,
-      "errors_by_type": {},
-      "fraud_denied_count": 408,
-      "fraud_denied_rate": 0.043,
-      "sample_count": 9495,
-      "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
-    }
+    {"vus": 5, "tps": 149.58, "error_rate": 0, "fraud_denied_rate": 0, "removed_rate": 0.0072, "raw_p99_ms": 89.96, "trimmed_p50_ms": 32.55, "trimmed_p99_ms": 45.79},
+    {"vus": 10, "tps": 170.35, "error_rate": 0, "fraud_denied_rate": 0, "removed_rate": 0.0135, "raw_p99_ms": 31381.78, "trimmed_p50_ms": 57.23, "trimmed_p99_ms": 86.24},
+    {"vus": 25, "tps": 168.85, "error_rate": 0, "fraud_denied_rate": 0, "removed_rate": 0.0246, "raw_p99_ms": 31511.7, "trimmed_p50_ms": 145.34, "trimmed_p99_ms": 228.48},
+    {"vus": 50, "tps": 170.55, "error_rate": 0, "fraud_denied_rate": 0.0196, "removed_rate": 0.0332, "raw_p99_ms": 31654.47, "trimmed_p50_ms": 292.67, "trimmed_p99_ms": 399.59},
+    {"vus": 100, "tps": 172.27, "error_rate": 0, "fraud_denied_rate": 0.0714, "removed_rate": 0.028, "raw_p99_ms": 31996.85, "trimmed_p50_ms": 555.36, "trimmed_p99_ms": 1034.93},
+    {"vus": 150, "tps": 163.15, "error_rate": 0, "fraud_denied_rate": 0.0435, "removed_rate": 0.0383, "raw_p99_ms": 32465.21, "trimmed_p50_ms": 854.19, "trimmed_p99_ms": 1860.87}
   ],
   "s3_idempotency": {
+    "account": "acc-lt-001",
     "rounds": 20,
     "vus_per_round": 30,
     "real_postings": 20,
+    "expected_real_postings": 20,
     "replays": 580,
     "conflicts_409": 29,
     "other_errors": 0,
     "rounds_with_no_winner": [],
-    "claim_latency": {
-      "threshold_ms": 10000,
-      "sample_count": 20,
-      "removed_count": 0,
-      "removed_rate": 0,
-      "raw": {
-        "p50_ms": 19.13,
-        "p95_ms": 21.56,
-        "p99_ms": 31.76,
-        "max_ms": 31.76
-      },
-      "trimmed": {
-        "p50_ms": 19.13,
-        "p95_ms": 21.56,
-        "p99_ms": 31.76,
-        "max_ms": 31.76
-      }
-    },
-    "replay_latency": {
-      "threshold_ms": 10000,
-      "sample_count": 580,
-      "removed_count": 0,
-      "removed_rate": 0,
-      "raw": {
-        "p50_ms": 9.55,
-        "p95_ms": 13.44,
-        "p99_ms": 15.68,
-        "max_ms": 18.22
-      },
-      "trimmed": {
-        "p50_ms": 9.55,
-        "p95_ms": 13.44,
-        "p99_ms": 15.68,
-        "max_ms": 18.22
-      }
-    },
     "double_postings_on_winners": 0,
-    "winner_tx_count": 20
+    "winner_tx_count": 20,
+    "claim_latency": {"threshold_ms": 10000, "sample_count": 20, "removed_count": 0, "removed_rate": 0,
+      "raw": {"p50_ms": 19.18, "p95_ms": 25.02, "p99_ms": 27.6, "max_ms": 27.6}},
+    "replay_latency": {"threshold_ms": 10000, "sample_count": 580, "removed_count": 0, "removed_rate": 0,
+      "raw": {"p50_ms": 10.16, "p95_ms": 17.05, "p99_ms": 21.82, "max_ms": 24.01}}
+  },
+  "s5_async_conservation": {
+    "accounts": "senders: 200-account ring; destinations: bob@otherbank.com / carol@otherbank.com (ISPB 99999999)",
+    "calendar_day_sao_paulo": "2026-08-17",
+    "rate_per_sec": 3,
+    "duration": "3m",
+    "amount_cents": 1000,
+    "settlement_conditions": "BACEN latency 100ms (via /admin/config); outbox batch 800 (infra/docker-compose.s5.yml); BACEN failure-rate/timeout-rate at 0.0 defaults (no reversal injection) - both knobs restored after",
+    "accepted_202": 515,
+    "fraud_denied": 26,
+    "other_errors": 0,
+    "end_states": {"settled": 515, "reversed": 0, "debited": 0, "sent_to_spi": 0, "missing": 0},
+    "still_in_flight_final": 0,
+    "sum_balances_before": 0,
+    "sum_balances_after": 0,
+    "sum_balances_delta": 0,
+    "spi_clearing_before": 0,
+    "spi_clearing_after": 0,
+    "spi_settled_before": 36000,
+    "spi_settled_after": 551000,
+    "spi_settled_delta": 515000,
+    "negative_accounts_after": 0,
+    "orphaned_clearing_money": "none",
+    "note": "SETTLEMENT branch only — failure/timeout injection was 0.0, so 0 reversals. The reversal branch is proven by s5b below."
+  },
+  "s5b_async_conservation_with_reversals": {
+    "purpose": "Exercise the REVERSAL branch of the async conservation claim, which s5 left unproven (money BACK TO THE PAYER on reversal, never stranded).",
+    "reversal_trigger_finding": "Established from the code before running: reject-keys is the ONLY send-reachable reversal trigger (creditor key refused -> settlement recorded FAILED -> HTTP 422 -> SpiSettlementRejectedException -> finalizer.reverse -> <txId>-rev posting debit clearing / credit payer). failure-rate (503) and timeout both map to SpiCallFailedException = UNKNOWN -> retry (a timeout resolves to SETTLED via query-before-retry), NEITHER reverses. So failure-rate 0.2 alone cannot make a reversal happen; reject-keys drives the reversals and failure-rate 0.2 additionally exercises the transient-retry path.",
+    "accounts": "senders: 200-account ring; destinations: bob@otherbank.com (SETTLED) / carol@otherbank.com (REVERSED, in reject-keys)",
+    "calendar_day_sao_paulo": "2026-08-18",
+    "rate_per_sec": 3,
+    "duration": "3m",
+    "amount_cents": 1000,
+    "injection": "mock-bacen reject-keys=[carol@otherbank.com], failure-rate=0.2, timeout-rate=0 (timeout resolves to SETTLED not REVERSED, and at a 15s hang on the single-threaded consumer would swamp the run), BACEN latency 100ms, outbox batch 800 — all restored after",
+    "accepted_202": 541,
+    "end_states": {"settled": 271, "reversed": 270, "debited": 0, "sent_to_spi": 0, "missing": 0, "other": 0},
+    "settled_plus_reversed_equals_accepted": true,
+    "still_in_flight_final": 0,
+    "sum_balances_before": 0,
+    "sum_balances_after": 0,
+    "sum_balances_delta": 0,
+    "spi_clearing_before": 0,
+    "spi_clearing_after": 0,
+    "spi_settled_before": 552000,
+    "spi_settled_after": 823000,
+    "spi_settled_delta": 271000,
+    "spi_settled_delta_equals_settled_x_amount": true,
+    "negative_accounts_after": 0,
+    "orphaned_clearing_money": "none",
+    "per_transaction_reversal_check": {
+      "method": "for every REVERSED txId, join its tx META (debtorAccountId, amountCents) against its <txId>-rev ledger posting; assert the CREDIT leg goes to the ORIGINAL payer for the EXACT original amount and the DEBIT leg is SPI_CLEARING for -amount. Asserted per transaction, not on an aggregate (equal-and-opposite errors across two accounts would cancel in a total).",
+      "reversed_total": 270,
+      "rev_posting_found": 270,
+      "verified_credit_to_own_payer_exact_amount": 270,
+      "complete_debit_credit_pair": 270,
+      "mismatches": 0,
+      "artifact": "docs/load/raw/s5b-reversal-pertx.json"
+    }
   },
   "s4_fraud": {
     "ran": false,
-    "reason": "fraud-service has no runtime latency/failure-injection knob (unlike mock-bacen-spi's AdminConfigController) -- confirmed absent in Phase 1 inventory. Proposed as docs/steps/step-64.md (PLAN.md Sprint 12), not implemented."
+    "reason": "fraud-service has no runtime latency/failure-injection knob (unlike mock-bacen-spi's AdminConfigController). Proposed as docs/steps/step-64.md (PLAN.md Sprint 12), not implemented."
   }
 }

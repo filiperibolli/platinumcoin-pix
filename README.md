@@ -190,23 +190,36 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 - **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 53).
 - **Messaging portability**: an explicit [SNS/SQS ↔ Kafka appendix](docs/messaging-kafka-appendix.md) mapping every concept used here to its Kafka equivalent.
 
-## Load measurement (ad hoc, ahead of the sprint plan)
+## Load measurement — the platform validated under concurrent load (through this sprint)
 
-Before Sprint 12's full k6 SLO suite ([Step 47](docs/steps/step-47.md)), I ran a smaller,
-self-contained load-measurement pass against the real docker-compose stack — outside `PLAN.md`,
-done for its own sake — covering conservation under 50-way contention on a single account, a
-30-VU idempotency retry storm, and a capacity curve.
+Before Sprint 12's full k6 SLO suite ([Step 47](docs/steps/step-47.md)), I ran a self-contained
+load-measurement pass against the real docker-compose stack — outside `PLAN.md`, done for its own
+sake — to prove that **every core correctness concept built so far survives real concurrent
+traffic**, not just unit tests. Expected values were derived from the code and
+[committed *before* the run](docs/load/EXPECTATIONS.md), then compared against what was observed.
 
-Money invariants held exactly under all of it: zero double postings, Σ balances conserved,
-exactly one real ledger posting per idempotency round. The first capacity pass found a flat
-~8.5 req/s ceiling and fitted Little's Law almost exactly to it; a follow-up diagnostic
-([`docs/load/BOTTLENECK.md`](docs/load/BOTTLENECK.md)) traced that ceiling to LocalStack's own
-DynamoDB support (an internal proxy with a fixed, non-configurable connection-pool cap) and fixed
-it by running DynamoDB in its own standalone container instead — **throughput went from ~8.5 req/s
-to ~158-201 req/s**, re-verified with the same methodology, money invariants still holding exactly.
+**The verdict — every concept exercised under load held (all numbers observed, not asserted):**
 
-Full write-up (including the corrected root cause of the environment's ~30s tail stalls, and what
-is/isn't portable off this dev machine): [`docs/load/RESULTS.md`](docs/load/RESULTS.md).
+| Concept | Validated | Evidence |
+|---|---|---|
+| Atomic double-entry (never a debit without its credit) | ✅ | 82,663 postings, **0** orphaned legs / duplicates / malformed pairs |
+| Conservation of money — internal, synchronous | ✅ | Σ balances delta **0**, **0** negative accounts |
+| Conservation of money — external async, **settlement** | ✅ | 515 sends → 515 SETTLED, clearing 0→0, Σ delta **0** |
+| Conservation of money — external async, **reversal** | ✅ | 541 → 271 SETTLED + 270 REVERSED; **270/270** reversals returned the exact amount to their own payer; clearing 0→0, Σ delta **0** |
+| Non-negative balance under contention | ✅ | funded-for-10 account settled **exactly 10** under 50 VUs |
+| Exact, leak-free daily-limit reservation | ✅ | settled **exactly 50** = 500,000¢/10,000¢, no leak |
+| Idempotency under a retry storm | ✅ | 20 rounds × 30 racing clients → **exactly 20** postings, **0** duplicates |
+
+Throughput is context, not the headline: a flat **~150–200 req/s** ceiling with **0** real
+5xx/network errors through 150 VUs. The first pass found a ~8.5 req/s ceiling; a diagnostic
+([`docs/load/BOTTLENECK.md`](docs/load/BOTTLENECK.md)) traced it to LocalStack's own DynamoDB proxy
+(a fixed connection-pool cap) and fixed it by running DynamoDB in its own container — **~8.5 → ~150–200
+req/s** — with every money invariant still holding exactly.
+
+Full write-up (methodology, per-invariant expected-vs-observed verdict, the honest ~31s
+environment-stall caveat, and what is/isn't portable off this dev machine):
+[`docs/load/RESULTS.md`](docs/load/RESULTS.md) · pre-registered expectations:
+[`docs/load/EXPECTATIONS.md`](docs/load/EXPECTATIONS.md).
 
 ## OKRs & KPIs
 

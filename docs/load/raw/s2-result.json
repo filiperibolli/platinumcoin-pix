@@ -1,170 +1,170 @@
 [
   {
     "vus": 5,
-    "tps": 201.13,
+    "tps": 149.58,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 12068,
-      "removed_count": 69,
-      "removed_rate": 0.0057,
+      "sample_count": 8975,
+      "removed_count": 65,
+      "removed_rate": 0.0072,
       "raw": {
-        "p50_ms": 27.67,
-        "p95_ms": 37.66,
-        "p99_ms": 49.27,
-        "max_ms": 31058.08
+        "p50_ms": 32.57,
+        "p95_ms": 38.23,
+        "p99_ms": 89.96,
+        "max_ms": 31417.53
       },
       "trimmed": {
-        "p50_ms": 27.29,
-        "p95_ms": 37.42,
-        "p99_ms": 43.55,
-        "max_ms": 70.91
+        "p50_ms": 32.55,
+        "p95_ms": 37.8,
+        "p99_ms": 45.79,
+        "max_ms": 119.91
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
-    "fraud_denied_count": 5400,
-    "fraud_denied_rate": 0.4475,
-    "sample_count": 12068,
+    "fraud_denied_count": 0,
+    "fraud_denied_rate": 0,
+    "sample_count": 8975,
     "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
   },
   {
     "vus": 10,
-    "tps": 164.13,
+    "tps": 170.35,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 9848,
-      "removed_count": 69,
-      "removed_rate": 0.007,
+      "sample_count": 10221,
+      "removed_count": 138,
+      "removed_rate": 0.0135,
       "raw": {
-        "p50_ms": 59.84,
-        "p95_ms": 76.64,
-        "p99_ms": 99.18,
-        "max_ms": 31097.93
+        "p50_ms": 57.32,
+        "p95_ms": 74.85,
+        "p99_ms": 31381.78,
+        "max_ms": 31485.23
       },
       "trimmed": {
-        "p50_ms": 59.78,
-        "p95_ms": 75.74,
-        "p99_ms": 86.89,
-        "max_ms": 122.77
+        "p50_ms": 57.23,
+        "p95_ms": 72.79,
+        "p99_ms": 86.24,
+        "max_ms": 163.58
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
     "fraud_denied_count": 0,
     "fraud_denied_rate": 0,
-    "sample_count": 9848,
+    "sample_count": 10221,
     "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
   },
   {
     "vus": 25,
-    "tps": 163.35,
+    "tps": 168.85,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 9801,
-      "removed_count": 350,
-      "removed_rate": 0.0357,
+      "sample_count": 10131,
+      "removed_count": 249,
+      "removed_rate": 0.0246,
       "raw": {
-        "p50_ms": 151.6,
-        "p95_ms": 196.11,
-        "p99_ms": 31173.07,
-        "max_ms": 31205.92
+        "p50_ms": 145.72,
+        "p95_ms": 185.91,
+        "p99_ms": 31511.7,
+        "max_ms": 31625.94
       },
       "trimmed": {
-        "p50_ms": 151.03,
-        "p95_ms": 179.65,
-        "p99_ms": 200.17,
-        "max_ms": 275.48
+        "p50_ms": 145.34,
+        "p95_ms": 174.25,
+        "p99_ms": 228.48,
+        "max_ms": 260.36
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
     "fraud_denied_count": 0,
     "fraud_denied_rate": 0,
-    "sample_count": 9801,
+    "sample_count": 10131,
     "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
   },
   {
     "vus": 50,
-    "tps": 184,
+    "tps": 170.55,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 11040,
-      "removed_count": 409,
-      "removed_rate": 0.037,
+      "sample_count": 10233,
+      "removed_count": 340,
+      "removed_rate": 0.0332,
       "raw": {
-        "p50_ms": 285.42,
-        "p95_ms": 342.25,
-        "p99_ms": 31326.06,
-        "max_ms": 31373.28
+        "p50_ms": 293.33,
+        "p95_ms": 393.07,
+        "p99_ms": 31654.47,
+        "max_ms": 31755.12
       },
       "trimmed": {
-        "p50_ms": 284.44,
-        "p95_ms": 324.51,
-        "p99_ms": 345.71,
-        "max_ms": 448.44
+        "p50_ms": 292.67,
+        "p95_ms": 337.74,
+        "p99_ms": 399.59,
+        "max_ms": 431.47
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
-    "fraud_denied_count": 1657,
-    "fraud_denied_rate": 0.1501,
-    "sample_count": 11040,
+    "fraud_denied_count": 201,
+    "fraud_denied_rate": 0.0196,
+    "sample_count": 10233,
     "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
   },
   {
     "vus": 100,
-    "tps": 160.75,
+    "tps": 172.27,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 9645,
-      "removed_count": 334,
-      "removed_rate": 0.0346,
+      "sample_count": 10336,
+      "removed_count": 289,
+      "removed_rate": 0.028,
       "raw": {
-        "p50_ms": 601.13,
-        "p95_ms": 1065.1,
-        "p99_ms": 31712.42,
-        "max_ms": 32208.03
+        "p50_ms": 561.68,
+        "p95_ms": 950.71,
+        "p99_ms": 31996.85,
+        "max_ms": 32439.81
       },
       "trimmed": {
-        "p50_ms": 594.36,
-        "p95_ms": 932.02,
-        "p99_ms": 1118.94,
-        "max_ms": 1546.62
+        "p50_ms": 555.36,
+        "p95_ms": 864.23,
+        "p99_ms": 1034.93,
+        "max_ms": 1449.71
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
-    "fraud_denied_count": 660,
-    "fraud_denied_rate": 0.0684,
-    "sample_count": 9645,
+    "fraud_denied_count": 738,
+    "fraud_denied_rate": 0.0714,
+    "sample_count": 10336,
     "saturation_signal": "latency-driven (queueing, no errors yet): trimmed p99 more than doubled vs the previous stage; cause unclear from HTTP-level data alone (candidates: JVM GC, CPU contention across the 8 co-located services, dynamodb-local single-process throughput)"
   },
   {
     "vus": 150,
-    "tps": 158.25,
+    "tps": 163.15,
     "latency": {
       "threshold_ms": 10000,
-      "sample_count": 9495,
-      "removed_count": 320,
-      "removed_rate": 0.0337,
+      "sample_count": 9789,
+      "removed_count": 375,
+      "removed_rate": 0.0383,
       "raw": {
-        "p50_ms": 892.68,
-        "p95_ms": 1816.64,
-        "p99_ms": 32038.32,
-        "max_ms": 33478.7
+        "p50_ms": 868.57,
+        "p95_ms": 1821.14,
+        "p99_ms": 32465.21,
+        "max_ms": 33468.64
       },
       "trimmed": {
-        "p50_ms": 876.19,
-        "p95_ms": 1564.69,
-        "p99_ms": 1947.9,
-        "max_ms": 2805.82
+        "p50_ms": 854.19,
+        "p95_ms": 1532.3,
+        "p99_ms": 1860.87,
+        "max_ms": 2680.53
       }
     },
     "error_rate": 0,
     "errors_by_type": {},
-    "fraud_denied_count": 408,
-    "fraud_denied_rate": 0.043,
-    "sample_count": 9495,
+    "fraud_denied_count": 426,
+    "fraud_denied_rate": 0.0435,
+    "sample_count": 9789,
     "saturation_signal": "no saturation signal: trimmed latency and error rate stayed flat vs the previous stage"
   }
 ]

@@ -1,18 +1,18 @@
 {
   "threshold_ms": 10000,
-  "sample_count": 33659,
-  "removed_count": 550,
-  "removed_rate": 0.0163,
+  "sample_count": 11596,
+  "removed_count": 411,
+  "removed_rate": 0.0354,
   "raw": {
-    "p50_ms": 86.33,
-    "p95_ms": 109.6,
-    "p99_ms": 31068.09,
-    "max_ms": 31148.67
+    "p50_ms": 255.04,
+    "p95_ms": 329.51,
+    "p99_ms": 31589.08,
+    "max_ms": 31734.73
   },
   "trimmed": {
-    "p50_ms": 86.23,
-    "p95_ms": 105.08,
-    "p99_ms": 135.27,
-    "max_ms": 896.67
+    "p50_ms": 254.19,
+    "p95_ms": 301.11,
+    "p99_ms": 348.59,
+    "max_ms": 498.26
   }
 }
