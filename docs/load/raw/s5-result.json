@@ -1,0 +1,25 @@
+{
+  "rate_per_sec": 3,
+  "duration": "3m",
+  "amount_cents": 1000,
+  "accepted_202": 541,
+  "end_states": {
+    "settled": 271,
+    "reversed": 270,
+    "debited": 0,
+    "sent_to_spi": 0,
+    "missing": 0,
+    "other": 0
+  },
+  "still_in_flight_final": 0,
+  "drained_cleanly": true,
+  "sum_balances_before": 0,
+  "sum_balances_after": 0,
+  "sum_balances_delta": 0,
+  "spi_clearing_before": 0,
+  "spi_clearing_after": 0,
+  "spi_settled_before": 552000,
+  "spi_settled_after": 823000,
+  "negative_accounts_after": 0,
+  "orphaned_clearing_money": "none"
+}

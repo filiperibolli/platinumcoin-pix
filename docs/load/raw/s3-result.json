@@ -1,0 +1,45 @@
+{
+  "rounds": 20,
+  "vus_per_round": 30,
+  "real_postings": 20,
+  "replays": 580,
+  "conflicts_409": 29,
+  "other_errors": 0,
+  "rounds_with_no_winner": [],
+  "claim_latency": {
+    "threshold_ms": 10000,
+    "sample_count": 20,
+    "removed_count": 0,
+    "removed_rate": 0,
+    "raw": {
+      "p50_ms": 19.18,
+      "p95_ms": 25.02,
+      "p99_ms": 27.6,
+      "max_ms": 27.6
+    },
+    "trimmed": {
+      "p50_ms": 19.18,
+      "p95_ms": 25.02,
+      "p99_ms": 27.6,
+      "max_ms": 27.6
+    }
+  },
+  "replay_latency": {
+    "threshold_ms": 10000,
+    "sample_count": 580,
+    "removed_count": 0,
+    "removed_rate": 0,
+    "raw": {
+      "p50_ms": 10.16,
+      "p95_ms": 17.05,
+      "p99_ms": 21.82,
+      "max_ms": 24.01
+    },
+    "trimmed": {
+      "p50_ms": 10.16,
+      "p95_ms": 17.05,
+      "p99_ms": 21.82,
+      "max_ms": 24.01
+    }
+  }
+}

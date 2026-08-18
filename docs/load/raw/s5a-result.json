@@ -1,0 +1,32 @@
+{
+  "account_note": "senders: 200-account ring (acc-lt-001..200); destinations: bob@otherbank.com / carol@otherbank.com (external DICT keys, ISPB 99999999)",
+  "calendar_day_sao_paulo": "2026-08-17",
+  "rate_per_sec": 3,
+  "duration": "3m",
+  "amount_cents": 1000,
+  "settlement_conditions": "BACEN_LATENCY_MS lowered to 100 via /admin/config; OUTBOX_PUBLISHER_BATCH_SIZE bumped to 800 (infra/docker-compose.s5.yml) so the async pipeline keeps pace and nothing crosses the 120s stuck threshold; BACEN failure-rate and timeout-rate at their 0.0 defaults (no reversal injection this run)",
+  "accepted_202": 515,
+  "fraud_denied": 26,
+  "other_errors": 0,
+  "end_states": {
+    "settled": 515,
+    "reversed": 0,
+    "debited": 0,
+    "sent_to_spi": 0,
+    "missing": 0
+  },
+  "still_in_flight_final": 0,
+  "drained_cleanly": true,
+  "sum_balances_before": 0,
+  "sum_balances_after": 0,
+  "sum_balances_delta": 0,
+  "spi_clearing_before": 0,
+  "spi_clearing_after": 0,
+  "spi_settled_before": 36000,
+  "spi_settled_after": 551000,
+  "spi_settled_delta": 515000,
+  "spi_settled_delta_matches_settled_x_amount": true,
+  "negative_accounts_after": 0,
+  "orphaned_clearing_money": "none (spi_clearing returned to its before value 0 with 0 transactions in flight)",
+  "bucketing_method": "every accepted transactionId (logged as TXID by the k6 script) joined against a full scan of pix_transactions META items; asserted from data, not inferred from a counter"
+}

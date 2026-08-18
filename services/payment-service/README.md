@@ -331,13 +331,14 @@ curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
 # outbox (step 28): every send leaves an UNPUBLISHED event on the sparse index, written in the same
 # transaction as the payment. Since step 29 the 1s publisher drains it, so this count is briefly 1
 # and then back to 0 — run it immediately after a send to catch the event in flight.
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+# DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) — port 8000.
+aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_transactions \
   --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
   --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' \
   | jq '.Items[] | {eventType: .eventType.S, sk: .sk.S, occurredAt: .gsi3sk.S}'
 
 # ...and the event sits in its transaction's own partition — which is what let both commit at once
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_transactions \
   --key-condition-expression 'pk = :p' \
   --expression-attribute-values '{":p":{"S":"TX#<txId>"}}' | jq '.Items[].sk.S'
 

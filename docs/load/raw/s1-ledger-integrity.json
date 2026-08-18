@@ -1,0 +1,11 @@
+{
+  "total_txids": 9737,
+  "total_entries": 19474,
+  "healthy_pairs": 9737,
+  "duplicate_postings": 0,
+  "orphaned_legs": 0,
+  "malformed_pairs": 0,
+  "offenders_duplicates": [],
+  "offenders_orphans": [],
+  "offenders_malformed": []
+}

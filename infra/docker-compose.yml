@@ -51,8 +51,12 @@ services:
     environment:
       # Must match auth-service's JWT_SECRET — account-service only validates tokens.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
-      # Reach LocalStack by service name on the shared network.
+      # Reach LocalStack (SNS/SQS — account-service uses neither today, kept for parity with the other
+      # services' AwsProperties shape) by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
+      # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
+      # see AwsProperties#dynamoDbEndpointUrl.
+      DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -63,6 +67,8 @@ services:
       BACEN_BASE_URL: http://mock-bacen-spi:9090
     depends_on:
       localstack:
+        condition: service_healthy
+      dynamodb-local:
         condition: service_healthy
       # Local-dev convenience only, NOT a correctness requirement: internal keys resolve with the SPI
       # down, and an external lookup fails closed per request (503 + Retry-After) rather than poisoning
@@ -95,13 +101,19 @@ services:
       # Must match auth-service's JWT_SECRET — ledger-service only validates tokens. Every one of
       # its endpoints is authenticated (/internal/** is not on jwt.public-paths).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
-      # Reach LocalStack by service name on the shared network.
+      # Reach LocalStack (SNS/SQS — ledger-service uses neither today, kept for parity with the other
+      # services' AwsProperties shape) by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
+      # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
+      # see AwsProperties#dynamoDbEndpointUrl.
+      DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
     depends_on:
       localstack:
+        condition: service_healthy
+      dynamodb-local:
         condition: service_healthy
     networks:
       - pix-net
@@ -142,8 +154,11 @@ services:
       # limit check and the debit (step 25). A slow/down fraud-service fails open (SKIPPED), so this is
       # a soft dependency at runtime; the URL is here so the happy path scores. Bearer token forwarded.
       FRAUD_SERVICE_BASE_URL: http://fraud-service:8083
-      # Reach LocalStack by service name on the shared network.
+      # Reach LocalStack (SNS — the outbox publisher) by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
+      # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
+      # see AwsProperties#dynamoDbEndpointUrl.
+      DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -153,6 +168,8 @@ services:
       SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:pix-events
     depends_on:
       localstack:
+        condition: service_healthy
+      dynamodb-local:
         condition: service_healthy
       # The daily-limit check + key resolution call account-service; gate startup on it being
       # healthy so the first send doesn't race a not-yet-ready dependency.
@@ -195,6 +212,14 @@ services:
       # Reach Redis by service name on the shared network (velocity counters; ADR-0008 ElastiCache stand-in).
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # Empty (default profile) unless the HOST shell exports it — never baked in here as a fixed value.
+      # docs/load/RESULTS.md's `loadtest` profile (application.yml) raises ONLY the two velocity
+      # thresholds so a k6 storm concentrated on one account measures the ledger, not fraud-service's
+      # (correct) velocity rule. To arm it for a load-test run:
+      #   SPRING_PROFILES_ACTIVE=loadtest docker compose -f infra/docker-compose.yml up -d --no-deps fraud-service
+      # and to put it back before anything else touches the stack:
+      #   docker compose -f infra/docker-compose.yml up -d --no-deps fraud-service
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
     depends_on:
       # The scoring flow (step 24) reads/writes Redis; gate startup on it being healthy.
       redis:
@@ -267,8 +292,11 @@ services:
       # ledger-service, called on a definitive outcome (step 33): CLEARING_RELEASE on settlement, the
       # compensating reversal on a permanent refusal. Reached by service name on the shared network.
       LEDGER_BASE_URL: http://ledger-service:8085
-      # Reach LocalStack by service name on the shared network (DynamoDB + SQS).
+      # Reach LocalStack (SQS) by service name on the shared network.
       AWS_ENDPOINT_URL: http://localstack:4566
+      # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
+      # see AwsProperties#dynamoDbEndpointUrl.
+      DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
@@ -276,6 +304,8 @@ services:
       # Hard dependency, unlike most: this service resolves its queue URL at startup and consumes from it,
       # so a not-yet-ready emulator means a service that boots healthy while consuming nothing.
       localstack:
+        condition: service_healthy
+      dynamodb-local:
         condition: service_healthy
       # The rail itself. Not a correctness requirement (an unreachable SPI leaves the message on the queue
       # for redelivery, which is exactly the designed behaviour) — gating here just means the first
@@ -317,9 +347,43 @@ services:
       retries: 5
       start_period: 10s
 
+  # dynamodb-local — standalone official DynamoDB Local, split out of LocalStack (docs/load/BOTTLENECK.md).
+  # LocalStack's own DynamoDB support proxies every call through an internal Python HTTP client
+  # (`SimpleRequestsClient`, a plain `requests.Session`) to the same `DynamoDBLocal.jar` this image runs —
+  # but that internal proxy has a fixed connection-pool cap (`requests`' library default, `pool_maxsize=10`)
+  # that is NOT exposed via any LocalStack env var, and it was the confirmed throughput ceiling under load
+  # (~400 raw ops/s regardless of client concurrency, empirically flat from concurrency 1 through 128 —
+  # BOTTLENECK.md RUNG 2's follow-up). Talking to the same jar directly, with no proxy in front of it,
+  # removes that ceiling. SNS/SQS stay on LocalStack below — DynamoDB is the only AWS service split out.
+  # In-memory mode: this is a dev/load-test stack: nothing here persisted DynamoDB data across a restart
+  # even before this split (no volume/PERSISTENCE var was ever set on the old LocalStack-hosted table).
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory"]
+    networks:
+      - pix-net
+    healthcheck:
+      # This minimal AWS-provided image has no AWS CLI (unlike LocalStack's), only curl. DynamoDB Local
+      # answers ANY HTTP request once its listener is up — even an unsigned one, with a 400 — and curl
+      # without `-f` exits 0 on any HTTP response, so this just confirms the port is accepting connections.
+      # The stronger "are the tables actually created" signal lives on the `localstack` healthcheck below,
+      # which (from inside that container, over the shared network) can run real `aws dynamodb` commands
+      # against this container once it's up.
+      test: ["CMD-SHELL", "curl -s http://localhost:8000/ >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
   # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: each sprint flips on ONLY the
   # services its flow needs. Sprint 2 (Pix keys) pinned `dynamodb`; Sprint 6 adds `sns,sqs` — the
-  # first asynchronous flow, external Pix settlement (step 26). `s3` follows in Sprint 10.
+  # first asynchronous flow, external Pix settlement (step 26). `s3` follows in Sprint 10. DynamoDB
+  # itself moved to the standalone `dynamodb-local` container above (docs/load/BOTTLENECK.md) — this
+  # container now serves only SNS/SQS, though the DynamoDB-creating ready.d scripts (01-05, 07) still
+  # run from here (LocalStack's own init runner), just pointed at the new container's endpoint.
   # SERVICES is enforced, not a hint: calling a service that is not listed answers
   # `501 Service 'sqs' is not enabled`, which is exactly what keeps the discipline honest.
   # The version is pinned (not `latest`) for reproducible local runs.
@@ -329,12 +393,25 @@ services:
     ports:
       - "4566:4566"          # single edge port for every emulated AWS service
     environment:
-      SERVICES: dynamodb,sns,sqs   # DynamoDB (Sprint 2) + the messaging backbone (Sprint 6)
+      SERVICES: sns,sqs      # the messaging backbone (Sprint 6) — DynamoDB now lives in dynamodb-local
       DEBUG: "1"             # verbose logs — this is a dev-only emulator
+      # Read by infra/localstack/init/{01,02,03,04,05,07}-*.sh (ready.d scripts run INSIDE this
+      # container): points their `aws dynamodb` calls at the standalone dynamodb-local container
+      # instead of LocalStack itself. Deliberately NOT baked into the scripts' own default — the
+      # same scripts are also mounted, unmodified, into LocalStackTestBase's Testcontainers
+      # LocalStack container (no dynamodb-local sibling there), where they must fall back to
+      # LocalStack's own DynamoDB at 4566 instead (docs/load/BOTTLENECK.md).
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
     volumes:
       # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);
       # step 07 drops the pix_accounts / pix_keys creation scripts here.
       - ./localstack/init:/etc/localstack/init/ready.d
+    depends_on:
+      # ready.d scripts (01-05, 07) create DynamoDB tables against dynamodb-local as soon as THIS
+      # container reports ready — without this, they could race a dynamodb-local that hasn't finished
+      # starting yet, and `set -euo pipefail` would abort the whole ready.d run on the first failure.
+      dynamodb-local:
+        condition: service_healthy
     networks:
       - pix-net
     healthcheck:
@@ -348,12 +425,20 @@ services:
       #
       # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
       # probe asserts a resource created by the LAST init script (07-processed-events.sh) exists —
-      # scripts run in lexical order, so that one existing means all of them ran. This mirrors exactly
-      # what the Testcontainers harness already does (LocalStackTestBase waits on that script's final log
-      # line); compose and the tests now agree on what readiness means.
+      # scripts run in lexical order (inside THIS container's init runner, regardless of which endpoint
+      # each one targets), so that one existing means all of them ran, including 01-05 against
+      # dynamodb-local. The check itself now runs `aws` (not `awslocal`, which is hardcoded to
+      # localhost:4566) against `dynamodb-local:8000` — reachable from inside this container over the
+      # shared network — since that table now lives there, not here. This mirrors exactly what the
+      # Testcontainers harness already does (LocalStackTestBase waits on that script's final log line);
+      # compose and the tests now agree on what readiness means.
       #
       # IF YOU ADD A SCRIPT THAT SORTS AFTER 07, MOVE THIS PROBE (and the harness's marker) TO IT.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && awslocal dynamodb describe-table --table-name pix_processed_events >/dev/null 2>&1"]
+      # (tools/k6/seed/ deliberately does NOT live here, even though it seeds DynamoDB too: this
+      # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
+      # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
+      # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://dynamodb-local:8000 dynamodb describe-table --table-name pix_processed_events >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5

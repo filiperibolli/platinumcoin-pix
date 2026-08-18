@@ -1,0 +1,13 @@
+# Temporary override used ONLY for the S5 async-conservation scenario (docs/load/RESULTS.md).
+# NOT part of the normal stack — applied with a second `-f` for the S5 window, then removed.
+#
+# Why: S0-S3 leave a large backlog of internal PixSettled outbox events (each internal send emits
+# one), and the default publisher batch of 25/tick drains it at ~25/s — so S5's external
+# PixDebited events would queue behind ~tens of thousands of them before ever reaching the
+# settlement queue. Bumping the batch lets the backlog drain in ~2 min so S5 measures the async
+# settlement path, not the outbox drain time. This changes throughput only; correctness of the
+# outbox (at-least-once, publish-then-mark on the sparse GSI) is unaffected by batch size.
+services:
+  payment-service:
+    environment:
+      OUTBOX_PUBLISHER_BATCH_SIZE: "800"

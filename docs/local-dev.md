@@ -21,13 +21,17 @@ aws configure set aws_access_key_id test
 aws configure set aws_secret_access_key test
 aws configure set region us-east-1
 alias awsl='aws --endpoint-url=http://localhost:4566'
+# DynamoDB itself lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
+# `awsl` above (4566) now answers `dynamodb` calls with `501 Service 'dynamodb' is not enabled`.
+alias awsd='aws --endpoint-url=http://localhost:8000'
 ```
 
 ## 2. Ports
 
 | Component | Port |
 |---|---|
-| LocalStack (all AWS APIs) | 4566 |
+| LocalStack (SNS/SQS — DynamoDB moved out, see below) | 4566 |
+| dynamodb-local (standalone, `docs/load/BOTTLENECK.md`) | 8000 |
 | Redis | 6379 |
 | auth-service | 8081 |
 | account-service | 8082 |
@@ -46,7 +50,8 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AWS_ENDPOINT_URL` | `http://localstack:4566` | Point SDK at LocalStack |
+| `AWS_ENDPOINT_URL` | `http://localstack:4566` | Point the SDK at LocalStack (SNS/SQS only — see below) |
+| `DYNAMODB_ENDPOINT_URL` | `http://dynamodb-local:8000` | Point the DynamoDB client at the standalone `dynamodb-local` container, not LocalStack (`docs/load/BOTTLENECK.md`). Falls back to `AWS_ENDPOINT_URL` if unset (`aws.dynamodb-endpoint-url: ${DYNAMODB_ENDPOINT_URL:${aws.endpoint-url}}`) — so `LocalStackTestBase` ITs, which only override `aws.endpoint-url`, are unaffected, but a service run **outside compose** (e.g. `spring-boot:run`, §5.x below) must set this explicitly or its DynamoDB calls will hit LocalStack, which no longer serves it (`501 Service 'dynamodb' is not enabled`) |
 | `AWS_REGION` | `us-east-1` | — |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds |
 | `JWT_SECRET` | dev-only value in compose | HS256 signing/validation |
@@ -193,6 +198,13 @@ hacking on **one** service, running it straight from Maven is a much faster inne
 JWT_SECRET=dev-only-hs256-secret-change-me-please-32b \
   mvn -pl services/auth-service spring-boot:run
 # or, after `mvn package`:  java -jar services/auth-service/target/*.jar
+
+# a DynamoDB-touching service (account/ledger/payment/settlement) run this way still needs the
+# rest of the compose stack up (`docker compose up -d`) AND both AWS endpoints pointed at its
+# host-published ports — DYNAMODB_ENDPOINT_URL does NOT default to the right thing outside compose:
+JWT_SECRET=dev-only-hs256-secret-change-me-please-32b \
+  AWS_ENDPOINT_URL=http://localhost:4566 DYNAMODB_ENDPOINT_URL=http://localhost:8000 \
+  mvn -pl services/ledger-service spring-boot:run
 ```
 
 Pick the loop by what you're doing: **`spring-boot:run` / `java -jar`** for one service, **`mvn verify`** for tests
@@ -213,6 +225,8 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6, **already flipped** — step 26) → `+s3` (Sprint 10). The list is **enforced**: calling a service that is not on it answers `501 Service 'sqs' is not enabled`, so enabling the service and creating its resources always land in the same change (and so does the matching `withServices(...)` in `LocalStackTestBase`).
 
+**Docker-compose only, as of `docs/load/BOTTLENECK.md`:** `dynamodb` has been pulled back out of the compose stack's `SERVICES` list into the standalone `dynamodb-local` container above — a load-test-driven fix for LocalStack's own DynamoDB-proxy throughput ceiling, not an architecture change. `LocalStackTestBase` (Testcontainers, `mvn verify`) is **unaffected**: its LocalStack container still serves `dynamodb` exactly as before, so the sprint-by-sprint `SERVICES` growth described above remains accurate for the IT harness — only the docker-compose stack's DynamoDB moved.
+
 #### Table DDL (mirror of `infra/localstack/init/*.sh`)
 
 The exact `create-table` commands the init scripts run — kept here verbatim so the schema is reviewable without reading the scripts, and runnable by hand against a running LocalStack (`aws --endpoint-url=http://localhost:4566 ...`). Added incrementally, one sprint at a time.
@@ -220,7 +234,7 @@ The exact `create-table` commands the init scripts run — kept here verbatim so
 **Step 07 — `pix_accounts` + `pix_keys`** (both PAY_PER_REQUEST, one `gsi1` on `gsi1pk`, no TTL):
 
 ```bash
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_accounts \
   --attribute-definitions \
       AttributeName=pk,AttributeType=S \
@@ -233,7 +247,7 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
       '[{"IndexName":"gsi1","KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}]' \
   --billing-mode PAY_PER_REQUEST
 
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_keys \
   --attribute-definitions \
       AttributeName=pk,AttributeType=S \
@@ -252,7 +266,7 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
 the legs sit in two different account partitions):
 
 ```bash
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_ledger \
   --attribute-definitions \
       AttributeName=pk,AttributeType=S \
@@ -270,17 +284,17 @@ Reading the seeded money supply (`05-seed-ledger.sh`) — alice at R$ 10,000.00,
 that must sum to **zero**:
 
 ```bash
-aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
   --key '{"pk":{"S":"ACCOUNT#acc-001"},"sk":{"S":"BALANCE"}}'   # balanceCents 1000000, version 0
 
 for a in acc-001 acc-002 SPI_CLEARING SEED; do
-  aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+  aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
     --key "{\"pk\":{\"S\":\"ACCOUNT#$a\"},\"sk\":{\"S\":\"BALANCE\"}}" \
     --query 'Item.balanceCents.N' --output text
 done | paste -sd+ | bc                                          # 0 — conservation baseline
 
 # both legs of a seed funding transaction, via GSI1
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger \
+aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_ledger \
   --index-name gsi1 --key-condition-expression 'gsi1pk = :t' \
   --expression-attribute-values '{":t":{"S":"TX#tx-seed-alice"}}'
 ```
@@ -333,10 +347,10 @@ curl -s localhost:8085/internal/ledger/accounts/acc-001/balance \
   -H "Authorization: Bearer $TOKEN" | jq -r .balance          # 9874.50 — once, not twice
 
 # the guard item behind that: keyed by txId alone, so the clock is not part of a posting's identity
-aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_ledger \
+aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
   --key '{"pk":{"S":"TX#tx-manual-1"},"sk":{"S":"POSTING"}}'
 # …and GSI1 still returns exactly the two legs (the guard carries no gsi1pk)
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_ledger \
+aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_ledger \
   --index-name gsi1 --key-condition-expression 'gsi1pk = :t' \
   --expression-attribute-values '{":t":{"S":"TX#tx-manual-1"}}' | jq '.Count'   # 2
 
@@ -367,7 +381,7 @@ is slow): `gsi1` on `E2E#<endToEndId>` (reconciliation / inbound dedup), `gsi2` 
 `gsi3pk`, so the index stays O(in-flight)).
 
 ```bash
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_transactions \
   --attribute-definitions \
       AttributeName=pk,AttributeType=S \
@@ -385,14 +399,14 @@ aws --endpoint-url=http://localhost:4566 dynamodb create-table \
   ]' \
   --billing-mode PAY_PER_REQUEST
 
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_idempotency \
   --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
   --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST
 
 # TTL is a separate call (not part of create-table); DynamoDB deletes expired items lazily
-aws --endpoint-url=http://localhost:4566 dynamodb update-time-to-live \
+aws --endpoint-url=http://localhost:8000 dynamodb update-time-to-live \
   --table-name pix_idempotency \
   --time-to-live-specification 'Enabled=true,AttributeName=expiresAt'
 ```
@@ -401,10 +415,10 @@ Verify the tables and their indexes (the init script `03-dynamodb-payment.sh` ru
 
 ```bash
 # gsi1, gsi2, gsi3 — all three present
-aws --endpoint-url=http://localhost:4566 dynamodb describe-table --table-name pix_transactions \
+aws --endpoint-url=http://localhost:8000 dynamodb describe-table --table-name pix_transactions \
   | jq '.Table.GlobalSecondaryIndexes[].IndexName'
 # {"AttributeName":"expiresAt","TimeToLiveStatus":"ENABLED"}
-aws --endpoint-url=http://localhost:4566 dynamodb describe-time-to-live --table-name pix_idempotency \
+aws --endpoint-url=http://localhost:8000 dynamodb describe-time-to-live --table-name pix_idempotency \
   | jq '.TimeToLiveDescription'
 ```
 
@@ -479,13 +493,13 @@ safe direction here (an expired-but-present record still reads as "duplicate", i
 repeat — the opposite of `pix_idempotency`, where an expired record must read as absent).
 
 ```bash
-aws --endpoint-url=http://localhost:4566 dynamodb create-table \
+aws --endpoint-url=http://localhost:8000 dynamodb create-table \
   --table-name pix_processed_events \
   --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S \
   --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST
 
-aws --endpoint-url=http://localhost:4566 dynamodb update-time-to-live \
+aws --endpoint-url=http://localhost:8000 dynamodb update-time-to-live \
   --table-name pix_processed_events \
   --time-to-live-specification 'Enabled=true,AttributeName=expiresAt'
 ```
@@ -501,7 +515,7 @@ leaves the index. Watch one payment's event make the whole trip:
 docker compose -f infra/docker-compose.yml logs -f payment-service | grep 'Outbox item published'
 
 # 2. the sparse index drains: briefly 1 after a send, then 0 — "published" IS "no longer indexed"
-aws --endpoint-url=http://localhost:4566 dynamodb query --table-name pix_transactions \
+aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_transactions \
   --index-name gsi3 --key-condition-expression 'gsi3pk = :p' \
   --expression-attribute-values '{":p":{"S":"OUTBOX#UNPUBLISHED"}}' | jq '.Count'
 
@@ -535,7 +549,7 @@ curl -si -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN
 TXID=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"125.50"}' | jq -r .transactionId)
-aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_transactions \
+aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_transactions \
   --key "{\"pk\":{\"S\":\"TX#$TXID\"},\"sk\":{\"S\":\"META\"}}" \
   | jq '.Item | {status:.status.S, debtorAccountId:.debtorAccountId.S, amountCents:.amountCents.N}'
 
@@ -576,7 +590,7 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
   -H 'Content-Type: application/json' -d "$BODY" | jq -r .code
 
 # the stored record (IN_PROGRESS→COMPLETED, 24h TTL on expiresAt)
-aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_idempotency \
+aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_idempotency \
   --key "{\"pk\":{\"S\":\"IDEM#acc-001#$IDEM\"},\"sk\":{\"S\":\"META\"}}" \
   | jq '.Item | {status:.status.S, httpStatus:.httpStatus.N, expiresAt:.expiresAt.N}'
 ```
@@ -592,7 +606,7 @@ no SPI leg — it *is* settled the moment the posting commits). Needs the full s
 TXID=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"125.50","description":"lunch"}' | jq -r .transactionId)
-aws --endpoint-url=http://localhost:4566 dynamodb get-item --table-name pix_transactions \
+aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_transactions \
   --key "{\"pk\":{\"S\":\"TX#$TXID\"},\"sk\":{\"S\":\"META\"}}" \
   | jq '.Item | {status:.status.S, settledAt:.settledAt.S, creditorAccountId:.creditorAccountId.S}'
 

@@ -33,12 +33,13 @@ public class AwsClientsConfig {
 
     @Bean
     DynamoDbClient dynamoDbClient(AwsProperties aws) {
-        // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets.
-        // Credentials are never logged.
+        // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets
+        // (e.g. http://dynamodb-local:8000, standalone from LocalStack's SQS endpoint — see
+        // AwsProperties#dynamoDbEndpointUrl). Credentials are never logged.
         log.info("Built the DynamoDB client, credentials are never logged | endpoint={} region={}",
-                aws.endpointUrl(), aws.region());
+                aws.dynamoDbEndpointUrl(), aws.region());
         return DynamoDbClient.builder()
-                .endpointOverride(URI.create(aws.endpointUrl()))
+                .endpointOverride(URI.create(aws.dynamoDbEndpointUrl()))
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))

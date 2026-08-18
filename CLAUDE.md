@@ -114,7 +114,7 @@ mvn -pl services/ledger-service verify                 # one module
 docker compose -f infra/docker-compose.yml up -d --build
 docker compose -f infra/docker-compose.yml logs -f payment-service
 docker compose -f infra/docker-compose.yml down -v     # full reset (wipes data, reseeds on next up)
-aws --endpoint-url=http://localhost:4566 dynamodb list-tables
+aws --endpoint-url=http://localhost:8000 dynamodb list-tables
 aws --endpoint-url=http://localhost:4566 sqs list-queues
 ```
 

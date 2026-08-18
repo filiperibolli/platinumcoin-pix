@@ -124,6 +124,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 45](docs/steps/step-45.md) — hardening: API versioning review, guarded status transitions, error contract audit, security checklist
 - [ ] [Step 46](docs/steps/step-46.md) — end-to-end test: full journey send→settle→receive→notify→statement, incl. failure drill
 - [ ] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
+- [ ] [Step 64](docs/steps/step-64.md) — **PROPOSED**, not yet prioritized: fraud-service runtime latency/failure injection (`AdminConfigController`, mirrors mock-bacen-spi) — closes a gap `docs/load/RESULTS.md` found (fraud-service has no runtime dial, unlike mock-bacen-spi, so its fail-open path can't be drilled outside a test process). Numbered 64 (next free number) because it was drafted out of band, not in top-to-bottom order — see the step file's own note.
 
 ## Sprint 13 — API tooling & DX
 **Flow delivered:** the two living manual-test harnesses — Postman collection + single-file HTML API explorer — **finalized** (both grown incrementally, one entry per endpoint, since their first endpoint).
