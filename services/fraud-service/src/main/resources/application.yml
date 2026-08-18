@@ -64,3 +64,25 @@ fraud:
     odd-hours-weight: 10
     review-band: 40
     deny-band: 70
+
+---
+# `loadtest` profile (docs/load/RESULTS.md) — NEVER active by default or in any compose/production
+# path; opt-in only via SPRING_PROFILES_ACTIVE=loadtest, and only for k6 runs that deliberately
+# concentrate synthetic traffic onto ONE account (S1's balance-guard/limit-guard storms). A real
+# multi-account workload never approaches these counts on a single account, so this profile has no
+# effect there in practice — it exists purely so a k6 storm measures the LEDGER's invariants instead
+# of re-discovering fraud-service's (correct, working-as-designed) velocity rule.
+#
+# Raises ONLY the two velocity thresholds (VELOCITY_COUNT, VELOCITY_AMOUNT) to values no synthetic
+# storm in this environment can reach — every other rule (HIGH_AMOUNT, NEW_PAYEE, ODD_HOURS) and
+# every weight/band is untouched, so fraud scoring stays active during a load test, just without the
+# one rule whose whole design intent is "many transfers from one account in a short window", which is
+# exactly the shape a single-account concurrency storm produces on purpose.
+spring:
+  config:
+    activate:
+      on-profile: loadtest
+fraud:
+  rules:
+    velocity-count-threshold: 1000000            # was 5 — unreachable by any k6 storm here
+    velocity-amount-threshold-cents: 100000000000 # was 2000000 (R$20,000) — now R$1,000,000,000.00
