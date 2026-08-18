@@ -161,3 +161,81 @@ At the time this document was written (before teardown), `date` in America/Sao_P
 **2026-08-17**. If the actual run crosses midnight São Paulo time, that must be called out
 explicitly in `docs/load/RESULTS.md`, since it would split S1's traffic across two different
 `LIMIT#acc-001/DAY#<date>` counter items and invalidate the limit-guard derivation above.
+
+---
+
+# S5b — external conservation WITH reversals (added 2026-08-18, before the S5b run)
+
+S5 (run 2026-08-17) had mock-bacen's `failure-rate` and `timeout-rate` at 0.0, so all 515 accepted
+sends settled and **0 reversed** — the reversal half of the conservation claim ("money parked in
+clearing always leaves it, to SPI_SETTLED on settlement **or back to the payer on reversal**, never
+stranded") never executed. S5b exercises the reversal branch.
+
+## What actually triggers a REVERSED (established from the code, before running)
+
+Read end to end (`SettlePixUseCase`, `SettlementFinalizer`, `SpiBehavior`, `SpiSettlementController`,
+`HttpSpiSettlementClient`):
+
+- **`reject-keys`** (a creditor key the SPI refuses even though the DICT resolves it) → mock-bacen
+  records the settlement as `FAILED` and answers **HTTP 422** → the client maps 422 to
+  `SpiSettlementRejectedException` → `SettlePixUseCase` calls `finalizer.reverse(...)` →
+  **REVERSED**. This is the *only* code path that produces a compensating posting from a live send
+  (`SpiBehavior` calls reject-keys "the send-reachable reversal trigger of step 35").
+- **`failure-rate`** → HTTP **503** ("record nothing", transient) → `SpiCallFailedException` =
+  **UNKNOWN**, not FAILED → the transaction stays `SENT_TO_SPI`, the SQS message is redelivered, and
+  step 32's query-before-retry re-attempts. It does **not** reverse; it retries and (being
+  transient) eventually settles. Exhausting 5 deliveries sends the message to the DLQ, and the
+  reconciliation loop then resolves the transaction independently.
+- **`timeout-rate`** → the SPI **settles and then hangs** past the client's 12s timeout →
+  `SpiCallFailedException` = UNKNOWN → redelivery → query-before-retry finds it **SETTLED**. A
+  distinct code path from a rejection, but it resolves to **SETTLED, not REVERSED**.
+
+**Consequence for this run, stated honestly:** the literal request was "failure-rate 0.2", but
+failure-rate alone cannot make a reversal happen in this codebase — it drives the retry path, not
+the reversal path. To make reversals *actually happen* (the stated goal), S5b uses **reject-keys**
+as the reversal driver **and** sets **failure-rate 0.2** on top, so both the reversal branch and the
+transient-retry/query-before-retry branch execute. `timeout-rate` is left at **0**: it resolves to
+SETTLED (not a reversal), and at a 15s hang against the single-threaded settlement consumer it would
+dominate the 3-minute run and mass-trip the 120s stuck threshold — out of scope for a
+conservation-focused pass, and called out rather than run.
+
+## S5b configuration (same rate/duration/amount as S5, for comparability)
+
+- Destinations: **`carol@otherbank.com`** added to reject-keys (every send to carol → **REVERSED**);
+  **`bob@otherbank.com`** left alone (every send to bob → **SETTLED**). The k6 script alternates the
+  two, so the run produces a mix of both terminal outcomes.
+- `failure-rate = 0.2`, `timeout-rate = 0`, BACEN latency `100ms`, outbox batch `800` (same
+  load-test knobs as S5, restored afterwards and documented identically).
+- 3 sends/s, 3 minutes, 1,000c per send.
+
+## Expected (per the instruction)
+
+Let `accepted` = 202s, `settled` = bucketed SETTLED, `reversed` = bucketed REVERSED (both from a
+DynamoDB scan, not a counter), `A` = 1,000c.
+
+1. **`settled + reversed = accepted`**, with **0 left in `DEBITED`/`SENT_TO_SPI`** after the
+   reconciliation window closes (0 missing, 0 other).
+2. **`SPI_CLEARING` returns to its before value exactly** (0 → 0). Every reversed send parked `A` in
+   clearing at accept-time and must draw exactly `A` back out; every settled send draws its `A` out
+   to `SPI_SETTLED`. Net clearing change = 0.
+3. **`SPI_SETTLED` delta = `settled × A` exactly** — a reversal does **not** credit `SPI_SETTLED`
+   (it credits the payer), so only settled sends contribute.
+4. **Each reversed transaction returns the exact original amount to its OWN payer** — asserted
+   **per transaction**, not on the aggregate: for every reversed `tx-X`, the ledger holds a
+   `tx-X-rev` posting whose CREDIT leg is `ACCOUNT#<the original debtorAccountId of tx-X>` for
+   exactly `A`, and whose DEBIT leg is the clearing account. (Equal-and-opposite errors across two
+   accounts would cancel in a total but fail this per-tx check.)
+5. **Whole-table `Σ balanceCents` delta = 0.**
+6. **Every reversal produces a compensating posting that is itself a complete DEBIT+CREDIT pair** —
+   the whole-ledger integrity scan (`begins_with(sk,"ENTRY#")` → group by `txId` → assert each group
+   is exactly `{DEBIT,CREDIT}`) is re-run after S5b and must still show 0 duplicates, 0 orphaned
+   legs, 0 malformed pairs, now including every `-rev` and `-rel` posting.
+
+**Stop-and-report condition:** if any reversal leaves money in clearing, or returns an amount that
+does not match the original, or credits an account other than the original payer — that is a real
+money-safety bug, reported before finishing, not explained away.
+
+## S5b account/date
+
+- Senders: 200-account ring; destinations: `bob@otherbank.com` (SETTLED) / `carol@otherbank.com`
+  (REVERSED). Calendar day filled in at run time from America/Sao_Paulo.
