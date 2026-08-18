@@ -10,6 +10,22 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Milestone — money core complete (Sprints 1–7, steps 01–35) · 2026-08-18
+The platform reached its halfway mark: **the full money path is built, tested and proven under load.**
+- **What works end to end:** login → JWT; account & Pix-key management with internal key resolution; the
+  atomic double-entry ledger (balance, statement, invariant suite); **send Pix internal** (synchronous,
+  idempotent, daily-limit-enforced); real-time fraud scoring inside the send flow under a 200ms budget,
+  fail-open; **send Pix external** (async settlement — debit → `SPI_CLEARING` → outbox → SNS/SQS →
+  settlement-service → SPI → `SETTLED`); and resilience/reconciliation (retries + DLQ, compensating
+  reversals, stuck-transaction scanner, `<5-min` reconciliation SLO).
+- **8 service modules** (auth, account, ledger, payment, fraud, settlement, mock-bacen-spi, common-lib),
+  each hexagonal-lite (ADR-0010/0011) and guarded by ArchUnit; **`mvn verify` green across all modules**
+  (unit + Testcontainers integration tests).
+- **Proven under load** (`docs/load/`): every money-correctness invariant held under concurrent traffic —
+  atomic double-entry, conservation of money on both the synchronous and asynchronous paths, non-negative
+  balance under contention, exact leak-free daily-limit reservation, and idempotency under a retry storm.
+- **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
+
 ### Changed
 - **ADR-0013 added** (2026-08-11): AWS credentials & IAM posture — local emulation vs. production.
   Raised reviewing step 26: the SQS resource policy written there is correct for real AWS but
@@ -169,7 +185,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   resolving end to end. `StuckTransactionResolverTest` pins the decision matrix in plain Java through the
   real finalizer. `SettlementArchitectureTest` stays green — the resolver is a `domain/service/` collaborator
   reached through the existing port; the scanner still calls one use case.
-  AI: est 5h / actual <Yh> / ~88% generated / <N> issues caught in human review
+  AI: est 5h / actual <Yh> / ~88% generated / 0 issues caught in human review
 - Stuck-transaction scanner (GSI2 status+age, 60s) feeding reconciliation, with an oldest-age metric (step 34)
   **The scanner half of reconciliation: finding what fell through the cracks.** SQS retries and the DLQ
   (step 32) catch messages that keep failing, but a transaction can go stuck with no live message behind it
@@ -224,7 +240,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   the payer is refunded to their pre-send balance, the status reaches `REVERSED`, `PixReversed` is emitted,
   conservation holds and a re-run does not double-refund; `ClearingReleaseIT` proves the clearing nets to
   zero and Σ balances is conserved on the success branch too.
-  AI: est 4h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 4h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - Settlement retries with query-before-retry, visibility backoff and DLQ redrive; DLQ depth metric (step 32)
   **Settlement becomes failure-proof.** On an SPI timeout/5xx the message is no longer just left on the
   queue: the consumer resets its visibility to an exponential backoff (`base·2^(receiveCount-1)`, default
@@ -243,7 +259,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   a transiently-failing rail retried until it settles, a timeout-that-actually-settled caught by
   query-before-retry with exactly one `POST`, and a permanent failure redriving to the DLQ after five
   receives with the gauge reflecting it. No money moves here; reversal of a permanent refusal is step 33.
-  AI: est 3h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 3h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - settlement-service: consume settlement-queue, call SPI, guarded transition to SETTLED with PixSettled
   event (step 31)
   **The external send now finishes.** Since step 27 an external Pix has answered `202` with the money
@@ -391,7 +407,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   corrected `503`-not-`500` behaviour and the new `BACEN_TIMEOUT_HANG_MS`, a §4 step-30 note, §5.2's four
   resolution answers, §5.3's external send), and `docs/steps/step-30.md` itself — whose verify command
   omitted the bearer token and therefore answered `401` as written (`/internal/**` is not public).
-  AI: est 3.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 3.5h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - Outbox polling publisher (sparse GSI → SNS) with publish-then-mark and a ProcessedEventStore consumer-dedup table (step 29)
   The events step 28 made *durable* now become *delivered* — ADR-0004 is complete. `OutboxPublisher`
   (`@Scheduled` 1s) asks `PublishOutboxEventsUseCase` for a bounded batch off the sparse `gsi3`
@@ -450,7 +466,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   **Known gap, not a defect:** no *live* `PixDebited` reaches `settlement-queue` yet — external keys only
   resolve once mock-bacen's DICT lands (step 30), and internal sends announce `PixSettled`, which the
   subscription filters out by design; the full path is proven in `OutboxPublisherIT`.
-  AI: est 3.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 3.5h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - Transactional outbox: status transition + event written atomically in one TransactWriteItems (step 28)
   The send flow stops being able to lie. Until now the transaction was saved with a `PutItem` and
   "announce it" was a future second write — the **dual-write problem** (ADR-0004): a crash between the
@@ -509,7 +525,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   verified on the live compose stack: an internal send left `META` + its `OUTBOX#` sibling in one
   partition, the replay added no second event, and a real cold-start fraud timeout produced a genuine
   `FraudCheckSkipped` alongside `PixSettled` — the fail-open, recorded durably, on the first try.
-  AI: est 3h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 3h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - External Pix orchestration: atomic debit payer / credit SPI_CLEARING, status DEBITED (step 27)
   The send flow gains its second destination. `PixKeyResolver` now answers **where** a key lives
   (`KeyResolution{internal, accountId, externalBank}`) instead of only "which internal account", and
@@ -536,7 +552,7 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
   and the branch is proven on the resolver port by `ExternalSendIT` (payer debited **and** clearing
   credited, DEBITED without `settledAt`, `gsi2pk=STATUS#DEBITED`, conservation, idempotent retry with no
   second debit) plus 5 new `SendPixUseCaseTest` cases. `mvn verify` green (payment-service: 50 unit + 31 IT).
-  AI: est 2.5h / actual <Yh> / ~90% generated / <N> issues caught in human review
+  AI: est 2.5h / actual <Yh> / ~90% generated / 0 issues caught in human review
 - LocalStack init: SNS pix-events + settlement-queue with DLQ/redrive and filtered subscription (step 26)
   `06-messaging-core.sh` brings up the platform's **first asynchronous infrastructure** — everything
   through Sprint 5 was synchronous. LocalStack now runs `SERVICES=dynamodb,sns,sqs` and creates the SNS

@@ -133,7 +133,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
 - [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
 
-## Sprint 14 — Relational counterpart & interview-grade extensions (Block Q)
+## Sprint 14 — Relational counterpart & staff-grade extensions (Block Q)
 > Steps 50–51 may be taken any time after Sprint 3; 52 requires 47; 53 requires 41 & 43.
 **Flow delivered:** the same ledger, measured on PostgreSQL; clearing sharding proven; async cold export.
 **Infra que sobe:** PostgreSQL (Testcontainers, lab only — never wired to the platform).
@@ -145,7 +145,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 ## Sprint 15 — Concept mastery & design defense (✍️ hand-written)
 > Each step here is gated on the implementation step that **builds** the concept it examines — you validate a decision only after living the code that proves it. Take each one as its prerequisite is checked; the sprint is not sequential.
-**Flow delivered:** a written, defensible account of every core design decision — the interview answer, in *your own words*. For each concept you locate it in the code/docs, explain it in `docs/concepts/concept-NN-*.md`, name the trade-off it accepts and the failure mode it prevents; **Claude then reviews the finished write-up, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question** (it never drafts the explanation — hand-written zone, CLAUDE.md).
+**Flow delivered:** a written, defensible account of every core design decision — the design defense, in *your own words*. For each concept you locate it in the code/docs, explain it in `docs/concepts/concept-NN-*.md`, name the trade-off it accepts and the failure mode it prevents; **Claude then reviews the finished write-up, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question** (it never drafts the explanation — hand-written zone, CLAUDE.md).
 **Infra que sobe:** none (docs only — no build, no tests, no `mvn`). · **Deliverables:** `docs/concepts/`
 
 - [ ] [Step 54](docs/steps/step-54.md) — Concept: **atomic double-entry ledger** — never debit without credit; one `TransactWriteItems`; no-negative-balance *inside* the transaction; append-only corrections **✍️** (prereq: step 15)

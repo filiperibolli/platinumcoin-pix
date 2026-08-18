@@ -8,7 +8,7 @@ zones"): no AI drafting, no autocomplete on the first pass.
 The point is not to re-document the system — `ARCHITECTURE.md` and the ADRs already do that. The point is
 to **prove the design survives being explained from memory**: for each concept you locate it in the
 code/docs, restate the mechanism in your own words, name the **trade-off it accepts** and the **failure
-mode it prevents**. This is the interview answer, rehearsed against the real artifact.
+mode it prevents**. This is the design defense, rehearsed against the real artifact.
 
 **Claude's role here is review-only:** after a concept doc is finished, Claude reviews it, grades it
 against the ADRs / ARCHITECTURE / code, flags misconceptions or drift, and closes with **one Socratic

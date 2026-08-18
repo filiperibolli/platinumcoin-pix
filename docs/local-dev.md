@@ -104,7 +104,8 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > its own startup on `redis` being healthy (`depends_on: service_healthy`), so a `redis` that fails to
 > boot keeps fraud-service out of the healthy set rather than letting it come up half-wired.
 
-> **Step 26 (messaging backbone).** LocalStack now runs `SERVICES=dynamodb,sns,sqs` and `up` creates the
+> **Step 26 (messaging backbone).** LocalStack now runs `SERVICES=sns,sqs` (DynamoDB was later split out
+> into the standalone `dynamodb-local` container — see §2 above) and `up` creates the
 > SNS topic `pix-events`, `settlement-queue` + `settlement-queue-dlq` (redrive after 5 receives) and the
 > filtered subscription. Nothing publishes or consumes yet — the producer is the outbox publisher (step
 > 29) and the consumer is settlement-service (step 31) — so the queues come up **empty on purpose**.
