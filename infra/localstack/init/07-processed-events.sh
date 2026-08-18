@@ -19,15 +19,18 @@
 # safe to re-run on container restart. `down -v` wipes the volume and recreates a clean world.
 set -euo pipefail
 
-# The script runs INSIDE the LocalStack container, but talks to the standalone dynamodb-local
-# container (docs/load/BOTTLENECK.md) over the shared network — LocalStack no longer serves DynamoDB.
-# Being the LAST script (see above) still makes this table the readiness marker: the `localstack`
-# service's own healthcheck now runs `aws dynamodb describe-table` against dynamodb-local's endpoint
-# FROM INSIDE the localstack container, over this same shared network.
+# The script runs INSIDE the LocalStack container. When compose sets DYNAMODB_ENDPOINT (this
+# service's own env, docker-compose.yml), it talks to the standalone dynamodb-local container instead
+# of LocalStack itself (docs/load/BOTTLENECK.md), over the shared network. Unset — e.g. under
+# LocalStackTestBase's Testcontainers harness, which runs this same script against a lone LocalStack
+# container with no dynamodb-local sibling — it falls back to LocalStack's own DynamoDB at 4566.
+# Being the LAST script (see above) still makes this table the readiness marker: under compose, the
+# `localstack` service's own healthcheck separately runs `aws dynamodb describe-table` against
+# dynamodb-local's endpoint FROM INSIDE the localstack container, over this same shared network.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="http://dynamodb-local:8000"
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:4566}"
 
 create_table_if_absent() {
   local table="$1"; shift

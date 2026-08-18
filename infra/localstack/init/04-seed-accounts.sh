@@ -13,12 +13,19 @@
 # pix_ledger table and are seeded in step 12 — not here.
 set -euo pipefail
 
-# The script runs INSIDE the LocalStack container, but talks to the standalone dynamodb-local
-# container (docs/load/BOTTLENECK.md) over the shared network — LocalStack no longer serves DynamoDB.
+# The script runs INSIDE the LocalStack container. When compose sets DYNAMODB_ENDPOINT (this
+# service's own env, docker-compose.yml), it talks to the standalone dynamodb-local container instead
+# of LocalStack itself (docs/load/BOTTLENECK.md), over the shared network. Unset — e.g. under
+# LocalStackTestBase's Testcontainers harness, which runs this same script against a lone LocalStack
+# container with no dynamodb-local sibling — it falls back to LocalStack's own DynamoDB at 4566.
+# Neither backend authenticates, but the AWS CLI still refuses to run without *some*
+# credentials/region, so pin the dummy values here (the same placeholders as infra/.env.example).
+# Kept explicit — not inherited — so the mirrored `aws` commands in docs/local-dev.md are identical
+# to what runs here.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="http://dynamodb-local:8000"
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:4566}"
 
 put_account() {
   local user_id="$1" account_id="$2"

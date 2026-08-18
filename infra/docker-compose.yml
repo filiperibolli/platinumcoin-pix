@@ -212,6 +212,14 @@ services:
       # Reach Redis by service name on the shared network (velocity counters; ADR-0008 ElastiCache stand-in).
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # Empty (default profile) unless the HOST shell exports it — never baked in here as a fixed value.
+      # docs/load/RESULTS.md's `loadtest` profile (application.yml) raises ONLY the two velocity
+      # thresholds so a k6 storm concentrated on one account measures the ledger, not fraud-service's
+      # (correct) velocity rule. To arm it for a load-test run:
+      #   SPRING_PROFILES_ACTIVE=loadtest docker compose -f infra/docker-compose.yml up -d --no-deps fraud-service
+      # and to put it back before anything else touches the stack:
+      #   docker compose -f infra/docker-compose.yml up -d --no-deps fraud-service
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
     depends_on:
       # The scoring flow (step 24) reads/writes Redis; gate startup on it being healthy.
       redis:
@@ -387,6 +395,13 @@ services:
     environment:
       SERVICES: sns,sqs      # the messaging backbone (Sprint 6) — DynamoDB now lives in dynamodb-local
       DEBUG: "1"             # verbose logs — this is a dev-only emulator
+      # Read by infra/localstack/init/{01,02,03,04,05,07}-*.sh (ready.d scripts run INSIDE this
+      # container): points their `aws dynamodb` calls at the standalone dynamodb-local container
+      # instead of LocalStack itself. Deliberately NOT baked into the scripts' own default — the
+      # same scripts are also mounted, unmodified, into LocalStackTestBase's Testcontainers
+      # LocalStack container (no dynamodb-local sibling there), where they must fall back to
+      # LocalStack's own DynamoDB at 4566 instead (docs/load/BOTTLENECK.md).
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
     volumes:
       # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);
       # step 07 drops the pix_accounts / pix_keys creation scripts here.

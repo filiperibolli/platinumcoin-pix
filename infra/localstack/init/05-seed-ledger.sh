@@ -41,12 +41,19 @@
 # wipes everything, so a full reset always reseeds deterministically.
 set -euo pipefail
 
-# The script runs INSIDE the LocalStack container, but talks to the standalone dynamodb-local
-# container (docs/load/BOTTLENECK.md) over the shared network — LocalStack no longer serves DynamoDB.
+# The script runs INSIDE the LocalStack container. When compose sets DYNAMODB_ENDPOINT (this
+# service's own env, docker-compose.yml), it talks to the standalone dynamodb-local container instead
+# of LocalStack itself (docs/load/BOTTLENECK.md), over the shared network. Unset — e.g. under
+# LocalStackTestBase's Testcontainers harness, which runs this same script against a lone LocalStack
+# container with no dynamodb-local sibling — it falls back to LocalStack's own DynamoDB at 4566.
+# Neither backend authenticates, but the AWS CLI still refuses to run without *some*
+# credentials/region, so pin the dummy values here (the same placeholders as infra/.env.example).
+# Kept explicit — not inherited — so the mirrored `aws` commands in docs/local-dev.md are identical
+# to what runs here.
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1
-ENDPOINT="http://dynamodb-local:8000"
+ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:4566}"
 
 # Fixed timestamps: the seed must be byte-identical on every `down -v && up`, so
 # nothing here reads the clock. One second apart so the SEED partition's two
