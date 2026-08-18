@@ -53,6 +53,15 @@ Out of scope (per brief): scheduled Pix, dynamic QR (Pix Cobrança), automatic r
 | Scalability | API versioning | No breaking changes for mobile clients |
 | Observability | SLOs monitored, alert before users notice | Runbooks linked |
 
+> **Measured, not just targeted.** An ad-hoc load-measurement pass ([`docs/load/`](docs/load/RESULTS.md))
+> exercises these targets against the docker-compose stack. Every **money-correctness** invariant held
+> under concurrent load (atomic double-entry, synchronous *and* asynchronous conservation, non-negative
+> balance, exact daily-limit reservation, idempotency). The **send `<2s p99`** target, however, is **not
+> met on the WSL2 test host**: a confirmed ~31s environment stall on ~1–4% of requests
+> (`docs/load/BOTTLENECK.md` RUNG 4) dominates the raw p99 — an infrastructure defect, not an application
+> one (trimmed of that stall, the application p99 fits the budget). Reported here honestly so the target
+> and the measurement do not drift; the run-gating SLO thresholds are step 47.
+
 ### 1.3 Regulatory context
 
 Pix is operated by BACEN through the **SPI** (Sistema de Pagamentos Instantâneos). Participants integrate via API and must respect a **10-second settlement SLA** in business hours. Consequence for design: the user-facing request **cannot** block on settlement — the API is asynchronous (`202 Accepted`) and settlement is a background flow with its own reliability machinery (retries, DLQ, reconciliation).
@@ -725,7 +734,7 @@ Both are **living harnesses grown one entry per endpoint**, in the same step tha
 
 ### 6.14 Flow — Block Q: relational counterpart, sharding & cold export   · Sprint 14 · infra: **statement-export-queue + statement-exports bucket + PostgreSQL (lab)**
 
-Three interview-grade extensions. (1) **`labs/ledger-pg`** (ADR-0009): the same ledger port on
+Three staff-grade extensions. (1) **`labs/ledger-pg`** (ADR-0009): the same ledger port on
 PostgreSQL with pessimistic (`SELECT FOR UPDATE`, ordered locks) and optimistic (version column)
 strategies, passing the step-15 invariant storm — ADR-0001's rule of thumb upgraded to a measured
 claim. (2) **Clearing-account write sharding** proven under the Black Friday profile — the design and

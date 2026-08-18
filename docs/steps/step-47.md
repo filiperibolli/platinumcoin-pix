@@ -13,6 +13,24 @@ Load testing that **asserts** the SLOs rather than eyeballing graphs: k6 `thresh
 ## Prerequisites
 The public flows (send, balance, statement) and observability (step 44) to watch during runs.
 
+## Relation to the ad-hoc load-measurement pass (already done)
+An out-of-band load-measurement deliverable already exists under [`docs/load/`](../load/) (scripts in
+`tools/k6/`), scoped **deliberately smaller** than this step. It is **not** a substitute for step 47.
+- **Already delivered by the ad-hoc pass:** a correctness-under-load proof (atomic double-entry,
+  synchronous *and* asynchronous conservation, non-negative balance, exact daily-limit reservation,
+  idempotency under a retry storm), a capacity curve (S2, 5→150 VUs), and the two infra findings that
+  unblock this step — the DynamoDB-out-of-LocalStack throughput fix (`docs/load/BOTTLENECK.md`) and the
+  outbox-publisher backlog (`docs/load/RESULTS.md` Context 2). Reusable here: `tools/k6/run-common.sh`,
+  the seed script, and the `loadtest` fraud profile.
+- **Still owned by step 47 (the delta):** the three **named SLO profiles** (`low` ~5 TPS, `standard`
+  ~58 TPS sustained 10 min, `black-friday` 58→300→**500+ TPS**), the **realistic scenario mix**
+  (70% send / 20% balance / 10% statement — the ad-hoc pass was send-heavy), and **k6 `thresholds` that
+  fail the run** on an SLO breach (the ad-hoc pass measured and reported honestly but did not gate).
+- **Known caveat to carry forward:** the ad-hoc pass found the send p99 target is *not* met on this WSL2
+  host because of a confirmed ~31s environment stall (`docs/load/BOTTLENECK.md` RUNG 4). Step 47's
+  `p(99)<2000` threshold will fail the run on that infrastructure — expected, and to be read against the
+  environment caveat, not treated as an application regression.
+
 ## Tasks
 1. `load/k6/lib.js` — login, ensure keys, scenario mix, per-endpoint tags.
 2. `low.js`, `standard.js`, `black-friday.js` with the profiles above and SLO thresholds that fail the run.
