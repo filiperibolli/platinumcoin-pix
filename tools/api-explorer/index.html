@@ -64,7 +64,7 @@
            padding: 6px 12px; border-radius: 8px; }
     .env .live { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 
-    main { max-width: 940px; margin: 0 auto; padding: 26px 28px 100px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 26px 28px 100px; }
 
     /* ---- panels ---- */
     .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 22px; margin-bottom: 16px; }
@@ -134,8 +134,24 @@
     code { background: var(--bg-1); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font: 12px var(--mono); color: var(--text-2); }
     a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
 
+    /* ---- group switch: Journeys | Services | Phone -------------------------------------------
+       The tab bar overflowed once the platform reached nine services: names wrapped onto three lines
+       and the row spilled past the page. Grouping is the fix that scales — each group shows only its
+       own tabs, so no row is ever crowded, and the tabs themselves never wrap (nowrap + scroll). */
+    .groupbar { display: inline-flex; gap: 4px; margin: 22px 0 2px; padding: 4px;
+      background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+    .groupbar .g { display: inline-flex; align-items: center; gap: 8px; padding: 7px 15px;
+      border-radius: 7px; font: 600 13px var(--sans); color: var(--muted); cursor: pointer;
+      transition: color .14s, background .14s; }
+    .groupbar .g:hover { color: var(--text-2); }
+    .groupbar .g.active { background: var(--elev); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+    .groupbar .g svg { width: 13px; height: 13px; }
+
     /* ---- service tabs (segmented nav) ---- */
-    .tabs { display: flex; gap: 26px; margin: 8px 4px 0; border-bottom: 1px solid var(--line); }
+    .tabs { display: flex; gap: 26px; margin: 8px 4px 0; border-bottom: 1px solid var(--line);
+      overflow-x: auto; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { height: 0; }
+    .tab { white-space: nowrap; }
     .tab { position: relative; padding: 12px 2px; cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--muted); transition: color .14s; display: inline-flex; align-items: center; gap: 8px; }
     .tab:hover { color: var(--text-2); }
     .tab.active { color: var(--text); }
@@ -168,10 +184,89 @@
     .status { font: 600 12px var(--mono); }
     .status.ok { color: var(--ok); } .status.bad { color: var(--err); } .status.pending { color: var(--muted); }
 
-    /* ---- journey ---- */
-    .journey-step { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
-    .journey-step:last-child { border-bottom: 0; }
-    .journey-step b { color: var(--text); font-weight: 600; }
+    /* ---- phone tab: the SSE stream rendered the way a customer's app would render it ----------- */
+    .phone-wrap { display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start; }
+    .phone-side { flex: 1 1 330px; min-width: 300px; }
+    .phone {
+      flex: 0 0 322px; width: 322px; height: 640px; border-radius: 42px; padding: 12px;
+      background: linear-gradient(160deg, #2a2e36, #14161b); border: 1px solid var(--line-2);
+      box-shadow: 0 26px 60px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.06);
+      position: relative;
+    }
+    .phone-screen {
+      height: 100%; border-radius: 32px; overflow: hidden; display: flex; flex-direction: column;
+      /* a "wallpaper" a lock screen could plausibly have, so the notification cards read as overlays */
+      background: radial-gradient(120% 90% at 50% 0%, #1d2a30 0%, #0d1013 62%, #08090b 100%);
+    }
+    .phone-notch { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+      width: 108px; height: 22px; border-radius: 0 0 14px 14px; background: #0b0c0f; z-index: 3; }
+    .phone-statusbar { display: flex; justify-content: space-between; align-items: center;
+      padding: 26px 20px 0; font: 600 11px var(--sans); color: #cfd6df; }
+    .phone-lock { text-align: center; padding: 14px 0 6px; }
+    .phone-lock .clock { font: 300 46px/1 var(--sans); letter-spacing: -.02em; color: #fff; }
+    .phone-lock .date { font-size: 11.5px; color: #9aa4b1; margin-top: 4px; }
+    .phone-lock .who { font: 600 11px var(--mono); color: var(--accent); margin-top: 7px; }
+    .phone-feed { flex: 1; overflow-y: auto; padding: 12px 12px 18px; display: flex; flex-direction: column; gap: 9px; }
+    .phone-feed::-webkit-scrollbar { width: 0; }
+    .notif {
+      background: rgba(28,32,38,.86); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.07); border-radius: 17px; padding: 11px 13px;
+      animation: notif-in .32s cubic-bezier(.2,.9,.3,1);
+    }
+    @keyframes notif-in { from { opacity: 0; transform: translateY(-12px) scale(.96); } to { opacity: 1; transform: none; } }
+    .notif .n-head { display: flex; align-items: center; gap: 7px; font: 600 10.5px var(--sans);
+      color: #98a2b0; letter-spacing: .04em; text-transform: uppercase; }
+    .notif .n-head .app { color: var(--accent); }
+    .notif .n-head .when { margin-left: auto; font-weight: 500; text-transform: none; letter-spacing: 0; }
+    .notif .n-title { margin-top: 6px; font: 650 13.5px var(--sans); color: #f2f5f9; display: flex; align-items: baseline; gap: 7px; }
+    .notif .n-amount { font: 700 15px var(--sans); letter-spacing: -.01em; }
+    .notif.in  .n-amount { color: var(--ok); }
+    .notif.out .n-amount { color: #e6ebf2; }
+    .notif.rev .n-amount { color: var(--gold); }
+    /* Clamped like a real notification: a long failureReason must not turn one card into a wall of
+       text — the full value is always one click away, on the raw JSON under the card. */
+    .notif .n-sub { margin-top: 3px; font-size: 12px; color: #aab3c0; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+    .notif .n-foot { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+    .badge { font: 700 9.5px var(--mono); letter-spacing: .07em; padding: 3px 7px; border-radius: 5px; border: 1px solid transparent; }
+    .badge.SETTLED  { background: var(--accent-soft); color: var(--ok);   border-color: var(--accent-line); }
+    .badge.REVERSED { background: var(--gold-soft);   color: var(--gold); border-color: var(--gold-line); }
+    .notif .n-tx { font: 500 10px var(--mono); color: #6d7683; margin-left: auto; }
+    .phone-empty { margin: auto; padding: 0 26px; text-align: center; color: #6d7683; font-size: 12px; line-height: 1.65; }
+    .phone-foot { padding: 9px 16px 16px; text-align: center; font: 500 10.5px var(--mono); color: #5c6572; }
+    .phone-foot .live { color: var(--ok); }
+
+    /* ---- journeys: a flow told as ordered, runnable steps ------------------------------------ */
+    .jrn-wrap { display: flex; gap: 24px; align-items: flex-start; }
+    .jrn-main { flex: 1 1 540px; min-width: 0; }
+    .jrn-aside { flex: 0 0 322px; position: sticky; top: 82px; }
+    .jrn-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+    .jvars { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
+    .jvar { font: 500 11px var(--mono); background: var(--bg-1); border: 1px solid var(--line);
+      border-radius: 6px; padding: 4px 9px; color: var(--muted); max-width: 100%; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap; }
+    .jvar b { color: var(--accent); font-weight: 600; }
+    .jstep { display: flex; gap: 13px; padding: 13px 15px; margin-bottom: 9px; background: var(--surface);
+      border: 1px solid var(--line); border-radius: 10px; transition: border-color .14s; }
+    .jstep.running { border-color: var(--blue-line); }
+    .jstep.done { border-color: var(--accent-line); }
+    .jstep.fail { border-color: rgba(226,98,111,.45); }
+    .jnum { flex: none; width: 25px; height: 25px; border-radius: 50%; display: grid; place-items: center;
+      font: 700 11.5px var(--mono); background: var(--surface-2); color: var(--muted);
+      border: 1px solid var(--line-2); }
+    .jstep.done .jnum { background: var(--accent-soft); color: var(--ok); border-color: var(--accent-line); }
+    .jstep.fail .jnum { background: rgba(226,98,111,.12); color: var(--err); border-color: rgba(226,98,111,.4); }
+    .jbody { flex: 1; min-width: 0; }
+    .jhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .jtitle { font: 600 13.5px var(--sans); color: var(--text); }
+    .jcall { font: 500 11.5px var(--mono); color: var(--faint); }
+    .jstate { margin-left: auto; font: 600 11.5px var(--mono); color: var(--muted); }
+    .jstep.done .jstate { color: var(--ok); } .jstep.fail .jstate { color: var(--err); }
+    .jwhy { font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin: 7px 0 0; }
+    .jwhy b { color: var(--text); font-weight: 600; }
+    .jout { margin-top: 10px; }
+    .jout pre { margin: 0; max-height: 220px; font-size: 12px; }
+    .jstep button.mini { padding: 5px 11px; font-size: 12px; }
 
     .footnote { margin-top: 28px; font-size: 12px; color: var(--faint); line-height: 1.6; }
   </style>
@@ -222,22 +317,15 @@
       </div>
     </section>
 
-    <!-- Guided journey -------------------------------------------------------------------------- -->
-    <section class="panel">
-      <p class="eyebrow">Guided journey</p>
-      <p class="muted" style="margin:-8px 0 15px; font-size:13px; line-height:1.6;">The product story in one click.
-        Today: <b style="color:var(--text-2)">log in → who am I</b>. As the flows land it grows into
-        <b style="color:var(--text-2)">send Pix → poll status → statement</b> (step 49 finalizes it).</p>
-      <button id="runJourney"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>Run journey (alice)</button>
-      <div id="journeyOut" style="margin-top:16px;"></div>
-    </section>
-
-    <!-- Service tabs + endpoint cards ----------------------------------------------------------- -->
+    <!-- Journeys | Services | Phone -------------------------------------------------------------- -->
+    <div class="groupbar" id="groupbar"></div>
     <div class="tabs" id="tabs"></div>
     <div class="svc-panel" id="servicePanel"></div>
 
     <p class="footnote">
-      Every endpoint added to the platform gets a card here in the same step (like the Postman collection).<br>
+      <b>Journeys</b> tell a flow end to end and are the fastest way to judge the platform; <b>Services</b>
+      hold one card per endpoint (every endpoint gets one in the same step that adds it, like the Postman
+      collection); <b>Phone</b> is the notification stream rendered as a customer's app.<br>
       Contract source of truth: <code>docs/api/openapi.yaml</code>.
     </p>
   </main>
@@ -249,6 +337,10 @@
       lock: '<span class="lock"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>',
       send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>',
       poll: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+      phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18.5h2"/></svg>',
+      route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M9 19h6a4 4 0 0 0 0-8H9a4 4 0 0 1 0-8h3"/></svg>',
+      grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+      check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
     };
 
     // ---- In-memory session (never persisted) --------------------------------------------------
@@ -285,9 +377,12 @@
     }
 
     // ---- Core request helper ------------------------------------------------------------------
-    async function send({ method, path, headers = {}, body = null, auth = false, base = null }) {
+    async function send({ method, path, headers = {}, body = null, auth = false, base = null, token = null }) {
       const h = { ...headers };
-      if (auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
+      // An explicit token wins over the session: a journey routinely acts as TWO users (bob registers
+      // the key that alice then pays), and it must not have to log in and out to do it.
+      if (token) h['Authorization'] = 'Bearer ' + token;
+      else if (auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
       const target = (base || authBase()) + path;
       let res;
       try {
@@ -553,7 +648,7 @@
         endpoints: [
           {
             method: 'GET', path: '/v1/notifications/stream', title: 'My notification stream (SSE \u2014 open it, then make money move)', auth: true, capturesToken: false, stream: true,
-            desc: 'OPEN THIS FIRST, LEAVE IT OPEN, then go make something happen in another tab \u2014 that is the whole demo. Log in as bob, click Open stream, then use mock-bacen-spi \u2192 "Simulate an inbound Pix to bob" and watch PixReceived land here live. Or log in as alice and send an external Pix (payment-service tab) to watch PixSettled arrive seconds later, the same information GET /payments/{id} would have told you only if you kept asking.\n\nWHAT YOU WILL SEE ON THE WIRE. \u201c:connected sub-\u2026\u201d is the handshake, and \u201c:ping\u201d every 25s after that \u2014 both are SSE COMMENTS, which every client (EventSource included) ignores for free, so keeping a connection alive obliges no application code. Then each event is three lines: \u201cevent:PixReceived\u201d (the type, in the frame\'s own field, so a browser can addEventListener without parsing the body), \u201cid:evt-\u2026\u201d (the eventId, so a reconnect resumes via Last-Event-ID), and \u201cdata:{\u2026}\u201d with amountCents as an integer. Step 39 standardizes that data line on the same external status vocabulary the status endpoint uses.\n\nTHE PING IS ALSO THE GARBAGE COLLECTOR, which is the counter-intuitive part. Close this stream and the server is told NOTHING it will notice \u2014 an async response that is not being written to never learns its socket is gone \u2014 so the heartbeat is what discovers dead connections. A push service without one leaks a registration per customer who ever connected.\n\nYOU CAN ONLY EVER SEE YOUR OWN. The account comes from the JWT accountId claim; there is no path, query or body field naming an account, so \u201cstream someone else\'s payments\u201d is not a request this API can express \u2014 stronger than an ownership check, because nothing is left to check. Log in as the WRONG user and nothing arrives: that is the routing rule working (an outcome of a send belongs to the payer, an arrival belongs to the payee), not a failure.\n\nNOTE HOW THIS CARD AUTHENTICATES: it uses fetch with a real Authorization header, which a browser\'s EventSource cannot do \u2014 there is no API for setting headers on one. That limitation is exactly why the service also accepts ?access_token=; try the next card to see that it is a convenience and not a hole.',
+            desc: 'OPEN THIS FIRST, LEAVE IT OPEN, then go make something happen in another tab \u2014 that is the whole demo. Log in as bob, click Open stream, then use mock-bacen-spi \u2192 "Simulate an inbound Pix to bob" and watch PixReceived land here live. Or log in as alice and send an external Pix (payment-service tab) to watch PixSettled arrive seconds later, the same information GET /payments/{id} would have told you only if you kept asking.\n\nWHAT YOU WILL SEE ON THE WIRE. \u201c:connected sub-\u2026\u201d is the handshake, and \u201c:ping\u201d every 25s after that \u2014 both are SSE COMMENTS, which every client (EventSource included) ignores for free, so keeping a connection alive obliges no application code. Then each event is three lines: \u201cevent:PixReceived\u201d (the type, in the frame\'s own field, so a browser can addEventListener without parsing the body), \u201cid:evt-\u2026\u201d (the eventId, so a reconnect resumes via Last-Event-ID), and \u201cdata:{\u2026}\u201d \u2014 since step 39 ALWAYS the same seven fields, whatever the event: {transactionId, type, status, amount, counterpart, timestamp, failureReason}. Same external status vocabulary GET /payments/{id} answers (SETTLED / REVERSED), amount already a decimal string formatted at this edge, counterpart a display value and never an internal account id. One shape for all three events is what lets a client parse the push and the poll with the same code. To SEE it as a customer would, open the Phone tab \u2014 same endpoint, same bytes, rendered as an app.\n\nTHE PING IS ALSO THE GARBAGE COLLECTOR, which is the counter-intuitive part. Close this stream and the server is told NOTHING it will notice \u2014 an async response that is not being written to never learns its socket is gone \u2014 so the heartbeat is what discovers dead connections. A push service without one leaks a registration per customer who ever connected.\n\nYOU CAN ONLY EVER SEE YOUR OWN. The account comes from the JWT accountId claim; there is no path, query or body field naming an account, so \u201cstream someone else\'s payments\u201d is not a request this API can express \u2014 stronger than an ownership check, because nothing is left to check. Log in as the WRONG user and nothing arrives: that is the routing rule working (an outcome of a send belongs to the payer, an arrival belongs to the payee), not a failure.\n\nNOTE HOW THIS CARD AUTHENTICATES: it uses fetch with a real Authorization header, which a browser\'s EventSource cannot do \u2014 there is no API for setting headers on one. That limitation is exactly why the service also accepts ?access_token=; try the next card to see that it is a convenience and not a hole.',
             headers: {}, body: null,
           },
           {
@@ -697,25 +792,76 @@
       },
     ];
 
+    // ---- Navigation: three groups, because they answer three different questions ---------------
+    // JOURNEYS answer "does the product work, end to end?" — the question a reviewer actually has, and
+    // the one a wall of endpoints cannot answer. SERVICES answer "what exactly does this endpoint do?".
+    // PHONE answers "what does the customer see?". Splitting them also fixes a real layout failure: nine
+    // service tabs in one row overflowed the page and wrapped their names onto three lines.
+    let activeGroup = 'journeys';
     let activeService = SERVICES[0].id;
+    let activeJourney = null;                 // set on first render, from JOURNEYS[0]
+
+    const GROUPS = [
+      { id: 'journeys', name: 'Journeys', icon: ICON.route },
+      { id: 'services', name: 'Services', icon: ICON.grid },
+      { id: 'phone',    name: 'Phone',    icon: ICON.phone },
+    ];
+
+    function renderGroups() {
+      const bar = $('groupbar'); bar.innerHTML = '';
+      GROUPS.forEach((g) => {
+        const el = document.createElement('div');
+        el.className = 'g' + (g.id === activeGroup ? ' active' : '');
+        el.innerHTML = `${g.icon}${g.name}`;
+        el.onclick = () => { activeGroup = g.id; renderAll(); };
+        bar.appendChild(el);
+      });
+    }
 
     function renderTabs() {
       const bar = $('tabs'); bar.innerHTML = '';
-      SERVICES.forEach((svc) => {
+      bar.style.display = activeGroup === 'phone' ? 'none' : 'flex';
+      if (activeGroup === 'phone') return;
+
+      const items = activeGroup === 'journeys'
+        ? JOURNEYS.map((j) => ({ id: j.id, name: j.name, active: j.id === activeJourney }))
+        : SERVICES.map((svc) => ({ id: svc.id, name: svc.name, port: svc.port, active: svc.id === activeService }));
+
+      items.forEach((item) => {
         const tab = document.createElement('div');
-        tab.className = 'tab' + (svc.id === activeService ? ' active' : '');
-        tab.innerHTML = `${svc.name} <span class="port">:${svc.port}</span>`;
-        tab.onclick = () => { activeService = svc.id; renderTabs(); renderServicePanel(); };
+        tab.className = 'tab' + (item.active ? ' active' : '');
+        tab.innerHTML = item.port ? `${item.name} <span class="port">:${item.port}</span>` : item.name;
+        tab.onclick = () => {
+          if (activeGroup === 'journeys') activeJourney = item.id; else activeService = item.id;
+          renderAll();
+        };
         bar.appendChild(tab);
       });
     }
 
-    // The base URL a request targets. auth-service reuses the Session field (login lives there); every
-    // other service gets its own editable base field in its panel, defaulting to http://localhost:<port>.
+    function renderAll() { renderGroups(); renderTabs(); renderPanel(); }
+
+    function renderPanel() {
+      if (activeGroup === 'phone') { renderPhonePanel(); return; }
+      if (activeGroup === 'journeys') { renderJourneyPanel(); return; }
+      renderServicePanel();
+    }
+
+    // ---- Base URLs, in one place ---------------------------------------------------------------
+    // Cards, journeys and the phone all target the same hosts, but only the VISIBLE panel has its base
+    // field in the DOM — so the value has to live in JS, with the input as an editor of it rather than
+    // its owner. Edit a base in a service tab and a journey honours it, which is what you would expect
+    // and what a field-only design silently gets wrong.
+    const BASES = {};
+    SERVICES.forEach((svc) => { BASES[svc.id] = svc.baseUrl; });
+
+    const baseOf = (id) => (id === 'auth' ? authBase() : (BASES[id] || '').replace(/\/+$/, ''));
+
     function currentServiceBase(svc) {
       if (svc.id === 'auth') return authBase();
       const el = $('base-' + svc.id);
-      return (el ? el.value : svc.baseUrl).replace(/\/+$/, '');
+      if (el) BASES[svc.id] = el.value;
+      return baseOf(svc.id);
     }
 
     function renderServicePanel() {
@@ -734,13 +880,257 @@
         baseRow.style.margin = '0 0 14px';
         baseRow.innerHTML = `<div class="field" style="flex:1 1 100%;">`
           + `<label for="base-${svc.id}">${svc.name} base URL</label>`
-          + `<input id="base-${svc.id}" value="${svc.baseUrl}" /></div>`;
+          + `<input id="base-${svc.id}" value="${BASES[svc.id]}" /></div>`;
         wrap.appendChild(baseRow);
+        $('base-' + svc.id).oninput = (e) => { BASES[svc.id] = e.target.value; };
       }
 
       svc.endpoints.forEach((ep, idx) => wrap.appendChild(makeCard(ep, `${svc.id}-${idx}`, svc)));
       const firstCard = wrap.querySelector('.card');
       if (firstCard) firstCard.classList.add('open');
+    }
+
+    // ---- 📱 Phone tab: the customer's side of step 39 -------------------------------------------
+    // Same endpoint, same bytes, no extra API: GET /v1/notifications/stream with the session token,
+    // rendered as an app would render it. It exists because the step-39 payload is a CONTRACT — one
+    // shape for all three events — and the fastest way to see whether a contract is any good is to
+    // build the client it was designed for. Every value on a card below is one field of one `data:`
+    // line; nothing is derived from the event type except the wording.
+    //
+    // The connection deliberately SURVIVES a tab switch (this is one page, one JS context): open the
+    // phone, connect, go to the payment-service tab, send a Pix, come back — the notification is here,
+    // exactly as it would be on a phone in a pocket.
+    const phone = { abort: null, items: [], state: 'idle', pings: 0, lastAt: null };
+
+    const PHONE_WORDING = {
+      PixReceived: { cls: 'in',  title: 'Pix recebido',  sign: '+', prep: 'de' },
+      PixSettled:  { cls: 'out', title: 'Pix enviado',   sign: '−', prep: 'para' },
+      PixReversed: { cls: 'rev', title: 'Pix devolvido', sign: '+', prep: 'de' },
+    };
+
+    // "987.00" → "R$ 987,00". The wire value is already the decimal string the service formatted at its
+    // edge (step 39) — this only applies the locale, and never does arithmetic on money.
+    function phoneMoney(amount) {
+      const n = Number(amount);
+      if (!isFinite(n)) return String(amount ?? '—');
+      return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    }
+
+    function phoneTime(iso) {
+      const d = new Date(iso);
+      return isNaN(d) ? '—' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    // The handset itself, as markup — mounted either in the Phone tab (with its controls) or in a
+    // journey's aside (without them). ONE phone, one connection: a journey that opens bob's stream and
+    // the Phone tab are looking at the same live feed, which is exactly what a second device would NOT
+    // give you, and the honest model of a customer holding one phone.
+    function phoneMarkup() {
+      return `
+        <div class="phone">
+          <div class="phone-notch"></div>
+          <div class="phone-screen">
+            <div class="phone-statusbar"><span>PlatinumCoin</span><span id="phoneSignal">○ offline</span></div>
+            <div class="phone-lock">
+              <div class="clock" id="phoneClock">--:--</div>
+              <div class="date" id="phoneDate"></div>
+              <div class="who" id="phoneWho"></div>
+            </div>
+            <div class="phone-feed" id="phoneFeed"></div>
+            <div class="phone-foot" id="phoneFoot"></div>
+          </div>
+        </div>`;
+    }
+
+    /** Lock-screen clock/date/owner — refreshed whenever the handset is mounted. */
+    function phoneClock() {
+      const now = new Date();
+      if (!$('phoneClock')) return;
+      $('phoneClock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      $('phoneDate').textContent = now.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+      $('phoneWho').textContent = identity ? `conta ${identity.accountId} · ${identity.userId}` : 'não autenticado';
+    }
+
+    function renderPhonePanel() {
+      const wrap = $('servicePanel');
+      wrap.innerHTML = `
+        <div class="svc-head">
+          <h3>Phone — the notification stream as a customer sees it</h3>
+          <p>No new endpoint: this is <code>GET /v1/notifications/stream</code> on notification-service (:8087),
+             the very same SSE connection as the card in the notification-service tab — rendered the way an app would.</p>
+        </div>
+        <div class="phone-wrap">
+          ${phoneMarkup()}
+          <div class="phone-side">
+            <div class="row" style="margin-bottom:14px;">
+              <div class="field" style="flex:1 1 100%;">
+                <label for="base-phone">notification-service base URL</label>
+                <input id="base-phone" value="${BASES.notification}"
+                  oninput="BASES.notification = this.value" />
+              </div>
+            </div>
+            <div style="display:flex; gap:8px; margin-bottom:14px;">
+              <button id="phoneBtn"></button>
+              <button id="phoneClear" class="ghost">Clear screen</button>
+            </div>
+            <div class="status" id="phoneStatus" style="margin-bottom:16px;"></div>
+            <p class="desc" style="color:var(--text-2); font-size:12.5px; line-height:1.6;">
+              <b>The short path:</b> open <b>Journeys → Receive Pix</b> and press <b>Run all</b> — it logs in as bob,
+              registers his key, opens this very stream and has BACEN deliver a payment, with the same handset shown
+              beside the steps. <b>By hand:</b> log in as <code>bob</code>, press <b>Connect</b>, then open the
+              <b>mock-bacen-spi</b> tab and send “Simulate an inbound Pix to bob” — a <code>PixReceived</code> lands
+              here while you watch. The connection stays open while you are on another tab, which is the whole point
+              of a push.
+            </p>
+            <p class="desc" style="color:var(--text-2); font-size:12.5px; line-height:1.6;">
+              <b>Every card is one <code>data:</code> line</b> — click one to see the exact JSON that produced it.
+              Six fields plus <code>failureReason</code>, identical for all three event types, in the same external
+              vocabulary <code>GET /payments/{id}</code> answers (<code>SETTLED</code>, <code>REVERSED</code>), with
+              <code>amount</code> already a decimal string. This screen writes no business logic: it maps
+              <code>type</code> to a Portuguese label and applies a locale to a value the service formatted at its
+              own edge. That it is this dull to build is the evidence the contract is right.
+            </p>
+            <p class="desc" style="color:var(--muted); font-size:12px; line-height:1.6;">
+              <b>You can only ever see your own.</b> The account comes from the JWT <code>accountId</code> claim; no
+              path, query or body field names an account, so “stream someone else’s payments” is not a request this
+              API can express. Nothing here is stored: refresh and the screen is empty, because a push is
+              best-effort by design and the authoritative answer is always <code>GET /payments/{id}</code>.
+            </p>
+          </div>
+        </div>`;
+
+      phoneClock();
+      $('phoneBtn').onclick = () => (phone.abort ? phoneDisconnect() : phoneConnect());
+      $('phoneClear').onclick = () => { phone.items = []; phoneRender(); };
+      phoneRender();
+    }
+
+    function phoneRender() {
+      const feed = $('phoneFeed');
+      if (!feed) return;                                  // the phone tab is not the visible one
+      const btn = $('phoneBtn'), status = $('phoneStatus');
+
+      if (btn) {
+        btn.innerHTML = phone.abort ? `${ICON.poll}Disconnect` : `${ICON.send}Connect`;
+        btn.className = phone.abort ? 'polling' : '';
+      }
+      $('phoneSignal').textContent = phone.abort ? '● live' : '○ offline';
+      $('phoneSignal').style.color = phone.abort ? 'var(--ok)' : '';
+      $('phoneFoot').innerHTML = phone.abort
+        ? `<span class="live">●</span> stream open · ${phone.items.length} notification(s) · ${phone.pings} keepalive(s)`
+        : 'stream closed';
+
+      // The Phone TAB has a status line; the same phone mounted inside a journey does not (the journey's
+      // own step reports the connection), so every control here is optional by design.
+      if (status) {
+        status.className = 'status ' + (phone.state === 'live' ? 'ok' : phone.state === 'error' ? 'bad' : 'pending');
+        status.textContent = {
+          idle: 'Not connected. Log in first — the stream is authenticated, and it only ever carries that account\'s events.',
+          connecting: 'Connecting…',
+          live: 'Connected. Frames appear on the screen as money moves; ":ping" every 25s keeps the connection alive (and is how the server discovers a client that vanished).',
+          closed: 'Stream closed. A real client (EventSource) would reconnect on its own — and would get no backlog, because pushes for a disconnected customer are dropped, not queued.',
+          error: 'Stream failed. Is notification-service up on :8087, and is CORS reaching it?',
+        }[phone.state] || '';
+      }
+
+      if (!phone.items.length) {
+        feed.innerHTML = `<div class="phone-empty">No notifications yet.<br>Connect, then make money move —
+          run a journey, or trigger an inbound Pix from the mock-bacen-spi tab.</div>`;
+        return;
+      }
+
+      feed.innerHTML = '';
+      // Newest first, the way a lock screen stacks them.
+      phone.items.slice().reverse().forEach((item) => {
+        const w = PHONE_WORDING[item.type] || { cls: 'out', title: item.type || 'Notificação', sign: '', prep: '' };
+        const el = document.createElement('div');
+        el.className = 'notif ' + w.cls;
+        const who = item.counterpart ? `${w.prep} ${escapeHtml(item.counterpart)}` : 'remetente não identificado';
+        const sub = item.type === 'PixReversed' && item.failureReason
+          ? `devolvido pelo BACEN — ${escapeHtml(item.failureReason)}`
+          : who;
+        el.innerHTML = `
+          <div class="n-head"><span class="app">PlatinumCoin</span><span>agora</span>
+            <span class="when">${escapeHtml(phoneTime(item.timestamp))}</span></div>
+          <div class="n-title"><span>${escapeHtml(w.title)}</span>
+            <span class="n-amount">${escapeHtml(w.sign + ' ' + phoneMoney(item.amount))}</span></div>
+          <div class="n-sub">${sub}</div>
+          <div class="n-foot"><span class="badge ${escapeHtml(item.status || '')}">${escapeHtml(item.status || '—')}</span>
+            <span class="n-tx">${escapeHtml(item.transactionId || '')}</span></div>
+          <pre style="display:none; margin-top:10px; max-height:190px;">${escapeHtml(item.raw)}</pre>`;
+        el.onclick = () => {
+          const raw = el.querySelector('pre');
+          raw.style.display = raw.style.display === 'none' ? 'block' : 'none';
+        };
+        feed.appendChild(el);
+      });
+      feed.scrollTop = 0;
+    }
+
+    async function phoneConnect(withToken) {
+      const streamToken = withToken || accessToken;
+      if (!streamToken) { toast('Log in first', 'the stream is authenticated', 'bad'); return; }
+      if (phone.abort) { phone.abort.abort(); await new Promise((r) => setTimeout(r, 120)); }
+      const base = baseOf('notification');
+      phone.abort = new AbortController();
+      phone.state = 'connecting';
+      phoneRender();
+      try {
+        // fetch, not EventSource: EventSource cannot set an Authorization header (the very limitation
+        // the service's ?access_token= handshake exists for). A real mobile app has no such limit.
+        const res = await fetch(base + '/v1/notifications/stream',
+          { headers: { 'Authorization': 'Bearer ' + streamToken }, signal: phone.abort.signal });
+        if (!res.ok) {
+          phone.state = 'error'; phone.abort = null; phoneRender();
+          toast(`${res.status} ${res.statusText}`, 'GET /v1/notifications/stream', 'bad');
+          return;
+        }
+        phone.state = 'live'; phoneRender();
+        toast('Stream open', 'notifications will appear on the phone', 'ok');
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          // SSE frames are separated by a blank line; anything after the last one is a partial frame
+          // still on the wire, so it stays in the buffer until its terminator arrives.
+          let cut;
+          while ((cut = buffer.indexOf('\n\n')) >= 0) {
+            phoneFrame(buffer.slice(0, cut));
+            buffer = buffer.slice(cut + 2);
+          }
+        }
+        phone.state = 'closed';
+      } catch (err) {
+        phone.state = phone.abort && phone.abort.signal.aborted ? 'closed' : 'error';
+      } finally {
+        phone.abort = null;
+        phoneRender();
+      }
+    }
+
+    function phoneDisconnect() {
+      if (phone.abort) phone.abort.abort();
+    }
+
+    /** One SSE frame → one notification (or a keepalive tick). */
+    function phoneFrame(raw) {
+      const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+      if (!lines.length) return;
+      // Comment lines (":connected …", ":ping") are the handshake and the keepalive. Every SSE client
+      // ignores them for free — which is exactly why the service uses comments and not events for them.
+      if (lines.every((l) => l.startsWith(':'))) { phone.pings++; phoneRender(); return; }
+
+      const data = lines.filter((l) => l.startsWith('data:')).map((l) => l.slice(5)).join('');
+      if (!data) return;
+      let payload;
+      try { payload = JSON.parse(data); } catch (_) { return; }
+      const type = (lines.find((l) => l.startsWith('event:')) || '').slice(6) || payload.type;
+      phone.items.push({ ...payload, type: payload.type || type, raw: JSON.stringify(payload, null, 2) });
+      phoneRender();
     }
 
     // The wire vocabulary a poll waits for: once a transaction/settlement reaches one of these it is done
@@ -979,41 +1369,681 @@
       return card;
     }
 
+    // ============================================================================================
+    //  JOURNEYS — one flow, told as ordered runnable steps
+    // ============================================================================================
+    // A wall of endpoints answers "what can this API do?"; nobody asks that first. The question a
+    // reviewer (or a new engineer, or you in three months) actually has is "does the product work, and
+    // what does each step prove?" — and that is a story with an order, prerequisites and captured ids.
+    // Every step below is a REAL call to the running stack, in sequence, carrying the values the
+    // previous ones produced; the prose under each is the design decision it demonstrates.
+    //
+    // Each step: { title, call (what goes on the wire), why (what it proves), run(ctx) }.
+    // run() returns { ok, state, body?, note? } and may write captured values onto ctx.
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const money = (cents) => (cents / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+    /**
+     * A login response with the token REDACTED. The explorer's rule everywhere else is that a JWT is
+     * summarised, never dumped (it is a long opaque credential that ends up in screenshots and pasted
+     * transcripts); a journey step must not be the one place that breaks it. What matters here is that a
+     * token was issued and which account it carries — both of which are shown.
+     */
+    function redactedLogin(r) {
+      if (!r.json || !r.json.accessToken) return pretty(r);
+      const claims = identity ? `${identity.userId} · account ${identity.accountId}` : 'unreadable';
+      return JSON.stringify({ ...r.json, accessToken: `eyJ… (captured into the session — claims: ${claims})` }, null, 2);
+    }
+
+    /** Balance of a ledger account, in integer cents — the number every money assertion is made on. */
+    async function balanceCents(accountId, token) {
+      const r = await send({ method: 'GET', base: baseOf('ledger'), token,
+        path: `/internal/ledger/accounts/${accountId}/balance` });
+      if (!r.ok) throw new Error(`balance of ${accountId}: ${r.status} ${r.bodyText}`);
+      return Number(r.json.balanceCents);
+    }
+
+    /** Poll GET /payments/{id} until it reaches a terminal external status, or give up loudly. */
+    async function pollUntilTerminal(txId, token, tries = 25) {
+      let last = null;
+      for (let i = 0; i < tries; i++) {
+        last = await send({ method: 'GET', base: baseOf('payment'), token, path: `/v1/payments/${txId}` });
+        if (last.ok && TERMINAL_STATUS.includes(last.json.status)) return last;
+        await sleep(1000);
+      }
+      return last;
+    }
+
+    const JOURNEYS = [
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'receive', name: 'Receive Pix', phone: true,
+        title: 'Receive a Pix — money arrives from another bank, and the phone lights up',
+        blurb: 'The inbound half of the platform (steps 36–39). BACEN presents a payment to our webhook; '
+          + 'we resolve the payee in OUR directory, post the credit, and push a notification. Receiving is '
+          + 'the mirror of sending and needed no new mechanism: an outbound send debits the payer and '
+          + 'credits SPI_CLEARING, an inbound one debits SPI_CLEARING and credits the user.',
+        steps: [
+          {
+            title: 'Log in as bob (the payee)', call: 'POST :8081 /v1/auth/login',
+            why: 'The token carries an <b>accountId</b> claim (acc-002). Nothing later in this journey names '
+              + 'bob\'s account: it is read from the JWT, or resolved from our own directory.',
+            run: async (ctx) => {
+              const r = await doLogin('bob', 'bob');
+              ctx.bobToken = r.json && r.json.accessToken;
+              ctx.vars.bob = identity ? identity.accountId : '';
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'bob registers bob@platinum.com', call: 'POST :8082 /v1/pix-keys',
+            why: 'A Pix key is globally unique, claimed by a conditional write. This is the prerequisite the '
+              + 'old UI hid: without it the webhook below answers <b>422 KEY_NOT_FOUND</b>, because '
+              + '<b>the payee comes from our directory, never from the payload</b> — the inbound mirror of '
+              + 'Domain Safety Rule #1. A key already registered answers 409, which is a fine outcome here.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('account'), token: ctx.bobToken,
+                path: '/v1/pix-keys', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'bob@platinum.com' }) });
+              const already = r.status === 409;
+              ctx.vars.key = 'bob@platinum.com';
+              return { ok: r.ok || already, state: already ? '409 already registered' : `${r.status} ${r.statusText}`,
+                body: pretty(r) };
+            },
+          },
+          {
+            title: 'Open bob\'s notification stream', call: 'GET :8087 /v1/notifications/stream',
+            why: 'One long-lived SSE connection per customer. Opened <b>before</b> the money moves, so the push '
+              + 'arrives while you watch — the phone on the right is the same endpoint the Phone tab renders.',
+            run: async (ctx) => {
+              phoneConnect(ctx.bobToken);
+              for (let i = 0; i < 30 && phone.state !== 'live'; i++) await sleep(100);
+              return { ok: phone.state === 'live', state: phone.state === 'live' ? '● live' : phone.state,
+                note: 'Watch the phone: the next step makes a frame appear on it.' };
+            },
+          },
+          {
+            title: 'bob\'s balance BEFORE', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'Money assertions are made on integer cents read straight from the ledger, never on a screen.',
+            run: async (ctx) => {
+              ctx.before = await balanceCents('acc-002', ctx.bobToken);
+              ctx.vars.before = money(ctx.before);
+              return { ok: true, state: money(ctx.before), body: `balanceCents = ${ctx.before}` };
+            },
+          },
+          {
+            title: 'BACEN delivers a Pix to bob', call: 'POST :9090 /simulate/inbound-pix',
+            why: 'mock-bacen calls settlement-service\'s webhook. That route is JWT-exempt (BACEN holds no token '
+              + 'of ours) but <b>never anonymous</b>: a shared <code>X-Webhook-Token</code> is checked, '
+              + 'constant-time, before anything else runs — it credits money.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('bacen'), path: '/simulate/inbound-pix',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '77.77', payerName: 'Carol Mendes' }) });
+              ctx.e2e = r.json && r.json.endToEndId;
+              ctx.vars.endToEndId = ctx.e2e;
+              return { ok: r.ok, state: `${r.status} · ${r.json ? r.json.outcome : ''}`, body: pretty(r),
+                note: r.ok ? 'The notification should be on the phone already — one shape, seven fields.' : null };
+            },
+          },
+          {
+            title: 'bob\'s balance AFTER', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'The credit leg landed. The debit leg is <b>SPI_CLEARING</b>, in the same atomic posting — '
+              + 'no code path can write one without the other.',
+            run: async (ctx) => {
+              const after = await balanceCents('acc-002', ctx.bobToken);
+              const delta = after - ctx.before;
+              ctx.after = after;
+              ctx.vars.delta = '+' + money(delta);
+              return { ok: delta === 7777, state: `${money(after)} (${delta >= 0 ? '+' : ''}${money(delta)})`,
+                body: `before = ${ctx.before}\nafter  = ${after}\ndelta  = ${delta} cents (expected 7777)` };
+            },
+          },
+          {
+            title: 'BACEN re-delivers the SAME endToEndId', call: 'POST :8086 /v1/inbound/pix',
+            why: 'What a rail does when it never got an answer. The transaction id is <code>in-&lt;endToEndId&gt;</code>, '
+              + 'so the conditional write on that item <b>is</b> the dedupe — strongly consistent and atomic, '
+              + 'where deduping by querying an index would be a read-then-check two deliveries could both pass.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('settlement'), path: '/v1/inbound/pix',
+                headers: { 'Content-Type': 'application/json',
+                  'X-Webhook-Token': 'dev-only-inbound-webhook-token-change-me' },
+                body: JSON.stringify({ endToEndId: ctx.e2e, pixKey: 'bob@platinum.com', amountCents: 7777,
+                  payerName: 'Carol Mendes', payerIspb: '99999999' }) });
+              const dup = r.json && r.json.outcome === 'ALREADY_PROCESSED';
+              return { ok: r.ok && dup, state: `${r.status} · ${r.json ? r.json.outcome : ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'The balance did NOT move again', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'The proof that "idempotent" is a property of the <b>money</b>, not of the HTTP status. A second '
+              + 'delivery answered 200 and credited nothing. No second push reached the phone either.',
+            run: async (ctx) => {
+              const now = await balanceCents('acc-002', ctx.bobToken);
+              return { ok: now === ctx.after, state: now === ctx.after ? 'unchanged ✓' : 'CHANGED ✗',
+                body: `after first delivery = ${ctx.after}\nafter re-delivery    = ${now}` };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'internal', name: 'Send Pix · internal', phone: true,
+        title: 'Send a Pix inside PlatinumCoin — one atomic posting, settled instantly',
+        blurb: 'Both parties bank here, so nothing leaves the platform: the debit, the credit and both '
+          + 'immutable entries are ONE TransactWriteItems. There is no window in which the payer is poorer '
+          + 'and the payee is not richer, which is why this flow answers SETTLED immediately while an '
+          + 'external one answers PROCESSING.',
+        steps: [
+          {
+            title: 'bob registers his key (setup)', call: 'POST :8081 login + POST :8082 /v1/pix-keys',
+            why: 'alice will pay a <b>key</b>, not an account number. The key is what our directory resolves.',
+            run: async (ctx) => {
+              const login = await doLogin('bob', 'bob');
+              ctx.bobToken = login.json && login.json.accessToken;
+              const r = await send({ method: 'POST', base: baseOf('account'), token: ctx.bobToken,
+                path: '/v1/pix-keys', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'bob@platinum.com' }) });
+              return { ok: r.ok || r.status === 409, state: r.status === 409 ? '409 already registered' : `${r.status}`,
+                body: pretty(r) };
+            },
+          },
+          {
+            title: 'Log in as alice (the payer)', call: 'POST :8081 /v1/auth/login',
+            why: 'From here on, <b>the debited account comes from this token</b>. The send request body has no '
+              + 'source-account field at all — "pay from someone else\'s account" is not a request this API '
+              + 'can express (Domain Safety Rule #1).',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              ctx.vars.payer = identity ? identity.accountId : '';
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'Open alice\'s stream', call: 'GET :8087 /v1/notifications/stream',
+            why: 'The payer is the addressee of a send\'s outcome. Note the known gap this makes visible: '
+              + 'an internal send emits a single <b>PixSettled</b>, which means "your send completed" and '
+              + 'belongs to alice — bob is credited but not pushed, because no arrival event exists for it.',
+            run: async (ctx) => {
+              phoneConnect(ctx.aliceToken);
+              for (let i = 0; i < 30 && phone.state !== 'live'; i++) await sleep(100);
+              return { ok: phone.state === 'live', state: phone.state === 'live' ? '● live' : phone.state };
+            },
+          },
+          {
+            title: 'Resolve bob@platinum.com', call: 'GET :8082 /internal/pix-keys/resolve',
+            why: 'Answers <code>internal: true</code> — which is the whole routing decision. An internal payee '
+              + 'means the ledger can settle now; an external one means the money goes to clearing and BACEN.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('account'), token: ctx.aliceToken,
+                path: '/internal/pix-keys/resolve?key=bob@platinum.com' });
+              return { ok: r.ok, state: `${r.status} · internal=${r.json ? r.json.internal : '?'}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Balances BEFORE (both sides)', call: 'GET :8085 /internal/ledger/…/balance ×2',
+            why: 'Conservation of money is asserted across BOTH accounts: a payment moves money, it never '
+              + 'creates or destroys it.',
+            run: async (ctx) => {
+              ctx.aliceBefore = await balanceCents('acc-001', ctx.aliceToken);
+              ctx.bobBefore = await balanceCents('acc-002', ctx.aliceToken);
+              return { ok: true, state: `${money(ctx.aliceBefore)} / ${money(ctx.bobBefore)}`,
+                body: `alice = ${ctx.aliceBefore} cents\nbob   = ${ctx.bobBefore} cents` };
+            },
+          },
+          {
+            title: 'alice sends R$ 12,50 to bob', call: 'POST :8084 /v1/payments/pix',
+            why: 'An <code>Idempotency-Key</code> is required: this is the one untrusted, client-facing POST that '
+              + 'moves money and has no natural id. The response is <b>202</b>, the honest answer for a payment '
+              + 'the platform has accepted responsibility for.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/payments/pix',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+                body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '12.50', description: 'journey' }) });
+              ctx.txId = r.json && r.json.transactionId;
+              ctx.vars.txId = ctx.txId;
+              if (ctx.txId) captureTxId(ctx.txId);
+              return { ok: r.status === 202, state: `${r.status} · ${r.json ? r.json.status : ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Status: SETTLED already', call: 'GET :8084 /v1/payments/{txId}',
+            why: 'No polling loop needed — the atomic posting <b>was</b> the settlement. Compare with the external '
+              + 'journey, where this same call sits on PROCESSING for seconds.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: `/v1/payments/${ctx.txId}` });
+              return { ok: r.ok && r.json.status === 'SETTLED', state: `${r.status} · ${r.json ? r.json.status : ''}`,
+                body: pretty(r) };
+            },
+          },
+          {
+            title: 'Balances AFTER — and the sum is unchanged', call: 'GET :8085 /internal/ledger/…/balance ×2',
+            why: 'alice −12,50 and bob +12,50, in one transaction. <b>Σ(all accounts) is invariant</b>; that is the '
+              + 'property the step-15 invariant suite hammers under a concurrency storm.',
+            run: async (ctx) => {
+              const a = await balanceCents('acc-001', ctx.aliceToken);
+              const b = await balanceCents('acc-002', ctx.aliceToken);
+              const da = a - ctx.aliceBefore, db = b - ctx.bobBefore;
+              return { ok: da === -1250 && db === 1250,
+                state: `${money(da)} / +${money(db)}`,
+                body: `alice: ${ctx.aliceBefore} → ${a}  (${da})\nbob:   ${ctx.bobBefore} → ${b}  (+${db})\n`
+                  + `sum of deltas = ${da + db} (must be 0)` };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'external', name: 'Send Pix · external', phone: true,
+        title: 'Send a Pix to another bank — 202 now, SETTLED seconds later',
+        blurb: 'The payee banks elsewhere, so settlement is asynchronous: debit the payer into SPI_CLEARING, '
+          + 'write the event in the SAME transaction (outbox), publish to SNS, consume from SQS, call BACEN, '
+          + 'and only then mark SETTLED. The client never waits for BACEN — it gets 202 and, since step 39, '
+          + 'a push when the answer arrives.',
+        steps: [
+          {
+            title: 'Log in as alice', call: 'POST :8081 /v1/auth/login',
+            why: 'Same authority rule: the debited account is the token\'s, not the payload\'s.',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'Open alice\'s stream', call: 'GET :8087 /v1/notifications/stream',
+            why: 'Leave it open: the whole point of this journey is that the final answer arrives on its own.',
+            run: async (ctx) => {
+              phoneConnect(ctx.aliceToken);
+              for (let i = 0; i < 30 && phone.state !== 'live'; i++) await sleep(100);
+              return { ok: phone.state === 'live', state: phone.state === 'live' ? '● live' : phone.state };
+            },
+          },
+          {
+            title: 'Resolve bob@otherbank.com', call: 'GET :8082 /internal/pix-keys/resolve',
+            why: 'Answers <code>internal: false</code> plus the participant\'s ISPB, from BACEN\'s DICT. Everything '
+              + 'else about the request is identical to the internal send — authority, limits and fraud are '
+              + 'properties of the <b>payer</b>, not of where the payee banks.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('account'), token: ctx.aliceToken,
+                path: '/internal/pix-keys/resolve?key=bob@otherbank.com' });
+              return { ok: r.ok, state: `${r.status} · internal=${r.json ? r.json.internal : '?'}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'alice sends R$ 12,34 abroad', call: 'POST :8084 /v1/payments/pix',
+            why: 'The payer is debited <b>now</b> and the money parks in SPI_CLEARING — the clearing account is what '
+              + 'makes "in flight" a real, auditable place rather than an absence.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/payments/pix',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+                body: JSON.stringify({ pixKey: 'bob@otherbank.com', amount: '12.34', description: 'journey' }) });
+              ctx.txId = r.json && r.json.transactionId;
+              ctx.vars.txId = ctx.txId;
+              if (ctx.txId) captureTxId(ctx.txId);
+              return { ok: r.status === 202, state: `${r.status} · ${r.json ? r.json.status : ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Status right now: PROCESSING', call: 'GET :8084 /v1/payments/{txId}',
+            why: 'Internally this is <code>DEBITED</code> or <code>SENT_TO_SPI</code>, but the client is told '
+              + '<b>PROCESSING</b>: the external vocabulary hides the state machine, so new internal states never '
+              + 'become a client\'s problem.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: `/v1/payments/${ctx.txId}` });
+              return { ok: r.ok, state: `${r.status} · ${r.json ? r.json.status : ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Wait for the rail: PROCESSING → SETTLED', call: 'GET :8084 /v1/payments/{txId} (polled)',
+            why: 'This is the poll a client would do <b>without</b> notifications — and the push on the phone is the '
+              + 'same answer, arriving on its own. Best-effort push, authoritative poll: two views of one truth.',
+            run: async (ctx) => {
+              const r = await pollUntilTerminal(ctx.txId, ctx.aliceToken);
+              return { ok: r.ok && r.json.status === 'SETTLED', state: `${r.json ? r.json.status : r.status}`,
+                body: pretty(r), note: 'Check the phone: event:PixSettled, same amount, same transactionId.' };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'reversal', name: 'Reversal', phone: true,
+        title: 'BACEN refuses — the money comes back, by a compensating posting',
+        blurb: 'The failure branch, driven on purpose. A permanent refusal cannot "undo" a ledger entry, because '
+          + 'the ledger is append-only: the money returns as a NEW posting that compensates the first, and the '
+          + 'payer is told. This journey arms the refusal, watches the reversal, and disarms it again.',
+        steps: [
+          {
+            title: 'Log in as alice', call: 'POST :8081 /v1/auth/login',
+            why: 'The payer, who will be refunded.',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'Arm the refusal in mock-BACEN', call: 'POST :9090 /admin/config',
+            why: 'A runtime knob: settlements for this key will be refused with <b>422</b>, a permanent business '
+              + 'refusal. Retrying a 422 is pointless — the correct response is to reverse.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('bacen'), path: '/admin/config',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rejectKeys: ['bob@otherbank.com'] }) });
+              ctx.vars.rejectKeys = 'armed';
+              return { ok: r.ok, state: `${r.status} · armed`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Open alice\'s stream', call: 'GET :8087 /v1/notifications/stream',
+            why: 'The reversal is a user-visible outcome, so it is pushed like any other.',
+            run: async (ctx) => {
+              phoneConnect(ctx.aliceToken);
+              for (let i = 0; i < 30 && phone.state !== 'live'; i++) await sleep(100);
+              return { ok: phone.state === 'live', state: phone.state === 'live' ? '● live' : phone.state };
+            },
+          },
+          {
+            title: 'alice\'s balance BEFORE', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'The number the reversal has to restore, exactly.',
+            run: async (ctx) => {
+              ctx.before = await balanceCents('acc-001', ctx.aliceToken);
+              ctx.vars.before = money(ctx.before);
+              return { ok: true, state: money(ctx.before), body: `balanceCents = ${ctx.before}` };
+            },
+          },
+          {
+            title: 'Send R$ 55,10 — accepted, then refused', call: 'POST :8084 /v1/payments/pix',
+            why: 'Accepted with <b>202</b>: from our side the request is valid, and the refusal happens later, at '
+              + 'the rail. The payer is already debited at this point.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/payments/pix',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+                body: JSON.stringify({ pixKey: 'bob@otherbank.com', amount: '55.10', description: 'journey' }) });
+              ctx.txId = r.json && r.json.transactionId;
+              ctx.vars.txId = ctx.txId;
+              if (ctx.txId) captureTxId(ctx.txId);
+              return { ok: r.status === 202, state: `${r.status} · ${r.json ? r.json.status : ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Wait for REVERSED', call: 'GET :8084 /v1/payments/{txId} (polled)',
+            why: 'REVERSED is a word the status vocabulary already had, so the failure branch taught no client a new '
+              + 'one. The phone shows <code>event:PixReversed</code> with a <code>failureReason</code>.',
+            run: async (ctx) => {
+              const r = await pollUntilTerminal(ctx.txId, ctx.aliceToken);
+              return { ok: r.ok && r.json.status === 'REVERSED', state: `${r.json ? r.json.status : r.status}`,
+                body: pretty(r) };
+            },
+          },
+          {
+            title: 'The money is back, to the cent', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'Restored by a <b>compensating posting</b> keyed <code>&lt;txId&gt;-rev</code>, not by editing or '
+              + 'deleting anything: the ledger is append-only, so the history still shows both the debit and its '
+              + 'reversal. That is what makes an audit possible at all.',
+            run: async (ctx) => {
+              const now = await balanceCents('acc-001', ctx.aliceToken);
+              return { ok: now === ctx.before, state: now === ctx.before ? 'restored ✓' : 'MISMATCH ✗',
+                body: `before   = ${ctx.before}\nafter    = ${now}\ndifference = ${now - ctx.before} (must be 0)` };
+            },
+          },
+          {
+            title: 'Disarm mock-BACEN', call: 'POST :9090 /admin/config', always: true,
+            why: 'Leave the sandbox as you found it — the next journey settles normally. Marked <b>always</b>: '
+              + 'it runs even if a step above failed, because a knob left armed by a broken run silently '
+              + 'poisons every run after it.',
+            run: async () => {
+              const r = await send({ method: 'POST', base: baseOf('bacen'), path: '/admin/config',
+                headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectKeys: [] }) });
+              return { ok: r.ok, state: `${r.status} · disarmed`, body: pretty(r) };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'idempotency', name: 'Idempotency', phone: false,
+        title: 'The same request twice — one payment, one debit',
+        blurb: 'A retry after a timeout is the single most common event in a payments API, and the client cannot '
+          + 'know whether the first attempt landed. The Idempotency-Key makes "send it again" safe: the second '
+          + 'call replays the first answer instead of minting a second payment.',
+        steps: [
+          {
+            title: 'Log in as alice', call: 'POST :8081 /v1/auth/login',
+            why: 'The payer whose balance must move exactly once.',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              ctx.key = crypto.randomUUID();
+              ctx.vars.idempotencyKey = ctx.key;
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'Balance BEFORE', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'The only assertion that matters here is the money one.',
+            run: async (ctx) => {
+              ctx.before = await balanceCents('acc-001', ctx.aliceToken);
+              ctx.vars.before = money(ctx.before);
+              return { ok: true, state: money(ctx.before), body: `balanceCents = ${ctx.before}` };
+            },
+          },
+          {
+            title: 'Send R$ 3,33 with a fixed key', call: 'POST :8084 /v1/payments/pix',
+            why: 'The key is claimed by a <b>conditional write</b> before any money moves, so two concurrent '
+              + 'retries cannot both proceed.',
+            run: async (ctx) => {
+              const r = await sendWithKey(ctx, '3.33', 'idempotency journey');
+              ctx.txId = r.json && r.json.transactionId;
+              ctx.vars.txId = ctx.txId;
+              return { ok: r.status === 202, state: `${r.status} · ${ctx.txId}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Send it AGAIN — same key, same body', call: 'POST :8084 /v1/payments/pix',
+            why: 'The memoized response is replayed: <b>the same transactionId and endToEndId</b>, not a new payment. '
+              + 'A client that retried after a timeout is now safe, and does not need to know whether it was.',
+            run: async (ctx) => {
+              const r = await sendWithKey(ctx, '3.33', 'idempotency journey');
+              const same = r.json && r.json.transactionId === ctx.txId;
+              return { ok: r.ok && same, state: same ? 'replayed, same txId ✓' : 'DIFFERENT txId ✗', body: pretty(r) };
+            },
+          },
+          {
+            title: 'One debit, not two', call: 'GET :8085 /internal/ledger/…/balance',
+            why: 'The contract is about the <b>money</b>, not the HTTP status: two accepted requests, one movement.',
+            run: async (ctx) => {
+              const now = await balanceCents('acc-001', ctx.aliceToken);
+              const delta = now - ctx.before;
+              return { ok: delta === -333, state: `${money(delta)}`,
+                body: `before = ${ctx.before}\nafter  = ${now}\ndelta  = ${delta} cents (expected -333)` };
+            },
+          },
+          {
+            title: 'Same key, DIFFERENT money → 409', call: 'POST :8084 /v1/payments/pix',
+            why: 'The one case where replaying would be a disaster. Answering "already done" would swallow this '
+              + 'payment; executing it would double-spend the key. It refuses instead: <b>409 '
+              + 'IDEMPOTENCY_KEY_REUSED</b> — mint a new key for a new intent.',
+            run: async (ctx) => {
+              const r = await sendWithKey(ctx, '999.99', 'a different intent under the same key');
+              return { ok: r.status === 409, state: `${r.status} · ${r.json ? r.json.code : ''}`, body: pretty(r) };
+            },
+          },
+        ],
+      },
+    ];
+
+    /** The three idempotency steps differ only in the body — the KEY is deliberately the same. */
+    function sendWithKey(ctx, amount, description) {
+      return send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken, path: '/v1/payments/pix',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': ctx.key },
+        body: JSON.stringify({ pixKey: 'bob@otherbank.com', amount, description }) });
+    }
+
+    // ---- journey rendering + runner --------------------------------------------------------------
+    // One run context per journey run: captured ids and balances flow forward, and `vars` is what the
+    // reader sees at the top — the values the flow produced, not values we invented for it.
+    const journeyState = {};        // id → { ctx, results:[{ok,state,body,note}] }
+
+    function journeyRun(journey) {
+      return journeyState[journey.id] || (journeyState[journey.id] = { ctx: { vars: {} }, results: [] });
+    }
+
+    function renderJourneyPanel() {
+      const journey = JOURNEYS.find((j) => j.id === activeJourney) || JOURNEYS[0];
+      activeJourney = journey.id;
+      const run = journeyRun(journey);
+      const wrap = $('servicePanel'); wrap.innerHTML = '';
+
+      const head = document.createElement('div');
+      head.className = 'svc-head';
+      head.innerHTML = `<h3>${journey.title}</h3><p>${journey.blurb}</p>`;
+      wrap.appendChild(head);
+
+      const layout = document.createElement('div');
+      layout.className = 'jrn-wrap';
+      layout.innerHTML = `<div class="jrn-main" id="jrnMain"></div>`
+        + (journey.phone ? `<div class="jrn-aside" id="jrnAside"></div>` : '');
+      wrap.appendChild(layout);
+
+      const main = $('jrnMain');
+      const bar = document.createElement('div');
+      bar.className = 'jrn-bar';
+      bar.innerHTML = `<button id="jrnRun">${ICON.send}Run all ${journey.steps.length} steps</button>`
+        + `<button id="jrnReset" class="ghost">Reset</button>`
+        + `<span class="muted" style="font-size:12px;">…or run any step on its own — they share the ids the`
+        + ` previous ones captured.</span>`;
+      main.appendChild(bar);
+
+      const vars = document.createElement('div');
+      vars.className = 'jvars'; vars.id = 'jrnVars';
+      main.appendChild(vars);
+      renderJourneyVars(run.ctx);
+
+      journey.steps.forEach((step, i) => main.appendChild(journeyStepCard(journey, step, i)));
+
+      if (journey.phone) {
+        $('jrnAside').innerHTML = phoneMarkup();
+        phoneClock();
+        phoneRender();
+      }
+
+      $('jrnRun').onclick = () => runJourney(journey);
+      $('jrnReset').onclick = () => { journeyState[journey.id] = { ctx: { vars: {} }, results: [] }; renderPanel(); };
+    }
+
+    function renderJourneyVars(ctx) {
+      const box = $('jrnVars'); if (!box) return;
+      const entries = Object.entries(ctx.vars || {}).filter(([, v]) => v);
+      box.innerHTML = entries.length
+        ? entries.map(([k, v]) => `<span class="jvar"><b>${escapeHtml(k)}</b> ${escapeHtml(String(v))}</span>`).join('')
+        : `<span class="jvar">no values captured yet — run the first step</span>`;
+    }
+
+    function journeyStepCard(journey, step, index) {
+      const run = journeyRun(journey);
+      const result = run.results[index];
+      const card = document.createElement('div');
+      card.className = 'jstep' + (result ? (result.ok ? ' done' : ' fail') : '');
+      card.innerHTML = `
+        <div class="jnum">${result && result.ok ? '✓' : index + 1}</div>
+        <div class="jbody">
+          <div class="jhead">
+            <span class="jtitle">${step.title}</span>
+            <span class="jcall">${escapeHtml(step.call)}</span>
+            <span class="jstate">${result ? escapeHtml(result.state) : ''}</span>
+          </div>
+          <p class="jwhy">${step.why}</p>
+          <div class="jout"></div>
+        </div>`;
+
+      const out = card.querySelector('.jout');
+      const btn = document.createElement('button');
+      btn.className = 'ghost mini';
+      btn.innerHTML = `${ICON.send}Run step ${index + 1}`;
+      btn.onclick = () => runStep(journey, index);
+      out.appendChild(btn);
+
+      if (result) {
+        if (result.note) {
+          const note = document.createElement('p');
+          note.className = 'jwhy'; note.style.color = 'var(--ok)';
+          note.textContent = '→ ' + result.note;
+          out.appendChild(note);
+        }
+        if (result.body) {
+          const pre = document.createElement('pre');
+          pre.textContent = result.body;
+          out.appendChild(pre);
+        }
+      }
+      return card;
+    }
+
+    async function runStep(journey, index) {
+      const run = journeyRun(journey);
+      const step = journey.steps[index];
+      try {
+        const result = await step.run(run.ctx);
+        run.results[index] = result;
+        if (!result.ok) toast('Step ' + (index + 1) + ' did not pass', result.state || '', 'bad');
+      } catch (e) {
+        run.results[index] = { ok: false, state: 'error', body: e.message };
+        toast('Step ' + (index + 1) + ' failed', e.message, 'bad');
+      }
+      renderPanel();
+      return run.results[index].ok;
+    }
+
+    /**
+     * Run every step in order, stopping at the first that does not pass — a broken flow must not race on.
+     *
+     * <p>Steps marked `always` still run after a stop: they are the ones that put the sandbox back (the
+     * mock-BACEN reject knob). Skipping cleanup on failure is how one failed run silently poisons every
+     * later one — which is precisely what happened while this journey was being built.
+     */
+    async function runJourney(journey) {
+      journeyState[journey.id] = { ctx: { vars: {} }, results: [] };
+      renderPanel();
+      let stoppedAt = -1;
+      for (let i = 0; i < journey.steps.length; i++) {
+        if (stoppedAt >= 0) {
+          if (journey.steps[i].always) await runStep(journey, i);
+          continue;
+        }
+        const ok = await runStep(journey, i);
+        if (!ok) stoppedAt = i;
+      }
+      if (stoppedAt >= 0) {
+        toast('Journey stopped', `at step ${stoppedAt + 1} — see the response below`, 'bad');
+        return;
+      }
+      toast('Journey complete', `${journey.name}: ${journey.steps.length}/${journey.steps.length} steps passed`, 'ok');
+    }
+
     function bodyToCreds(raw) {
       try { const o = JSON.parse(raw); return [o.username, o.password]; }
       catch (_) { return ['', '']; }
     }
 
-    // ---- Guided journey -----------------------------------------------------------------------
-    $('runJourney').onclick = async () => {
-      const out = $('journeyOut'); out.innerHTML = ''; $('runJourney').disabled = true;
-      const step = (label) => {
-        const d = document.createElement('div'); d.className = 'journey-step';
-        d.innerHTML = `<b>${label}</b> <span class="muted">…</span>`; out.appendChild(d); return d;
-      };
-      try {
-        let d = step('1 · Log in as alice');
-        let r = await doLogin('alice', 'alice');
-        d.innerHTML = `<b>1 · Log in as alice</b> — <span class="${r.ok ? 'status ok' : 'status bad'}">${r.status} ${r.statusText}</span>`;
-        if (!r.ok) return;
-
-        d = step('2 · Who am I (GET /v1/auth/me)');
-        r = await send({ method: 'GET', path: '/v1/auth/me', auth: true });
-        d.innerHTML = `<b>2 · Who am I</b> — <span class="${r.ok ? 'status ok' : 'status bad'}">${r.status} ${r.statusText}</span><pre>${pretty(r)}</pre>`;
-
-        const done = document.createElement('div'); done.className = 'journey-step muted';
-        done.innerHTML = '→ next chapters (send Pix, status, statement) unlock as those flows land.';
-        out.appendChild(done);
-      } catch (e) {
-        const d = document.createElement('div'); d.className = 'journey-step status bad';
-        d.textContent = e.message; out.appendChild(d);
-      } finally { $('runJourney').disabled = false; }
-    };
-
     // ---- boot ---------------------------------------------------------------------------------
+    // Journeys first, deliberately: the page should open on "does the product work?", not on a wall of
+    // endpoints. The endpoints are one click away for whoever wants them.
+    activeJourney = JOURNEYS[0].id;
     renderSession();
-    renderTabs();
-    renderServicePanel();
+    renderAll();
   </script>
 </body>
 </html>

@@ -286,12 +286,37 @@ paths:
             posture is a short-lived single-use stream ticket.
       responses:
         '200':
-          description: Open event stream
+          description: >-
+            Open event stream. Each event is three lines — `event:` (the type), `id:` (the
+            `eventId`) and `data:` (a `Notification`, below). Lines starting with `:` are
+            comments: the handshake (`:connected …`) and the 25s keepalive (`:ping`).
           content:
             text/event-stream:
               schema:
                 type: string
-                description: SSE frames; each `data:` line is a JSON notification payload
+                description: >-
+                  SSE frames; every `data:` line is one
+                  [`Notification`](#/components/schemas/Notification) object — the same
+                  shape for all three event types.
+              examples:
+                pixSettled:
+                  summary: The payer's external send settled
+                  value: |
+                    event:PixSettled
+                    id:evt-6f1a...
+                    data:{"transactionId":"tx-8f2c","type":"PixSettled","status":"SETTLED","amount":"987.00","counterpart":"bob@otherbank.com","timestamp":"2026-08-20T10:15:00Z","failureReason":null}
+                pixReceived:
+                  summary: Money arrived for the payee
+                  value: |
+                    event:PixReceived
+                    id:evt-91bd...
+                    data:{"transactionId":"in-E9999...","type":"PixReceived","status":"SETTLED","amount":"42.42","counterpart":"Carol","timestamp":"2026-08-20T10:16:00Z","failureReason":null}
+                pixReversed:
+                  summary: BACEN refused; the money is back with the payer
+                  value: |
+                    event:PixReversed
+                    id:evt-0c47...
+                    data:{"transactionId":"tx-8f2c","type":"PixReversed","status":"REVERSED","amount":"125.50","counterpart":"bob@otherbank.com","timestamp":"2026-08-20T10:15:02Z","failureReason":"CREDITOR_KEY_NOT_IN_DICT"}
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /pix-keys:
@@ -391,7 +416,85 @@ components:
         pixKey: { type: string }
         createdAt: { type: string, format: date-time }
         settledAt: { type: string, format: date-time, nullable: true }
-        failureReason: { type: string, nullable: true }
+        failureReason:
+          type: string
+          nullable: true
+          description: >-
+            Set on `REVERSED` — BACEN's refusal reason, forwarded as settlement-service stored
+            it (step 33). `null` on every other status. Carries the same value as the
+            `Notification.failureReason` pushed for the same payment, including the same
+            known gap: what travels today is the SPI's `detail` sentence rather than its
+            machine-readable code.
+          example: CREDITOR_KEY_NOT_IN_DICT
+    Notification:
+      type: object
+      description: >-
+        One `data:` line of the SSE stream (step 39). Deliberately a subset of `Payment`,
+        field for field: a client that already parses the status endpoint parses this with
+        no new vocabulary — same `status` enum, same `amount` formatting, same nullable
+        `failureReason`. Every field is always present (`null` when it does not apply), so
+        the shape never changes under a client that has parsed one frame.
+
+
+        No account id travels: the stream is opened with a JWT and carries only that
+        caller's events, so naming the account would restate what the client knows.
+
+
+        `counterpart` is **not masked here**, unlike `StatementEntry.counterpart` — a push
+        is ephemeral, authenticated and about the caller's own payment, and on a send it is
+        the very key the payer typed. A statement is exportable and long-lived, which is
+        what earns it the masking.
+      properties:
+        transactionId: { type: string, example: tx-9f1c }
+        type:
+          type: string
+          enum: [PixSettled, PixReceived, PixReversed]
+          description: >-
+            The event, and also the frame's `event:` field — a browser can
+            `addEventListener('PixReceived', …)` without parsing this body. It is what
+            carries the direction, which is why an arrival needs no status of its own.
+        status:
+          type: string
+          enum: [SETTLED, REVERSED]
+          description: >-
+            The same external vocabulary `Payment.status` uses. An arrival is `SETTLED`:
+            the money is here and it is final.
+        amount:
+          type: string
+          example: "987.00"
+          description: Integer cents formatted at this edge and nowhere earlier
+        counterpart:
+          type: string
+          nullable: true
+          description: >-
+            The payee's Pix key on a send, the payer's name (or their ISPB when BACEN sent
+            no name) on an arrival. `null` when neither travelled — never an internal
+            account id.
+          example: bob@otherbank.com
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            When the money reached this outcome — BACEN's `settledAt` on a settlement, the
+            arrival instant on a receive — not when the platform announced it.
+        failureReason:
+          type: string
+          nullable: true
+          description: >-
+            Set only on `PixReversed`, forwarded verbatim from the reversal event.
+
+
+            **Known gap (found verifying step 39, introduced in step 33):** what actually
+            travels today is not a code but the SPI's problem+json `detail` sentence —
+            e.g. `"The SPI refused the settlement: SETTLEMENT_REJECTED_BY_ADMIN |
+            endToEndId=E1234…"` — because `HttpSpiSettlementClient` reads `detail` rather
+            than the machine-readable `code` the SPI also returns. It reached a customer's
+            screen for the first time in step 39, which is how it surfaced. Treat this
+            field as opaque display text until the producer is fixed; the intended shape
+            is the code alone (`SETTLEMENT_REJECTED_BY_ADMIN`,
+            `CREDITOR_KEY_NOT_IN_DICT`), which is a settlement-service change, not a
+            notification one.
+          example: CREDITOR_KEY_NOT_IN_DICT
     StatementEntry:
       type: object
       properties:

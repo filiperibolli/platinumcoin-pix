@@ -112,20 +112,22 @@ public class SseEmitterRegistry implements SubscriberRegistry<SseEmitter>, Notif
         for (Registration registration : streams.values()) {
             // The SSE frame carries the routing metadata in its OWN fields — `event:` and `id:` — so the
             // browser's EventSource can addEventListener('PixReceived', …) without parsing the body, and
-            // a reconnect can resume from Last-Event-ID. The data line stays purely the business payload
-            // (step 39 standardizes its shape).
+            // a reconnect can resume from Last-Event-ID. The data line is the standardized payload
+            // (step 39): the same external status vocabulary GET /payments/{id} answers, money formatted
+            // to a decimal string here and nowhere earlier.
             var frame = SseEmitter.event()
                     .id(notification.eventId())
-                    .name(notification.eventType())
-                    .data(notification.data());
+                    .name(notification.type())
+                    .data(NotificationPayload.of(notification));
             if (send(registration, frame, "notification")) {
                 reached++;
             }
         }
 
-        log.debug("Pushed an SSE frame to the streams open for this account | eventId={} eventType={} "
-                        + "accountId={} reached={}",
-                notification.eventId(), notification.eventType(), accountId, reached);
+        log.debug("Pushed an SSE frame to the streams open for this account | eventId={} type={} "
+                        + "status={} accountId={} transactionId={} amountCents={} reached={}",
+                notification.eventId(), notification.type(), notification.status(), accountId,
+                notification.transactionId(), notification.amountCents(), reached);
         return reached;
     }
 

@@ -202,7 +202,7 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > # terminal 2 — make money arrive (register bob@platinum.com first, account-service)
 > curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
 >   -d '{"pixKey":"bob@platinum.com","amount":"12.34","payerName":"Carol"}'
-> # terminal 1 now shows:  event:PixReceived / id:evt-… / data:{…"amountCents":1234…}
+> # terminal 1 now shows:  event:PixReceived / id:evt-… / data:{…"amount":"12.34"…}   (step 39 shape)
 >
 > # the browser-shaped handshake: EventSource cannot set headers, so the token goes in the query string
 > curl -N "localhost:8087/v1/notifications/stream?access_token=$BOB"
@@ -216,11 +216,12 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > behind a load balancer would only reach the customers connected to *it* (single-instance locally; the
 > production shape is a shared pub/sub fan-out).
 >
-> Deliberately incomplete until **step 39**: the `data:` line is the raw event payload, not yet the
-> standardized DTO on the external status vocabulary, and the payee of an *internal* send is not notified
-> (an internal Pix emits one `PixSettled`, routed to the payer). Also note nothing depends on this
-> service — a missed push degrades UX, never correctness, because every outcome stays queryable on
-> `GET /payments/{transactionId}`.
+> **Step 39** completed the payload: the `data:` line is now one standardized shape for all three events,
+> on the same external status vocabulary `GET /payments/{transactionId}` answers — see §5.6.1. Still open,
+> and by design: the payee of an *internal* send is not notified (an internal Pix emits one `PixSettled`,
+> which means "your send completed" and belongs to the payer; the arrival event is the producer's to emit).
+> Also note nothing depends on this service — a missed push degrades UX, never correctness, because every
+> outcome stays queryable on `GET /payments/{transactionId}`.
 
 ### How the build works (there is no service image in git)
 
@@ -955,10 +956,56 @@ curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: applicatio
 BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
   -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
 curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB"
+# → ":connected sub-…" immediately (an SSE comment; it COMMITS the response, so you can tell
+#   "connected and quiet" from "hanging"), then ":ping" every 25s
 
-# terminal 2: trigger the inbound Pix of §5.6 again
-# terminal 1 shows the SSE event "PIX_RECEIVED" in real time
+# terminal 2: trigger the inbound Pix of §5.6 (bob@platinum.com must be registered — §5.2)
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"77.77","payerName":"Carol Mendes"}' | jq -c
+
+# terminal 1, within seconds:
+#   event:PixReceived
+#   id:evt-…
+#   data:{"transactionId":"in-E99999999…","type":"PixReceived","status":"SETTLED","amount":"77.77",
+#         "counterpart":"Carol Mendes","timestamp":"2026-08-20T17:35:54.335Z","failureReason":null}
 ```
+
+**The sender's side (step 39).** The same three lines, on the payer's stream, for both endings of an
+external send — this is the honest ending to the `202 PROCESSING` they saw:
+
+```bash
+# terminal 1: alice's stream
+ALICE=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $ALICE"
+
+# terminal 2 — the happy ending: an EXTERNAL send (the payee banks elsewhere, so it settles via BACEN)
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"pixKey":"bob@otherbank.com","amount":"12.34","description":"journey"}' | jq -c
+# terminal 1 → event:PixSettled  data:{…"status":"SETTLED","amount":"12.34",
+#                                      "counterpart":"bob@otherbank.com","failureReason":null}
+
+# terminal 2 — the failure ending: arm the reject-key knob (§5.5) and send again
+curl -s -X POST localhost:9090/admin/config -H 'Content-Type: application/json' \
+  -d '{"rejectKeys":["bob@otherbank.com"]}' | jq -c
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $ALICE" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"pixKey":"bob@otherbank.com","amount":"55.10"}' | jq -c
+# terminal 1 → event:PixReversed data:{…"status":"REVERSED","failureReason":"…"} — the compensating
+#              posting already returned the money (step 33); remember to clear rejectKeys afterwards
+```
+
+**One shape for all three**, and it is a strict subset of what `GET /v1/payments/{transactionId}`
+answers: `{transactionId, type, status, amount, counterpart, timestamp, failureReason}` — same status
+vocabulary, `amount` already a decimal string, `counterpart` a display value and never an account id.
+Note what routing means in practice: alice's send never appears on bob's stream and vice versa, because
+the addressee is read off the event (payer for an outcome, payee for an arrival) and the stream itself is
+bound to the JWT's `accountId`.
+
+> **See it as a customer would:** open `tools/api-explorer/index.html` → the **Phone** tab, log in, press
+> **Connect**, then trigger any of the commands above. Same endpoint, same bytes, rendered as a lock
+> screen; click a notification for the raw `data:` JSON that produced it.
 
 ### 5.7 Balance & statement (cache)
 

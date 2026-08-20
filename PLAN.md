@@ -95,7 +95,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` (+DLQ, filtered subscription)
 - [x] [Step 37](docs/steps/step-37.md) — mock-bacen inbound generator → inbound flow: dedupe by endToEndId, credit posting
 - [x] [Step 38](docs/steps/step-38.md) — notification-service: consume notification-queue, SSE stream per user
-- [ ] [Step 39](docs/steps/step-39.md) — wire PixSettled/PixReceived/PixReversed to real-time pushes end to end
+- [x] [Step 39](docs/steps/step-39.md) — wire PixSettled/PixReceived/PixReversed to real-time pushes end to end
 
 ## Sprint 9 — Balance & statement with cache
 **Flow delivered:** balance < 300ms p99 from cache; paginated statement through payment-service.
@@ -132,6 +132,11 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [ ] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
 - [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
+  > Partly delivered early (2026-08-20, during step 39): the **Journeys · Services · Phone** grouping, the
+  > five runnable journeys (receive · internal · external · reversal · idempotency) and the layout fix
+  > landed when the step-39 review found the explorer could not answer "how do I test receiving a Pix?".
+  > What step 49 still owns: coverage audit against `docs/api/openapi.yaml`, richer error examples, and
+  > journeys for the flows that land after Sprint 8 (cache, statement, audit).
 
 ## Sprint 14 — Relational counterpart & staff-grade extensions (Block Q)
 > Steps 50–51 may be taken any time after Sprint 3; 52 requires 47; 53 requires 41 & 43.

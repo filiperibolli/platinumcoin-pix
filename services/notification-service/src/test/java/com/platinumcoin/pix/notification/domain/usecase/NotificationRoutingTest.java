@@ -3,7 +3,7 @@ package com.platinumcoin.pix.notification.domain.usecase;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.platinumcoin.pix.notification.domain.service.NotificationRouting;
-import java.util.Map;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -36,8 +36,9 @@ class NotificationRoutingTest {
     @Test
     void anInternalSettlementStillGoesToThePayer() {
         // An INTERNAL send carries BOTH accounts (payment-service's PixSettled, step 21). The payer is
-        // still the addressee: this event announces "your send completed", and the payee's own
-        // notification is step 39's business, not a second copy of the sender's event.
+        // still the addressee: this event announces "your send completed", and it is not a second copy
+        // of it that the payee needs but an arrival event of their own — which payment-service does not
+        // emit today (known gap, README; the event carries no payer display name to build one from).
         var command = command("PixSettled", "acc-001", "acc-002");
 
         assertThat(NotificationRouting.affectedAccountId(command)).isEqualTo("acc-001");
@@ -62,6 +63,7 @@ class NotificationRoutingTest {
     private static DeliverNotificationCommand command(
             String eventType, String debtorAccountId, String creditorAccountId) {
         return new DeliverNotificationCommand("evt-1", eventType, "cid-1", "tx-1",
-                debtorAccountId, creditorAccountId, 12_345L, Map.of("txId", "tx-1"));
+                debtorAccountId, creditorAccountId, 12_345L, "bob@otherbank.com", "Carol", "99999999",
+                null, null, null, Instant.parse("2026-08-20T10:15:00Z"));
     }
 }

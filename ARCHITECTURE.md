@@ -644,6 +644,17 @@ call to BACEN, which is not idempotent on our side, so the ordering flips with t
 The webhook body has no `creditorAccountId` field at all, so a caller holding a valid token still cannot
 address money to an account of its choosing.
 
+**The push carries one shape, and it is a subset of the status endpoint's** (step 39). All three
+user-facing events — `PixSettled` and `PixReversed` to the **payer**, `PixReceived` to the **payee** —
+arrive as `{transactionId, type, status, amount, counterpart, timestamp, failureReason}`, using the same
+external status vocabulary `GET /v1/payments/{transactionId}` answers (`SETTLED`, `REVERSED`), with money
+formatted to a decimal string at that edge and nowhere earlier. An arrival is `SETTLED` rather than a
+sixth word: the direction is carried by `type`, and a status of its own would put one fact in two fields.
+The reason this matters beyond tidiness: **the push and the poll are two views of the same truth**, and a
+client that had to translate between them would eventually translate wrongly — while a push is
+best-effort (nothing is buffered for a disconnected customer) precisely *because* the poll remains
+authoritative.
+
 ---
 
 ### 6.9 Flow — Balance & statement with cache   · Sprint 9 · infra: none new (Redis cache-aside)

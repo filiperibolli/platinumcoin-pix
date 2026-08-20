@@ -34,6 +34,12 @@ import java.time.Instant;
  * write-shards it into {@code SPI_CLEARING#00..#15}, and a reversal that guessed the shard instead of
  * reading the one used would drain the wrong sub-account and break the per-shard balance.
  *
+ * <p><b>Why it came back (step 33):</b> {@code failureReason} is BACEN's refusal reason, written by
+ * settlement-service alongside the {@code REVERSED} status. {@code null} on every other state — a
+ * successful payment has no reason, and a payment still in flight has no answer yet. It is read here for
+ * one purpose: so the status endpoint can tell the payer <i>why</i> their money came back, rather than
+ * being less informative than the push that announced it.
+ *
  * <p><b>Scored in the path (step 25):</b> {@code fraudDecision} is the verdict the in-path fraud check
  * returned ({@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out or errored and
  * the send failed open), and {@code fraudSkipped} is its boolean shorthand — {@code true} iff the score
@@ -56,5 +62,6 @@ public record Transaction(
         FraudDecision fraudDecision,
         boolean fraudSkipped,
         Instant createdAt,
-        Instant settledAt) {
+        Instant settledAt,
+        String failureReason) {
 }

@@ -15,9 +15,9 @@ import java.time.Instant;
  * nowhere earlier.
  *
  * <p>{@code settledAt} and {@code failureReason} are nullable by schema: a still-processing payment has
- * neither, a settled internal send carries {@code settledAt}, and {@code failureReason} exists only for
- * the {@code FAILED} states a later step (33) introduces. They are always present in the JSON (as
- * {@code null} when absent) so the shape never changes under the client.
+ * neither, a settled send carries {@code settledAt}, and a {@code REVERSED} one carries
+ * {@code failureReason} — BACEN's refusal reason (step 33), forwarded as stored. They are always present
+ * in the JSON (as {@code null} when absent) so the shape never changes under the client.
  */
 public record PaymentResponse(
         String transactionId,
@@ -38,9 +38,7 @@ public record PaymentResponse(
                 transaction.creditorKey(),
                 transaction.createdAt(),
                 transaction.settledAt(),
-                // No FAILED/REVERSED state exists yet (step 33 introduces them and their reason), so an
-                // internal send never carries a failure reason. Kept explicit so the field is present.
-                null);
+                transaction.failureReason());
     }
 
     /**
@@ -63,6 +61,9 @@ public record PaymentResponse(
         return switch (status) {
             case RECEIVED, DEBITED, SENT_TO_SPI -> "PROCESSING";
             case SETTLED -> "SETTLED";
+            // Terminal and visible, unlike DEBITED/SENT_TO_SPI: a reversal is something the payer must be
+            // able to see and act on — their money came back, and failureReason says why.
+            case REVERSED -> "REVERSED";
         };
     }
 

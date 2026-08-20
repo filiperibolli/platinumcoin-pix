@@ -4,7 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.platinumcoin.pix.notification.domain.usecase.DeliverOutcome.Kind;
-import java.util.Map;
+import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
  * the consumer is then allowed to do with the message.
  */
 class DeliverNotificationUseCaseTest {
+
+    private static final Instant SETTLED_AT = Instant.parse("2026-08-20T10:15:00Z");
 
     private FakeProcessedEvents processedEvents;
     private FakeNotificationChannel channel;
@@ -96,11 +98,58 @@ class DeliverNotificationUseCaseTest {
 
     @Test
     void anUnroutableEventIsAckedWithoutPushing() {
-        var outcome = useCase.execute(new DeliverNotificationCommand(
-                "evt-1", "PixDebited", "cid-1", "tx-1", "acc-001", null, 900L, Map.of()));
+        var outcome = useCase.execute(command("evt-1", "PixDebited", "acc-001", null, 900L));
 
         assertThat(outcome.kind()).isEqualTo(Kind.UNROUTABLE);
         assertThat(channel.pushes).isEmpty();
+    }
+
+    /**
+     * Routing runs <b>before</b> the wording, and that order is load-bearing: {@code PixDebited} has no
+     * customer-facing status, so describing it would throw — but nobody can be named for it either, and
+     * the event is dropped first. Asserting the outcome above is only half the story; this pins that the
+     * unknown type never reaches {@link com.platinumcoin.pix.notification.domain.service
+     * .NotificationVocabulary} at all, which is why an upstream change surfaces as an acked
+     * {@code UNROUTABLE} in the logs rather than as a message looping into the DLQ.
+     */
+    @Test
+    void anEventWithNoCustomerFacingWordingIsDroppedBeforeItCanBeDescribed() {
+        var outcome = useCase.execute(command("evt-1", "FraudCheckSkipped", "acc-001", null, 900L));
+
+        assertThat(outcome.kind()).isEqualTo(Kind.UNROUTABLE);
+        assertThat(channel.pushes).isEmpty();
+    }
+
+    /**
+     * What the customer is actually told — the step-39 shape, composed here and pushed as one piece:
+     * the external status vocabulary, the counterpart, and cents still cents (the decimal string is the
+     * transport's job, one layer further out).
+     */
+    @Test
+    void thePushCarriesTheCustomerFacingWordingNotTheRawEvent() {
+        useCase.execute(settled("evt-1", "acc-001", 12_550L));
+
+        assertThat(channel.pushes).singleElement().satisfies(push -> {
+            assertThat(push.notification().type()).isEqualTo("PixSettled");
+            assertThat(push.notification().status()).isEqualTo("SETTLED");
+            assertThat(push.notification().counterpart()).isEqualTo("bob@otherbank.com");
+            assertThat(push.notification().transactionId()).isEqualTo("tx-1");
+            assertThat(push.notification().amountCents()).isEqualTo(12_550L);
+            assertThat(push.notification().failureReason())
+                    .as("a settled payment never carries a failure reason")
+                    .isNull();
+        });
+    }
+
+    /** The failure branch of the funnel: the payer is told the money came back, and why. */
+    @Test
+    void aReversalTellsThePayerWhyTheMoneyCameBack() {
+        useCase.execute(reversed("evt-1", "acc-001", 12_550L));
+
+        assertThat(channel.pushes).singleElement().satisfies(push -> {
+            assertThat(push.notification().status()).isEqualTo("REVERSED");
+            assertThat(push.notification().failureReason()).isEqualTo("CREDITOR_KEY_NOT_IN_DICT");
+        });
     }
 
     @Test
@@ -118,17 +167,21 @@ class DeliverNotificationUseCaseTest {
     }
 
     private static DeliverNotificationCommand received(String eventId, String creditor, long amountCents) {
-        return new DeliverNotificationCommand(eventId, "PixReceived", "cid-1", "tx-1",
-                null, creditor, amountCents, Map.of("amountCents", amountCents));
+        return command(eventId, "PixReceived", null, creditor, amountCents);
     }
 
     private static DeliverNotificationCommand settled(String eventId, String debtor, long amountCents) {
-        return new DeliverNotificationCommand(eventId, "PixSettled", "cid-1", "tx-1",
-                debtor, null, amountCents, Map.of("amountCents", amountCents));
+        return command(eventId, "PixSettled", debtor, null, amountCents);
     }
 
     private static DeliverNotificationCommand reversed(String eventId, String debtor, long amountCents) {
-        return new DeliverNotificationCommand(eventId, "PixReversed", "cid-1", "tx-1",
-                debtor, null, amountCents, Map.of("amountCents", amountCents));
+        return command(eventId, "PixReversed", debtor, null, amountCents);
+    }
+
+    private static DeliverNotificationCommand command(String eventId, String eventType, String debtor,
+            String creditor, long amountCents) {
+        return new DeliverNotificationCommand(eventId, eventType, "cid-1", "tx-1",
+                debtor, creditor, amountCents, "bob@otherbank.com", "Carol", "99999999",
+                "CREDITOR_KEY_NOT_IN_DICT", SETTLED_AT, SETTLED_AT, SETTLED_AT);
     }
 }

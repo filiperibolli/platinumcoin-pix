@@ -128,7 +128,7 @@ class SseIT extends LocalStackTestBase {
         publishPixReceived(receivedEventId, "tx-in-1", BOB, 12_345L);
         pollUntilReceived();
 
-        String frame = bobStream.awaitLineContaining("12345", Duration.ofSeconds(5));
+        String frame = bobStream.awaitLineContaining("123.45", Duration.ofSeconds(5));
         assertThat(frame).as("bob's inbound Pix arrived on bob's stream").isNotNull();
 
         // The SSE frame carries its routing metadata in the protocol's own fields, so a browser can
@@ -139,7 +139,7 @@ class SseIT extends LocalStackTestBase {
 
         assertThat(aliceStream.drain(Duration.ofMillis(500)))
                 .as("bob's payment never appeared on alice's stream")
-                .noneMatch(line -> line.contains("12345") || line.contains(receivedEventId));
+                .noneMatch(line -> line.contains("123.45") || line.contains(receivedEventId));
     }
 
     /** The mirror case: an outbound outcome belongs to the payer, and reaches only them. */
@@ -152,29 +152,31 @@ class SseIT extends LocalStackTestBase {
         publishPixSettled(eventId, "tx-out-1", ALICE, 98_700L);
         pollUntilReceived();
 
-        assertThat(aliceStream.awaitLineContaining("98700", Duration.ofSeconds(5)))
+        assertThat(aliceStream.awaitLineContaining("987.00", Duration.ofSeconds(5)))
                 .as("the payer was told their send completed").isNotNull();
         assertThat(bobStream.drain(Duration.ofMillis(500)))
                 .as("alice's send never appeared on bob's stream")
-                .noneMatch(line -> line.contains("98700") || line.contains(eventId));
+                .noneMatch(line -> line.contains("987.00") || line.contains(eventId));
     }
 
     /**
-     * Money survives the whole asynchronous path as integer cents. R$ 1.234.567,89 is chosen on purpose:
-     * it is past {@code Integer.MAX_VALUE} in cents, so a payload field read as an {@code int} anywhere
-     * between SNS and the socket fails here rather than in production on the one payment large enough to
-     * matter.
+     * Money survives the whole asynchronous path exactly, and changes shape exactly once. R$ 1.234.567,89
+     * is chosen on purpose: it is past {@code Integer.MAX_VALUE} in cents, so a payload field read as an
+     * {@code int} anywhere between SNS and the socket fails here rather than in production on the one
+     * payment large enough to matter. Since step 39 the frame carries the <b>decimal string</b> — the
+     * cents became {@code "1234567.89"} at the API edge and nowhere earlier — so the number that must
+     * survive undivided and unrounded is asserted in the form a customer actually reads.
      */
     @Test
-    void aLargeAmountArrivesAsExactIntegerCents() throws Exception {
+    void aLargeAmountArrivesExactlyAsADecimalStringFormattedAtTheEdge() throws Exception {
         bobStream = connect(BOB);
         long amountCents = 123_456_789L;
 
         publishPixReceived("evt-" + UUID.randomUUID(), "tx-in-big", BOB, amountCents);
         pollUntilReceived();
 
-        assertThat(bobStream.awaitLineContaining("123456789", Duration.ofSeconds(5)))
-                .as("the exact cents reached the stream, undivided and unrounded")
+        assertThat(bobStream.awaitLineContaining("1234567.89", Duration.ofSeconds(5)))
+                .as("the exact money reached the stream, undivided and unrounded")
                 .isNotNull();
     }
 
@@ -192,9 +194,9 @@ class SseIT extends LocalStackTestBase {
         publishPixReceived(eventId, "tx-in-dup", BOB, 4_242L);
         pollUntilReceived();
 
-        assertThat(bobStream.awaitLineContaining("4242", Duration.ofSeconds(5))).isNotNull();
+        assertThat(bobStream.awaitLineContaining("42.42", Duration.ofSeconds(5))).isNotNull();
         assertThat(bobStream.drain(Duration.ofSeconds(1)))
-                .filteredOn(line -> line.contains("4242"))
+                .filteredOn(line -> line.contains("42.42"))
                 .as("the redelivery was deduped away, not pushed a second time")
                 .hasSize(1);
         assertThat(receivableEventIds())
