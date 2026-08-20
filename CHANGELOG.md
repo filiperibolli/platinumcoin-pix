@@ -170,6 +170,39 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- **API explorer: journey tabs, and a navigation that fits on the page.** Delivered ahead of step 49 (which
+  finalizes the explorer) because the step-39 review asked a question the tool could not answer: *how do I
+  test receiving a Pix?* The honest answer was "open the mock-bacen-spi tab, but first go to account-service
+  as bob and register a key, then watch it in a third tab" — three tabs and an invisible prerequisite, which
+  is a wall of endpoints failing to tell a story.
+  - **Five journeys**, each an ordered list of real calls against the running stack, carrying the ids the
+    previous steps captured (shown as chips at the top) with a paragraph under each step saying what it
+    *proves*: **Receive Pix** (login → register key → open the SSE stream → BACEN delivers → balance +R$
+    77,77 → re-deliver the same `endToEndId` → `ALREADY_PROCESSED` → balance unchanged), **Send Pix ·
+    internal** (resolve `internal=true` → send → `SETTLED` at once → both balances, sum of deltas = 0),
+    **Send Pix · external** (202 `PROCESSING` → poll → `SETTLED`), **Reversal** (arm the SPI refusal →
+    send → `REVERSED` → money restored to the cent → disarm) and **Idempotency** (same key replays the
+    same `transactionId`, one debit; a different body under it ⇒ `409`). Run all, or any step on its own.
+  - **Cleanup runs even when a journey stops.** Steps can be marked `always`, so a run that fails half-way
+    still disarms the mock-BACEN reject knob — a knob left armed silently poisons every later run, which is
+    exactly what happened while this was being built.
+  - **Layout, measured rather than eyeballed:** nine service tabs in one row had `scrollWidth` 1175px inside
+    an 876px container — names wrapping onto three lines, the last tab clipped, and the whole page scrolling
+    horizontally (`body.scrollWidth` 1457 at a 1440 viewport). Fixed by grouping the navigation into
+    **Journeys · Services · Phone** (each group's row is short by construction), widening `main` 940 → 1180px
+    and making tabs `nowrap` with their own scroll. Verified in a headless browser: one row, no tab overflow,
+    no page overflow. The page now opens on Journeys — "does the product work?" before "what endpoints exist?".
+  - **The Phone stays, and appears where it is useful:** the same handset (one connection, one customer)
+    renders beside the steps of every journey that produces a notification, so the push arrives while you
+    read the next step instead of in another tab.
+  - **Verified end to end in a headless browser against the live stack: 36/36 steps across the five
+    journeys.** Two defects of my own were caught that way (a step missing its `path`, producing
+    `http://localhost:8082undefined`; and the login step dumping the whole JWT into the response pane,
+    breaking the explorer's own rule that a token is summarised and never printed — now
+    `eyJ… (claims: u-bob · account acc-002)`), and one defect of the platform's, which has its own entry
+    under **Fixed** above.
+  AI: est 2h / actual ~2.5h / ~90% generated / 0 issues caught in human review
+
 - Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)
   **Sprint 8 closes: the payload became a contract.** Step 38 proved a frame could reach the right
   customer, but it pushed each producer's event payload *verbatim* — three different shapes on one
