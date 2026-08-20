@@ -1,9 +1,9 @@
 package com.platinumcoin.pix.notification.domain.usecase;
 
-import com.platinumcoin.pix.notification.domain.model.Notification;
 import com.platinumcoin.pix.notification.domain.port.NotificationChannel;
 import com.platinumcoin.pix.notification.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.notification.domain.service.NotificationRouting;
+import com.platinumcoin.pix.notification.domain.service.NotificationVocabulary;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -61,8 +61,11 @@ public class DeliverNotificationUseCase {
             return DeliverOutcome.unroutable();
         }
 
-        var notification = new Notification(command.eventId(), command.eventType(), accountId,
-                command.txId(), command.amountCents(), command.data());
+        // Two policy questions, asked in order and each in exactly one place: NotificationRouting
+        // answered "whose stream?", NotificationVocabulary answers "in what words?" (step 39). Routing
+        // first is what makes the vocabulary's refusal of an unknown type unreachable rather than a
+        // crash — an event nobody can be named for never gets described.
+        var notification = NotificationVocabulary.describe(command, accountId);
 
         int reached;
         try {
@@ -86,9 +89,11 @@ public class DeliverNotificationUseCase {
         }
 
         log.info("Notification pushed to every stream this account has open | eventId={} eventType={} "
-                        + "accountId={} txId={} amountCents={} subscribersReached={}",
+                        + "accountId={} txId={} amountCents={} status={} counterpart={} timestamp={} "
+                        + "subscribersReached={}",
                 command.eventId(), command.eventType(), accountId, command.txId(),
-                command.amountCents(), reached);
+                command.amountCents(), notification.status(), notification.counterpart(),
+                notification.timestamp(), reached);
         return DeliverOutcome.delivered(accountId, reached);
     }
 }

@@ -138,6 +138,88 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)
+  **Sprint 8 closes: the payload became a contract.** Step 38 proved a frame could reach the right
+  customer, but it pushed each producer's event payload *verbatim* — three different shapes on one
+  stream (an arrival naming a `creditorAccountId` and a `payerName`, an outbound outcome a
+  `debtorAccountId` and a `creditorKey`), each carrying whatever else its producer happened to write. A
+  client had to learn all three and would break the day a producer added a field. All three now converge
+  on **one shape**, and it is a strict subset of the `Payment` schema `GET /v1/payments/{transactionId}`
+  answers, so the push and the poll can never disagree about what a finished payment is called:
+  `{transactionId, type, status, amount, counterpart, timestamp, failureReason}`.
+  - **The external status vocabulary, reused rather than extended.** `PixSettled` and `PixReceived` are
+    both `SETTLED`; `PixReversed` is `REVERSED` — words the status endpoint already answers (step 22).
+    An arrival deliberately did **not** get a sixth word (`RECEIVED`): the money is here and it is final,
+    which is what `SETTLED` means, and the direction is already carried by `type`. A status of its own
+    would put one fact in two fields and let a client disagree with itself. The internal vocabulary keeps
+    its own name for it (`RECEIVED_SETTLED` in `pix_transactions`) — exactly the sort of detail
+    mapping-at-the-edge exists to keep off the wire.
+  - **Money changes shape exactly once, and `infra/web/` is where that edge is.** Cents stay a `long`
+    from the ledger through SNS, SQS and `domain/`; `NotificationPayload` formats `12550 → "125.50"` with
+    a `BigDecimal` decimal-point shift (exact, base-10, no division, no rounding mode to get wrong). The
+    DTO sits in `infra/web` rather than `api/` — unlike every other client-facing shape in the platform —
+    because here the controller only hands MVC an open connection and returns; the frames are written
+    later, from the consumer's thread, by the adapter that owns the transport. The shape belongs next to
+    whoever writes it.
+  - **Two policy questions, two domain services, asked in this order.** `NotificationRouting` answers
+    *whose stream?* (unchanged from step 38); the new `NotificationVocabulary` answers *in what words?* —
+    the status, the counterpart, and which of the event's three instants a customer is shown. Routing
+    first is load-bearing: the vocabulary **refuses** an unknown event type (`IllegalArgumentException`,
+    no silent default) and that refusal is unreachable precisely because an event nobody can be addressed
+    for is dropped before it is ever described.
+  - **The timestamp is when the *money* moved, not when we announced it** — `settledAt` for a settlement,
+    the arrival instant for a receive, falling back to the outbox's `occurredAt`. They differ by
+    milliseconds on a healthy day and by minutes the day the publisher backs up, which is exactly the day
+    a receipt showing the wrong one becomes a complaint.
+  - **`counterpart` is a display value and never an internal account id**: the payee's Pix key on a send
+    (what the payer typed), the payer's name on an arrival, their ISPB when BACEN sent no name, `null`
+    when neither travelled. Unlike `StatementEntry.counterpart` it is **not masked** — a push is
+    ephemeral, authenticated and about the caller's own payment, while a statement is exportable and
+    long-lived, which is what earns it the masking. No account id is on the wire at all: the stream is
+    opened with a JWT and carries only that caller's events.
+  - **`domain/` stopped receiving a `Map`.** The payload map now ends at the boundary: `NotificationMessage`
+    (in `api/`) names every value it needs and hands over a wide, explicit command. Deciding what a
+    customer sees by digging keys out of a JSON map inside `domain/` would be policy written against a
+    shape this service does not own (ADR-0010).
+  - **Reconnect UX, answered honestly.** Frames still carry `id:`, so a client sends `Last-Event-ID` — but
+    this service keeps **no backlog**: events for a customer with nothing open are dropped and acked, so
+    they do not arrive late on reconnect. `RealtimeJourneyIT` pins the whole behaviour, gap included: the
+    reconnected stream is healthy immediately, and what was missed stays queryable on
+    `GET /v1/payments/{transactionId}`. Buffering would mean holding messages for customers who may not
+    open the app for a week, and eventually a DLQ full of work that can never succeed.
+  - **Tests:** `NotificationVocabularyTest` (12) is the payload contract test — every status it can emit
+    is asserted to be a word `PaymentResponse` also emits; `NotificationPayloadTest` (10) pins the money
+    edge from 0 to R$ 9.999.999.999,99, including values past `Integer.MAX_VALUE` in cents;
+    `RealtimeJourneyIT` (5) drives all three outcomes over a real socket, with the events minted through
+    the *production* `OutboxEvent`/`EventEnvelope` code and published to **SNS** so the step-36 filter
+    policy is part of what is under test. `mvn -pl services/notification-service verify` green: 53 unit +
+    17 IT.
+  - **Verified against the live stack**, all three within seconds of the money moving: alice's external
+    send → `PixSettled` (`"amount":"12.34"`) on alice's stream; the reject-key knob armed → `PixReversed`
+    on alice's; mock-bacen inbound → `PixReceived` (`"counterpart":"Carol Mendes"`) on bob's, and never on
+    the other's.
+  - **Twin harnesses:** the API explorer gains a **Phone tab** — the same endpoint and the same bytes,
+    rendered as a phone lock screen (each card is one `data:` line; click one for the raw JSON). It ships
+    no new API surface; it exists because the fastest way to judge a client contract is to build the
+    client it was designed for, and it is deliberately dull to build. The connection survives a tab
+    switch, so you can connect, go send a Pix in another tab, and come back to the notification. The
+    Postman folder and the stream card document the frame shape (Postman cannot render a stream — it
+    waits for a response that never finishes, which is itself worth knowing).
+  - **Two gaps found and deliberately left to their owners.** (1) **`failureReason` is a sentence, not a
+    code** — a forced refusal pushed `"The SPI refused the settlement: SETTLEMENT_REJECTED_BY_ADMIN |
+    endToEndId=E1234…"` onto a customer's screen, because `HttpSpiSettlementClient#detailOf` (step 33)
+    reads the SPI's problem+json **`detail`** while the same response also carries a machine-readable
+    **`code`**. It was always in the event; step 39 is the first thing that *rendered* it. The fix is one
+    line in settlement-service — money-path code, its own change. (2) **The payee of an *internal* send
+    is still not notified**: that flow emits a single `PixSettled` meaning "your send completed", which
+    belongs to the payer, and this consumer cannot manufacture an arrival honestly (the event carries no
+    payer display name, only a `debtorAccountId` — the counterpart would be invented or one of our
+    account ids). The fix belongs to the producer, payment-service emitting a `PixReceived` the way
+    settlement-service already does for an inbound Pix; nothing downstream would change, since the
+    subscription filter and the routing rule already handle it. Both are recorded in the service README
+    and, for the first, in `openapi.yaml`.
+  AI: est 3h / actual ~3h / ~90% generated / 0 issues caught in human review
+
 - Inbound Pix flow: mock-bacen generator → settlement webhook, dedupe by endToEndId, credit posting,
   PixReceived (step 37)
   **The money path now runs in both directions, and receiving needed no new mechanism.** An outbound send

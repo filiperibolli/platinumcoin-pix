@@ -19,7 +19,9 @@ import com.platinumcoin.pix.notification.domain.usecase.DeliverNotificationComma
  *
  * <p><b>An unknown type is unroutable, never a guess.</b> The subscription filter (step 36) admits only
  * these three, so a fourth arriving means something upstream changed; answering {@code null} makes the
- * consumer ack it loudly rather than pick whichever account id happens to be present.
+ * consumer ack it loudly rather than pick whichever account id happens to be present. It is also what
+ * keeps {@link NotificationVocabulary}'s refusal of an unknown type unreachable: nothing gets described
+ * that nobody could be named for.
  */
 public final class NotificationRouting {
 
@@ -39,8 +41,13 @@ public final class NotificationRouting {
     public static String affectedAccountId(DeliverNotificationCommand command) {
         return switch (command.eventType()) {
             // An INTERNAL PixSettled carries both accounts (payment-service, step 21); the payer is
-            // still the addressee, because this event says "your send completed". The payee's own
-            // notification is step 39's question, not a second copy of the sender's event.
+            // still the addressee, because this event says "your send completed" — one event, one
+            // addressee. The payee of an internal send is therefore NOT notified today, and step 39
+            // deliberately did not paper over it here: the event carries no display name for the payer
+            // (only debtorAccountId), so this consumer could only invent a counterpart or print one of
+            // our account ids. The fix belongs to the producer — payment-service emitting a PixReceived
+            // for the payee's arrival, the way settlement-service already does for an inbound Pix — and
+            // is recorded as a known gap in the service README.
             case PIX_SETTLED, PIX_REVERSED -> blankToNull(command.debtorAccountId());
             case PIX_RECEIVED -> blankToNull(command.creditorAccountId());
             default -> null;

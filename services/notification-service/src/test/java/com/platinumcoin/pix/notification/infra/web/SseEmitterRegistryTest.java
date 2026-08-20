@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Consumer;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
@@ -238,7 +237,7 @@ class SseEmitterRegistryTest {
     }
 
     private static Notification notification(String accountId) {
-        return new Notification("evt-1", "PixReceived", accountId, "tx-1", 12_345L,
-                Map.of("amountCents", 12_345L));
+        return new Notification("evt-1", accountId, "PixReceived", "SETTLED", "tx-1", 12_345L,
+                "Carol", Instant.parse("2026-08-20T10:15:00Z"), null);
     }
 }

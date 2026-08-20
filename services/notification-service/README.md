@@ -35,7 +35,7 @@ adapter.
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `GET` | `/v1/notifications/stream` | Bearer | Opens the caller's SSE stream (`text/event-stream`). Frames carry `event:` = the event type and `id:` = the `eventId`; `data:` is the event payload. Heartbeat comments (`:ping`) every 25s |
+| `GET` | `/v1/notifications/stream` | Bearer | Opens the caller's SSE stream (`text/event-stream`). Frames carry `event:` = the event type and `id:` = the `eventId`; `data:` is a **`Notification`** (below). Heartbeat comments (`:ping`) every 25s |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/notifications/stream`.
@@ -63,6 +63,44 @@ tokens, and bounded because no other route in the platform can be authenticated 
 posture is a short-lived single-use stream ticket (or a cookie): same shape, credential worthless once
 used.
 
+## What a customer receives — one shape, three events (step 39)
+
+```
+event:PixSettled
+id:evt-6f1a…
+data:{"transactionId":"tx-8f2c","type":"PixSettled","status":"SETTLED","amount":"987.00",
+      "counterpart":"bob@otherbank.com","timestamp":"2026-08-20T10:15:00Z","failureReason":null}
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `type` | `PixSettled` \| `PixReceived` \| `PixReversed` — also the frame's `event:` field, so a browser can `addEventListener` without parsing the body. It carries the **direction** |
+| `status` | The **external status vocabulary** of `GET /payments/{transactionId}`: `SETTLED` or `REVERSED` |
+| `amount` | Integer cents formatted to a decimal string **here and nowhere earlier** |
+| `counterpart` | The payee's Pix key on a send; the payer's name (or their ISPB) on an arrival. `null` if neither travelled — **never an internal account id** |
+| `timestamp` | When the *money* reached this outcome (BACEN's `settledAt`, the arrival instant), not when we announced it |
+| `failureReason` | Only on `PixReversed` |
+
+**Why standardize at all.** Step 38 pushed each producer's payload verbatim, which put three shapes on
+one stream and would break a client the day a producer added a field. The payload now converges on a
+strict **subset of the `Payment` schema**, so an app that polls `GET /payments/{transactionId}` and one
+that listens here parse the same fields and read the same words. The day a push says `RECEIVED` and a
+poll says `SETTLED` about the same money, every client grows a translation table.
+
+**An arrival is `SETTLED`, not a sixth word.** The money is here and it is final, which is what `SETTLED`
+already means; the direction is in `type`. The internal name keeps its own vocabulary
+(`RECEIVED_SETTLED` in `pix_transactions`) — exactly the kind of detail mapping-at-the-edge keeps off
+the wire.
+
+**Two policy questions, two domain services, asked in this order.** `NotificationRouting` answers *whose
+stream?*; `NotificationVocabulary` answers *in what words?*. Routing first is load-bearing: an event type
+nobody can be addressed for is dropped before the vocabulary — which refuses an unknown type loudly
+rather than defaulting — is ever asked. Neither needs a broker or a socket to test.
+
+**`counterpart` is not masked**, unlike the statement's (`docs/api/openapi.yaml` → `StatementEntry`). A
+push is ephemeral, authenticated, and about the caller's own payment — on a send it is the very key the
+payer typed. A statement is exportable and long-lived, which is what earns it the masking.
+
 ## How an event becomes a push
 
 ```
@@ -70,11 +108,15 @@ pix-events (SNS)
    └─ filter: eventType IN [PixSettled, PixReceived, PixReversed]
         └─ notification-queue (SQS, +DLQ after 5 receives)
              └─ NotificationQueueConsumer          (api/ — a queue is a way of ENTERING the app)
-                  └─ DeliverNotificationUseCase    dedupe by eventId → route → push
+                  └─ DeliverNotificationUseCase    dedupe by eventId → route → describe → push
+                       ├─ NotificationRouting      whose stream?      (domain policy)
+                       ├─ NotificationVocabulary   in what words?     (domain policy)
                        └─ SseEmitterRegistry       accountId → subscriptionId → live emitter
+                            └─ NotificationPayload cents → "125.50"   (the API edge)
 ```
 
-**Routing** (`NotificationRouting`) is the one policy decision here, and it reads as one sentence: *an
+**Routing** (`NotificationRouting`) is the first of the two policy decisions here, and it reads as one
+sentence: *an
 outcome of a send belongs to the payer, an arrival belongs to the payee.* `PixSettled`/`PixReversed` →
 `debtorAccountId`; `PixReceived` → `creditorAccountId`. Both accounts travel in the event payload
 precisely so this consumer never has to re-resolve the directory — a synchronous lookup inside an
@@ -133,10 +175,11 @@ api/               NotificationStreamController, NotificationQueueConsumer,
 domain/model/      Notification, Subscriber, HeartbeatResult                   (plain Java)
 domain/port/       SubscriberRegistry<S>, NotificationChannel,
                    ProcessedEvents                                    (outbound interfaces)
-domain/service/    NotificationRouting                                         (plain Java)
+domain/service/    NotificationRouting, NotificationVocabulary                  (plain Java)
 domain/usecase/    OpenNotificationStreamUseCase, DeliverNotificationUseCase,
                    SendHeartbeatsUseCase + their command/outcome records       (plain Java)
-infra/web/         SseEmitterRegistry                          (the live-connection adapter)
+infra/web/         SseEmitterRegistry, NotificationPayload     (the live-connection adapter
+                                               + the wire shape it writes)
 infra/security/    SseTokenHandshakeFilter
 infra/persistence/ DynamoProcessedEvents
 infra/config/      NotificationBeansConfig, AwsClientsConfig, AwsProperties,
@@ -185,7 +228,9 @@ curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB"
 # make money arrive (terminal 2) — mock-bacen presents an inbound Pix to bob
 curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@platinum.com","amount":"12.34","payerName":"Carol"}'
-# terminal 1 shows:  event:PixReceived / id:evt-… / data:{…"amountCents":1234…}
+# terminal 1 shows:  event:PixReceived / id:evt-…
+#   data:{"transactionId":"in-E…","type":"PixReceived","status":"SETTLED","amount":"12.34",
+#         "counterpart":"Carol","timestamp":"…","failureReason":null}
 
 # the EventSource-shaped handshake (no header)
 curl -N "localhost:8087/v1/notifications/stream?access_token=$BOB"
@@ -193,12 +238,31 @@ curl -N "localhost:8087/v1/notifications/stream?access_token=$BOB"
 
 ## Known gaps (deliberate, and where they close)
 
-- **The pushed payload is the raw event payload.** Step 39 standardizes it on the external status
-  vocabulary `GET /payments/{transactionId}` uses (`type`, `status`, `amount` as a decimal string,
-  `counterpart`, `timestamp`, `transactionId`) so clients parse one shape everywhere.
-- **The payee of an *internal* send is not notified.** An internal Pix emits one `PixSettled`, routed to
-  the payer; no `PixReceived` exists for it because the money never left the bank. Step 39 owns the
-  event → recipient mapping and is where that gap belongs.
+- **The payee of an *internal* send is not notified** — the one gap step 39 examined and deliberately
+  left open. An internal Pix emits a single `PixSettled` carrying both accounts (step 21), and that
+  event means *"your send completed"*: it belongs to the payer. What the payee needs is not a copy of it
+  but an **arrival event of their own**, and this consumer cannot manufacture one honestly — the payload
+  carries no display name for the payer, only a `debtorAccountId`, so the counterpart would be either
+  invented or one of our internal ids on a customer's screen. **The fix belongs to the producer:**
+  payment-service emitting a `PixReceived` for the payee when an internal send settles, the way
+  settlement-service already does for an inbound Pix (step 37). Nothing downstream changes — the
+  subscription filter already admits `PixReceived` (step 36) and the routing rule already sends it to
+  the payee. Until then an internal payee sees the money on their balance and statement, not as a push.
+- **`failureReason` is a sentence, not a code — a defect in the *producer*, found here.** Verifying the
+  step-39 journey against the live stack, a forced BACEN refusal pushed
+  `"The SPI refused the settlement: SETTLEMENT_REJECTED_BY_ADMIN | endToEndId=E1234…"` onto the payer's
+  screen. `HttpSpiSettlementClient#detailOf` (step 33) reads the SPI's problem+json **`detail`** — prose
+  meant for a log — while the same response also carries a machine-readable **`code`**; the value is then
+  stored as the transaction's `failureReason` and copied into `PixReversed`. It was always in the event;
+  step 39 is simply the first time anything *rendered* it. Not fixed here on purpose: the fix is one line
+  in settlement-service (read `code`, keep `detail` for the log), which is money-path code and belongs to
+  its own change. Until then treat the field as opaque display text.
+- **No replay on reconnect.** Frames carry `id:`, so a client sends `Last-Event-ID` on reconnect, but
+  this service keeps no backlog: events for a customer with nothing open are dropped and acked. A client
+  must reconcile on resume (`GET /payments/{transactionId}`, balance, statement) rather than assume the
+  stream was complete — pinned by `RealtimeJourneyIT#aBriefDisconnectCostsOnlyWhatHappenedWhileAway…`.
+  Buffering would mean holding messages for customers who may not open the app for a week, and
+  eventually a DLQ full of work that can never succeed.
 - **The registry is per-instance.** A second replica behind a load balancer would only reach the
   customers connected to *it*. Local runs are single-instance; the production shape is a shared pub/sub
   fan-out with the registry staying local, and `NotificationChannel` is already the seam for it.
