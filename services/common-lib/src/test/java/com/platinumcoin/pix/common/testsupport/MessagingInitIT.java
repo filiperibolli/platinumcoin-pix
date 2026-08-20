@@ -51,10 +51,17 @@ class MessagingInitIT extends LocalStackTestBase {
     private static final String QUEUE_NAME = "settlement-queue";
     private static final String DLQ_NAME = "settlement-queue-dlq";
 
-    /** The one event type the settlement queue subscribes to today (step 36 widens the policy). */
+    /** The notification consumer's queue + DLQ (step 36) — the second fan-out branch off pix-events. */
+    private static final String NOTIFY_QUEUE_NAME = "notification-queue";
+    private static final String NOTIFY_DLQ_NAME = "notification-queue-dlq";
+
+    /** The one event type settlement subscribes to; step 36 adds a SECOND queue, it does not widen this. */
     private static final String SUBSCRIBED_EVENT_TYPE = "PixDebited";
     /** Published to the same topic, must be filtered out — settlement does not care about it. */
     private static final String UNSUBSCRIBED_EVENT_TYPE = "PixSettled";
+
+    /** The user-facing events notification-queue subscribes to (step 36) — disjoint from settlement's PixDebited. */
+    private static final List<String> NOTIFY_EVENT_TYPES = List.of("PixSettled", "PixReceived", "PixReversed");
 
     private static final SnsClient SNS = SnsClient.builder()
             .endpointOverride(localstack().getEndpoint())
@@ -130,19 +137,51 @@ class MessagingInitIT extends LocalStackTestBase {
     /** The subscription exists and is scoped by event type — the routing half of the fan-out. */
     @Test
     void subscriptionFiltersOnEventType() {
-        List<Subscription> subscriptions =
-                SNS.listSubscriptionsByTopic(request -> request.topicArn(topicArn())).subscriptions();
-
-        assertThat(subscriptions).as("exactly one subscription per consumer queue — re-running the "
-                        + "init script must not create a duplicate").hasSize(1);
-        Subscription subscription = subscriptions.get(0);
+        Subscription subscription = subscriptionFor(QUEUE_NAME);
         assertThat(subscription.protocol()).isEqualTo("sqs");
-        assertThat(subscription.endpoint()).endsWith(":" + QUEUE_NAME);
 
-        Map<String, String> attributes =
-                SNS.getSubscriptionAttributes(request -> request.subscriptionArn(subscription.subscriptionArn()))
-                        .attributes();
+        Map<String, String> attributes = subscriptionAttributes(subscription);
         assertThat(attributes.get("FilterPolicy")).contains(SUBSCRIBED_EVENT_TYPE);
+        // Adding notification-queue (step 36) must NOT widen settlement's policy onto user-facing events.
+        assertThat(attributes.get("FilterPolicy")).doesNotContain(NOTIFY_EVENT_TYPES);
+        assertThat(attributes.get("RawMessageDelivery")).isEqualTo("true");
+    }
+
+    /**
+     * Step 36 hangs a SECOND consumer off the same topic: notification-queue with its own DLQ. This is
+     * the SNS+SQS analogue of a second Kafka consumer group — one topic, another physical queue, its
+     * own filter policy (messaging appendix). Asserting the resources here keeps a broken fan-out from
+     * surfacing as a confusing bug in the notification/inbound ITs (steps 37–39).
+     */
+    @Test
+    void notificationQueueAndItsDlqExist() {
+        assertThat(queueUrl(NOTIFY_QUEUE_NAME)).as("notification consumer queue").endsWith("/" + NOTIFY_QUEUE_NAME);
+        assertThat(queueUrl(NOTIFY_DLQ_NAME)).as("its dead-letter queue").endsWith("/" + NOTIFY_DLQ_NAME);
+    }
+
+    /** Same flagged-not-lost discipline as settlement (ADR-0003): 5 failed receives → its own DLQ. */
+    @Test
+    void notificationQueueRedrivesToItsDlqAfterFiveReceives() {
+        String redrivePolicy = queueAttribute(NOTIFY_QUEUE_NAME, QueueAttributeName.REDRIVE_POLICY);
+
+        assertThat(redrivePolicy).as("notification-queue must carry a redrive policy").isNotBlank();
+        assertThat(redrivePolicy.replace(" ", ""))
+                .contains("\"maxReceiveCount\":\"5\"", ":" + NOTIFY_DLQ_NAME + "\"");
+    }
+
+    /**
+     * The routing half of the second branch: notification only wakes on user-facing outcomes
+     * (PixSettled / PixReceived / PixReversed) and never on the internal PixDebited that settlement
+     * consumes — the whole point of a per-consumer filter policy.
+     */
+    @Test
+    void notificationSubscriptionFiltersToUserFacingEventsOnly() {
+        Subscription subscription = subscriptionFor(NOTIFY_QUEUE_NAME);
+        assertThat(subscription.protocol()).isEqualTo("sqs");
+
+        Map<String, String> attributes = subscriptionAttributes(subscription);
+        assertThat(attributes.get("FilterPolicy")).contains(NOTIFY_EVENT_TYPES);
+        assertThat(attributes.get("FilterPolicy")).doesNotContain(SUBSCRIBED_EVENT_TYPE);
         assertThat(attributes.get("RawMessageDelivery")).isEqualTo("true");
     }
 
@@ -223,6 +262,26 @@ class MessagingInitIT extends LocalStackTestBase {
                 .maxNumberOfMessages(10)
                 .waitTimeSeconds(waitTimeSeconds)
                 .messageAttributeNames("All")).messages();
+    }
+
+    /**
+     * The single subscription whose endpoint is {@code queueName}. Also pins the no-duplicate
+     * invariant per queue — a container restart re-running the init script must not pile up a second
+     * subscription for the same queue (each duplicate would deliver another copy of every event).
+     */
+    private static Subscription subscriptionFor(String queueName) {
+        List<Subscription> forQueue = SNS.listSubscriptionsByTopic(request -> request.topicArn(topicArn()))
+                .subscriptions().stream()
+                .filter(subscription -> subscription.endpoint().endsWith(":" + queueName))
+                .toList();
+        assertThat(forQueue).as("exactly one subscription for %s — re-running the init script must not "
+                + "create a duplicate", queueName).hasSize(1);
+        return forQueue.get(0);
+    }
+
+    private static Map<String, String> subscriptionAttributes(Subscription subscription) {
+        return SNS.getSubscriptionAttributes(request -> request.subscriptionArn(subscription.subscriptionArn()))
+                .attributes();
     }
 
     private static String topicArn() {

@@ -110,8 +110,9 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > filtered subscription. Nothing publishes or consumes yet — the producer is the outbox publisher (step
 > 29) and the consumer is settlement-service (step 31) — so the queues come up **empty on purpose**.
 > Verify with `aws --endpoint-url=http://localhost:4566 sns list-topics | jq` and `… sqs list-queues | jq`
-> (the full command set is in §4, "Messaging"); the init log line to look for is
-> `[init] messaging ready: …`, which is also the readiness marker the test harness waits on.
+> (the full command set is in §4, "Messaging"); this script's own init log line is `[init] messaging
+> ready: …`. (The readiness marker the test harness waits on has since moved to the last init script —
+> `07` in step 29, then `08` in step 36 — see the step-31 callout below.)
 
 > **Step 30 (mock-bacen-spi).** `mock-bacen-spi` (9090) now comes up with the stack — the SPI rail
 > (`POST /spi/settlements`, idempotent by `endToEndId`, with runtime-armable latency/failure/timeout) plus
@@ -157,11 +158,13 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > *"the emulator answers"*. The emulator opens port 4566 and reports UP **before** its `ready.d` scripts
 > finish, and nothing noticed until now because every earlier service touches AWS lazily, on the first
 > request. A consumer resolves its queue at **startup**, so settlement-service died on first boot with
-> `QueueDoesNotExist`. The probe now also asserts a resource created by the *last* init script
-> (`pix_processed_events`) exists — scripts run in lexical order, so that one existing means all of them
-> ran. Compose and the Testcontainers harness now agree on what readiness means (`LocalStackTestBase`
-> already waited on that script's final log line). **If you add an init script that sorts after `07`, move
-> both markers.**
+> `QueueDoesNotExist`. The probe now also asserts a resource created by the *last* init script exists —
+> scripts run in lexical order, so that one existing means all of them ran. Since step 36 the last script
+> is `08-messaging-notify.sh`, so the probe checks `notification-queue` (via `aws sqs get-queue-url`
+> against LocalStack's own SQS at `localhost:4566`, since SQS lives there — unlike DynamoDB, which moved
+> to `dynamodb-local`). Compose and the Testcontainers harness now agree on what readiness means
+> (`LocalStackTestBase` waits on that same script's final log line, `[init] notify messaging ready: …`).
+> **If you add an init script that sorts after `08`, move both markers.**
 >
 > Two caveats worth knowing before §5.5's drill: retries, backoff and DLQ handling are **step 32** — today
 > a failed or timed-out settlement simply leaves the message on the queue (which is what makes those
@@ -481,6 +484,52 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --wait-time-seconds
       --queue-name settlement-queue --query QueueUrl --output text) | jq '.Messages[0].Body'
 # ⇒ the raw event JSON, NOT an SNS {"Type":"Notification",...} envelope.
 # Re-run with eventType=PixSettled ⇒ the queue stays empty: the filter policy dropped it at SNS.
+```
+
+#### Notification fan-out (mirror of `infra/localstack/init/08-messaging-notify.sh`, step 36)
+
+The **second** consumer off the same topic — the SNS+SQS analogue of a second Kafka consumer group.
+Same shape as settlement-queue (DLQ first, redrive after 5 receives, visibility 30s, long-poll 20s,
+narrow `sqs:SendMessage` policy), but its filter policy routes the **user-facing** outcomes only —
+disjoint from settlement's `PixDebited`, so an internal event never wakes a notification and vice versa.
+
+```bash
+# the DLQ first, then the queue (same attributes as settlement-queue — see the block above)
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name notification-queue-dlq \
+  --attributes '{"MessageRetentionPeriod":"1209600"}'
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name notification-queue \
+  --attributes '{"RedrivePolicy":"{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:notification-queue-dlq\",\"maxReceiveCount\":\"5\"}","VisibilityTimeout":"30","ReceiveMessageWaitTimeSeconds":"20"}'
+# …plus the same queue Policy allowing ONLY pix-events to sqs:SendMessage.
+
+# subscribe, then scope it to the user-facing outcomes; deliver the event raw
+aws --endpoint-url=http://localhost:4566 sns subscribe --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --protocol sqs --notification-endpoint arn:aws:sqs:us-east-1:000000000000:notification-queue
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name FilterPolicy --attribute-value '{"eventType":["PixSettled","PixReceived","PixReversed"]}'
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name RawMessageDelivery --attribute-value true
+```
+
+Verify what the init script created on `up` (both queues present, the policy routing user-facing events):
+
+```bash
+# notification-queue + notification-queue-dlq show up alongside the settlement pair
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq
+# its subscription's filter policy — PixSettled/PixReceived/PixReversed, never PixDebited
+NSUB=$(aws --endpoint-url=http://localhost:4566 sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --query "Subscriptions[?ends_with(Endpoint, ':notification-queue')].SubscriptionArn | [0]" --output text)
+aws --endpoint-url=http://localhost:4566 sns get-subscription-attributes --subscription-arn $NSUB \
+  | jq '.Attributes | {FilterPolicy, RawMessageDelivery}'
+
+# end-to-end by hand: a PixSettled arrives on notification-queue, a PixDebited is filtered out
+aws --endpoint-url=http://localhost:4566 sns publish --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --message '{"eventId":"ev-notify-1","eventType":"PixSettled","txId":"tx-notify-1"}' \
+  --message-attributes '{"eventType":{"DataType":"String","StringValue":"PixSettled"}}'
+aws --endpoint-url=http://localhost:4566 sqs receive-message --wait-time-seconds 5 \
+  --queue-url $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url \
+      --queue-name notification-queue --query QueueUrl --output text) | jq '.Messages[0].Body'
+# ⇒ the raw event JSON. Re-run with eventType=PixDebited ⇒ notification-queue stays empty.
 ```
 
 #### Consumer dedup table (mirror of `infra/localstack/init/07-processed-events.sh`, step 29)

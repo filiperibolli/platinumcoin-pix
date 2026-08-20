@@ -11,9 +11,10 @@
 # instead of N identical ones. A conditional put on that key before any side effect is what turns
 # at-least-once delivery into effectively-once processing (docs/data-model.md §6).
 #
-# Numbered 07 so it sorts LAST → its final log line is the readiness marker the Testcontainers
-# harness waits on (LocalStackTestBase; it moved here from 06-messaging-core.sh with this step).
-# If you ever append a script after this one, MOVE THAT MARKER.
+# Numbered 07 so it sorts before the messaging-notify script (08, step 36). It was the readiness
+# marker until step 36 appended 08 after it; the marker now lives on 08's final log line (see
+# LocalStackTestBase and docker-compose.yml). If you ever append a script after the current last
+# one, MOVE THAT MARKER.
 #
 # Idempotent: `describe-table || create-table`, and `describe-time-to-live` before enabling TTL —
 # safe to re-run on container restart. `down -v` wipes the volume and recreates a clean world.

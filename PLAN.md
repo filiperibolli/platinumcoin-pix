@@ -92,7 +92,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** inbound Pix credits the user and pushes an SSE notification in real time.
 **Infra que sobe:** SQS `notification-queue` (+DLQ); SSE. · **Diagram:** ARCHITECTURE §6.8
 
-- [ ] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` (+DLQ, filtered subscription)
+- [x] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` (+DLQ, filtered subscription)
 - [ ] [Step 37](docs/steps/step-37.md) — mock-bacen inbound generator → inbound flow: dedupe by endToEndId, credit posting
 - [ ] [Step 38](docs/steps/step-38.md) — notification-service: consume notification-queue, SSE stream per user
 - [ ] [Step 39](docs/steps/step-39.md) — wire PixSettled/PixReceived/PixReversed to real-time pushes end to end
