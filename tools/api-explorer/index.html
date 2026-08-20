@@ -548,6 +548,27 @@
         ],
       },
       {
+        id: 'notification', name: 'notification-service', port: 8087, baseUrl: 'http://localhost:8087',
+        blurb: 'REAL-TIME PUSH \u2014 the only card in this explorer that STREAMS. Every other endpoint answers and closes; this one holds the connection open and writes frames as money moves, which is the honest ending to a 202 Accepted: the payer saw "accepted for processing", and the final answer arrives as a push instead of a poll. One SSE connection per authenticated customer, fed from notification-queue (filtered since step 36 to the three user-facing outcomes: PixSettled, PixReceived, PixReversed). WHY SSE AND NOT WEBSOCKET: notifications are one-directional server\u2192client, so SSE is plain HTTP \u2014 no upgrade, no framing, no client library \u2014 and the browser\'s native EventSource reconnects on its own; WebSocket would buy a channel back to the server this feature has no use for and charge for it in proxy compatibility. BEST-EFFORT ON PURPOSE: nothing depends on this service, and a missed push costs a refresh rather than correctness \u2014 every outcome stays queryable on GET /payments/{id}. That single fact licenses the rest: events for a customer with nothing open are DROPPED and acked, never queued for a week.',
+        endpoints: [
+          {
+            method: 'GET', path: '/v1/notifications/stream', title: 'My notification stream (SSE \u2014 open it, then make money move)', auth: true, capturesToken: false, stream: true,
+            desc: 'OPEN THIS FIRST, LEAVE IT OPEN, then go make something happen in another tab \u2014 that is the whole demo. Log in as bob, click Open stream, then use mock-bacen-spi \u2192 "Simulate an inbound Pix to bob" and watch PixReceived land here live. Or log in as alice and send an external Pix (payment-service tab) to watch PixSettled arrive seconds later, the same information GET /payments/{id} would have told you only if you kept asking.\n\nWHAT YOU WILL SEE ON THE WIRE. \u201c:connected sub-\u2026\u201d is the handshake, and \u201c:ping\u201d every 25s after that \u2014 both are SSE COMMENTS, which every client (EventSource included) ignores for free, so keeping a connection alive obliges no application code. Then each event is three lines: \u201cevent:PixReceived\u201d (the type, in the frame\'s own field, so a browser can addEventListener without parsing the body), \u201cid:evt-\u2026\u201d (the eventId, so a reconnect resumes via Last-Event-ID), and \u201cdata:{\u2026}\u201d with amountCents as an integer. Step 39 standardizes that data line on the same external status vocabulary the status endpoint uses.\n\nTHE PING IS ALSO THE GARBAGE COLLECTOR, which is the counter-intuitive part. Close this stream and the server is told NOTHING it will notice \u2014 an async response that is not being written to never learns its socket is gone \u2014 so the heartbeat is what discovers dead connections. A push service without one leaks a registration per customer who ever connected.\n\nYOU CAN ONLY EVER SEE YOUR OWN. The account comes from the JWT accountId claim; there is no path, query or body field naming an account, so \u201cstream someone else\'s payments\u201d is not a request this API can express \u2014 stronger than an ownership check, because nothing is left to check. Log in as the WRONG user and nothing arrives: that is the routing rule working (an outcome of a send belongs to the payer, an arrival belongs to the payee), not a failure.\n\nNOTE HOW THIS CARD AUTHENTICATES: it uses fetch with a real Authorization header, which a browser\'s EventSource cannot do \u2014 there is no API for setting headers on one. That limitation is exactly why the service also accepts ?access_token=; try the next card to see that it is a convenience and not a hole.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/notifications/stream?access_token=TAMPERED', title: 'Handshake \u2014 tampered ?access_token= (401, same contract)', auth: false, capturesToken: false,
+            desc: 'THE SSE AUTH NUANCE, AND ITS GUARD RAIL. A browser\'s native EventSource cannot set request headers, so a stream that only accepts Authorization is a stream no EventSource can ever open \u2014 step 05 left an allow-list hook here for exactly this moment. Step 38 did NOT spend it: rather than making the path public and verifying the token inside notification-service, a filter promotes ?access_token= into an Authorization header immediately before common-lib\'s shared JwtAuthFilter runs. So the route stays fully protected and there is still exactly ONE piece of code in the platform that decides whether a token is good \u2014 a hardening or a fix lands once, not twice.\n\nSend this as-is: 401 UNAUTHORIZED in application/problem+json, byte-identical to what a tampered header produces, because it IS the same filter. Now replace TAMPERED in the path above with a real token (log in, then copy it from the Session panel) and the stream opens \u2014 the browser-shaped handshake, working. An explicit Authorization header always WINS over the parameter, so a crafted link can never override a credential you actually sent.\n\nTHE COST, STATED PLAINLY: a token in a URL lands in access logs, in Referer, and in browser history \u2014 strictly worse than one in a header. Accepted here because this is a sandbox with 15-minute tokens, and bounded because this is the only path in the entire platform that can be authenticated by query string. Production mints a short-lived single-use stream ticket instead: same shape, credential worthless once used.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
+            desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
+      {
         id: 'ledger', name: 'ledger-service', port: 8085, baseUrl: 'http://localhost:8085',
         blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 shipped the read half (a strongly consistent balance read, because the ledger must read its own writes); step 14 adds the write half \u2014 the atomic double-entry posting, one TransactWriteItems in which every guard is a condition, so a refusal writes nothing at all. No /v1 surface: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
         endpoints: [
@@ -733,7 +754,7 @@
       // Login cards go through doLogin(), which owns their path — everything else exposes an editable
       // path so ids/keys/query params can be changed in place (paste a txId, swap acc-001→acc-002, …).
       const editablePath = !ep.capturesToken;
-      const canPoll = ep.method === 'GET' && !ep.capturesToken;
+      const canPoll = ep.method === 'GET' && !ep.capturesToken && !ep.stream;
       // A card that follows a payment starts pointed at the last one you created, if any.
       const initialPath = ep.syncFromTxId && lastPaymentTxId ? '/v1/payments/' + lastPaymentTxId : ep.path;
 
@@ -861,6 +882,65 @@
           toast('Request failed', err.message, 'bad');
         } finally { sendBtn.disabled = false; }
       };
+
+      // ── SSE cards: a response that never finishes, so it cannot go through runRequest() ──────────
+      // Every other card awaits the WHOLE body; a stream has no whole body, so this reads the response
+      // incrementally and appends each frame as it arrives. It also explains why the explorer uses fetch
+      // here rather than the browser's own EventSource: EventSource cannot set an Authorization header —
+      // the exact limitation the service's ?access_token= handshake exists for — while fetch can. So this
+      // card demonstrates the HEADER path, and the card below it demonstrates the query-string one.
+      if (ep.stream) {
+        let abort = null;
+        const idle = () => { abort = null; sendBtn.innerHTML = `${ICON.send}Open stream`; sendBtn.disabled = false; };
+        sendBtn.innerHTML = `${ICON.send}Open stream`;
+        sendBtn.onclick = async (e) => {
+          e.stopPropagation();
+          if (abort) { abort.abort(); return; }               // second click closes it
+          const target = currentServiceBase(svc) + effPath();
+          const h = { ...effHeaders() };
+          if (ep.auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
+          abort = new AbortController();
+          sendBtn.innerHTML = `${ICON.poll}Close stream`;
+          statusEl().textContent = 'Connecting…'; statusEl().className = 'status pending';
+          outEl().style.display = 'block'; outEl().textContent = '';
+          let closedByUser = false;
+          try {
+            const res = await fetch(target, { headers: h, signal: abort.signal });
+            statusEl().textContent = `${res.status} ${res.statusText}`;
+            statusEl().className = 'status ' + (res.ok ? 'ok' : 'bad');
+            if (!res.ok) {
+              // A refusal is an ordinary, finite response — read it whole and show the problem+json.
+              outEl().textContent = await res.text();
+              toast(`${res.status} ${res.statusText}`, `${ep.method} ${effPath()}`, 'bad');
+              return;
+            }
+            toast('Stream open', `${ep.method} ${effPath()} · frames appear below as money moves`, 'ok');
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let events = 0;
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              outEl().textContent += chunk;
+              outEl().scrollTop = outEl().scrollHeight;      // follow the tail, like `tail -f`
+              events += (chunk.match(/^event:/gm) || []).length;
+              statusEl().textContent = `200 OK · streaming · ${events} event(s)`;
+            }
+            statusEl().textContent += ' · closed by the server (it reconnects in a real client)';
+          } catch (err) {
+            closedByUser = abort !== null && abort.signal.aborted;
+            if (closedByUser) {
+              statusEl().textContent = 'stream closed'; statusEl().className = 'status';
+              toast('Stream closed', `${ep.method} ${effPath()}`, '');
+            } else {
+              statusEl().textContent = 'Stream failed (network or CORS): ' + err.message;
+              statusEl().className = 'status bad';
+              toast('Stream failed', err.message, 'bad');
+            }
+          } finally { idle(); }
+        };
+      }
 
       // Auto-poll (GET only): re-run every 2s until a terminal status, a 40-poll cap, or a second click.
       // This is how you watch an EXTERNAL Pix flip PROCESSING → SETTLED without hammering the button.

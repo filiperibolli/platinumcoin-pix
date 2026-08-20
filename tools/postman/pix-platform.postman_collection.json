@@ -1089,6 +1089,154 @@
       ]
     },
     {
+      "name": "notification-service",
+      "description": "Real-time push (port 8087). One **SSE** connection per authenticated customer, fed from `notification-queue` — the last hop of the receive flow, and the honest ending to a `202 Accepted`.\n\n**Postman is the wrong tool for the happy path, and that is worth knowing.** An SSE response never finishes: the server holds it open and writes frames as payments happen. Postman's runner waits for a response that completes, so the stream card below will simply spin until you cancel it. Use `curl -N` or the **API explorer** (`tools/api-explorer/index.html`), which reads the stream incrementally and renders each frame. What Postman *is* good for here is the auth surface — the two 401 cards below complete instantly and assert the real contract.\n\n**Why SSE and not WebSocket:** notifications are one-directional server→client, so SSE is plain HTTP with no upgrade, no framing, no client library — and the browser's native `EventSource` reconnects on its own. WebSocket would buy a channel back to the server this feature has no use for.\n\n**Best-effort by design:** a missed push costs a refresh, never correctness — every outcome stays queryable on `GET /payments/{transactionId}`.",
+      "item": [
+        {
+          "name": "My notification stream (SSE — long-lived, will not \"finish\")",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// These only run if the stream ever completes (i.e. after the 30-minute server-side timeout,",
+                  "// or when you cancel). They are here so the contract is stated, not because Postman is the",
+                  "// right client for a stream — see the folder description.",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('it is an event stream', () =>",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/event-stream'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{notificationBaseUrl}}/v1/notifications/stream",
+              "host": [
+                "{{notificationBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "stream"
+              ]
+            },
+            "description": "Opens **your** stream. Log in first (auth-service folder) — the account comes from the JWT `accountId` claim and there is no path, query or body parameter naming an account, so \"stream someone else's payments\" is not a request this API can express. That is the read-side of Domain Safety Rule #1: stronger than an ownership check, because nothing is left to check.\n\nWhat arrives on the wire:\n\n```\n:connected sub-9f3a…        ← handshake, an SSE comment (every client ignores it for free)\n:ping                       ← every 25s, so proxies never reclaim an idle stream\nevent:PixReceived           ← the event type, in the SSE frame's OWN field\nid:evt-1c8b…                ← the eventId, so a reconnect can resume via Last-Event-ID\ndata:{\"txId\":\"…\",\"amountCents\":1234,\"status\":\"RECEIVED_SETTLED\", …}\n```\n\nTo make an event appear: send an external Pix (payment-service folder) and watch for `PixSettled`, or trigger an inbound one with **mock-bacen-spi → Simulate an inbound Pix to bob** and watch for `PixReceived`. Routing is one sentence: *an outcome of a send belongs to the payer, an arrival belongs to the payee* — so log in as the right user or nothing will arrive (and that is correct behaviour, not a failure).\n\nStep 38 pushes the raw event payload; **step 39** standardizes `data` on the same external status vocabulary `GET /payments/{transactionId}` uses, so clients parse one shape everywhere."
+          }
+        },
+        {
+          "name": "Stream — no token (401 UNAUTHORIZED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('the shared RFC 7807 contract, not a bespoke one', () => {",
+                  "  pm.expect(body.code).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{notificationBaseUrl}}/v1/notifications/stream",
+              "host": [
+                "{{notificationBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "stream"
+              ]
+            },
+            "description": "The stream is **not** on the JWT allow-list. Step 05 reserved a hook there for the SSE handshake's awkwardness, and step 38 deliberately did not spend it — see the next card for why that matters.\n\nCompletes instantly with the same `401 problem+json` every other protected route returns, because it is refused by the same common-lib filter."
+          }
+        },
+        {
+          "name": "Stream — tampered token in ?access_token= (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('the query-parameter path is a convenience, not a second, weaker verifier', () =>",
+                  "  pm.expect(pm.response.json().code).to.eql('UNAUTHORIZED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{notificationBaseUrl}}/v1/notifications/stream?access_token={{accessToken}}TAMPERED",
+              "host": [
+                "{{notificationBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "stream"
+              ],
+              "query": [
+                {
+                  "key": "access_token",
+                  "value": "{{accessToken}}TAMPERED"
+                }
+              ]
+            },
+            "description": "**The SSE handshake nuance, and its guard rail.** A browser's native `EventSource` cannot set request headers — there is no API for it — so a stream that only accepts `Authorization` is a stream no `EventSource` can open. notification-service therefore accepts `?access_token=` on this one path.\n\nIt is a convenience, **not a hole**, and this card is the proof: `SseTokenHandshakeFilter` merely rewrites the parameter into an `Authorization` header just before common-lib's `JwtAuthFilter` runs, so a bad token is refused by exactly the same code with exactly the same body, whichever way it was presented. The route is never made public, and an explicit header always wins over the parameter.\n\nRemove `TAMPERED` and the stream opens (and hangs — see the folder description). The cost accepted here: a token in a URL lands in access logs, `Referer` and browser history. Bounded by being a 15-minute token, on one path, in a sandbox; production would mint a single-use stream ticket instead."
+          }
+        },
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{notificationBaseUrl}}/actuator/health",
+              "host": [
+                "{{notificationBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Liveness/readiness for the compose healthcheck. Public — `/actuator/**` is on the JWT allow-list."
+          }
+        }
+      ]
+    },
+    {
       "name": "ledger-service",
       "description": "The ledger — port 8085, the ONLY writer of `pix_ledger` (ADR-0006). Steps 13-14 ship both halves: a **strongly consistent** balance read (`ConsistentRead=true`, because the ledger must read its own writes — a stale balance would show money that is already spent). Every request here needs a token: `/internal/**` is deliberately not public, and this service has no `/v1` surface at all, because no end user talks to the ledger. See services/ledger-service/README.md.",
       "item": [

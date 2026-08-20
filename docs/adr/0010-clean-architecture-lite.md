@@ -1,6 +1,6 @@
 # ADR-0010: Clean/hexagonal-lite architecture inside each service
 
-**Status:** Accepted · **Date:** 2026-07-19 · **Amended by:** [ADR-0011](0011-explicit-use-case-layer.md) · **Amended 2026-08-10** (internal sub-package layout, below)
+**Status:** Accepted · **Date:** 2026-07-19 · **Amended by:** [ADR-0011](0011-explicit-use-case-layer.md) · **Amended 2026-08-10** (internal sub-package layout, below) · **Amended 2026-08-20** (`infra/web/` role, step 38)
 
 > **Amendment notice.** ADR-0011 reverses this ADR on **one** point: the rejection of a use-case ring
 > below. Every inbound operation now gets an explicit `<Verb><Noun>UseCase` class in
@@ -71,7 +71,14 @@ service-package root, as the Spring entry point).
 - **`infra/client/`** — HTTP/SPI adapters implementing external-service client ports
   (`HttpLedgerClient`, `HttpPixKeyResolver`, `HttpAccountLimitClient`, …).
 - **`infra/security/`** — crypto/token/security adapters implementing security ports
-  (`BCryptPasswordVerifier`, `JwtIssuer` in auth-service). Present in services that have such adapters.
+  (`BCryptPasswordVerifier`, `JwtIssuer` in auth-service, `SseTokenHandshakeFilter` in
+  notification-service). Present in services that have such adapters.
+- **`infra/web/`** — outbound **transport** adapters: the ones that write *to a client* rather than to a
+  datastore or another service (`SseEmitterRegistry` in notification-service). **Added 2026-08-20 by
+  step 38**, when the platform grew its first long-lived-connection service and the four existing roles
+  had no honest home for it: a registry of live SSE emitters is not persistence (nothing is durable), not
+  a `client/` (it calls no external service), not security and not config. Present only in services that
+  push to clients.
 - **`infra/config/`** — Spring configuration and `@ConfigurationProperties` (`*BeansConfig`,
   `DynamoConfig`, `CorsConfig`, `AwsProperties`, …).
 

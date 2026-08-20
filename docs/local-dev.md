@@ -71,6 +71,11 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `OUTBOX_PUBLISHER_DELAY_MS` | `1000` | Outbox poll interval (`fixedDelay`, so ticks never overlap) |
 | `OUTBOX_PUBLISHER_BATCH_SIZE` | `25` | Max events one tick may publish |
 | `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs; integration tests set it `false` and drive each tick explicitly |
+| `NOTIFICATION_QUEUE_NAME` | `notification-queue` | The queue notification-service consumes (step 38). Resolved to its URL at **startup**, like settlement's — a push service that boots healthy while consuming nothing is the worst failure mode it has |
+| `NOTIFICATION_STREAM_TIMEOUT_MS` | `1800000` (30 min) | How long one SSE connection may live before the server closes it. A closing stream is a non-event: `EventSource` reconnects on its own, which is much of why SSE was chosen over WebSocket |
+| `NOTIFICATION_HEARTBEAT_DELAY_MS` | `25000` | Heartbeat sweep interval. Under the ~30s idle timeout common in proxies/load balancers, so a silent stream is never reclaimed underneath us — and it doubles as the registry's garbage collector, since a vanished client is only discovered by a failed write |
+| `NOTIFICATION_TOKEN_PARAM` | `access_token` | Query parameter the SSE handshake accepts a token in, because a browser's `EventSource` cannot set headers. **Blank it to accept only the `Authorization` header.** The route is *not* on the JWT allow-list: the parameter is rewritten into a header before common-lib's filter runs, so there is still exactly one JWT verifier in the platform |
+| `NOTIFICATION_BATCH_SIZE` / `NOTIFICATION_WAIT_TIME_SECONDS` / `NOTIFICATION_CONSUMER_DELAY_MS` | `10` / `20` / `500` | notification-queue long-poll tuning. Batch is larger than settlement's 5 because handling one message is a map lookup and a socket write, not a 12s call to BACEN |
 
 ## 4. Bring it up
 
@@ -89,7 +94,7 @@ docker compose -f infra/docker-compose.yml logs localstack | grep '\[init\]'
 
 # health of everything that exists *so far* (vertical delivery — the list grows per
 # sprint; querying a port whose service hasn't been built yet just fails to connect)
-for p in 8081 8082 8083 8084 8085; do
+for p in 8081 8082 8083 8084 8085 8086 8087; do
   echo -n "$p: "; curl -s localhost:$p/actuator/health | jq -r .status; done
 # full set, once the whole platform is built:
 #   8081 8082 8083 8084 8085 8086 8087 9090
@@ -175,6 +180,47 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > reversal of step 33. And `PixSettled` is *written* here but *published* by payment-service's outbox
 > publisher, which drains the whole sparse index of `pix_transactions` — so a stopped payment-service
 > means settled payments that nobody is told about yet.
+
+> **Step 38 (notification-service).** `notification-service` (8087) now comes up with the stack, and the
+> receive flow finally ends where it should — on the customer's screen. It long-polls `notification-queue`
+> (filtered to `PixSettled`, `PixReceived`, `PixReversed` since step 36), dedupes by `eventId` against the
+> shared `pix_processed_events` table, and pushes each event onto the **affected account's** live SSE
+> stream: an outcome of a send goes to the payer, an arrival goes to the payee. Gates its startup on
+> `localstack` (it resolves the queue URL at boot) and `dynamodb-local`.
+>
+> It is the platform's first **long-lived-connection** service, and that changes what to watch for. Try it
+> with two terminals:
+>
+> ```bash
+> # terminal 1 — bob holds a stream open
+> BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+>   -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
+> curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB"
+> #   :connected sub-…                    ← the handshake frame (an SSE comment)
+> #   :ping                               ← every 25s, so proxies never reclaim an idle stream
+>
+> # terminal 2 — make money arrive (register bob@platinum.com first, account-service)
+> curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+>   -d '{"pixKey":"bob@platinum.com","amount":"12.34","payerName":"Carol"}'
+> # terminal 1 now shows:  event:PixReceived / id:evt-… / data:{…"amountCents":1234…}
+>
+> # the browser-shaped handshake: EventSource cannot set headers, so the token goes in the query string
+> curl -N "localhost:8087/v1/notifications/stream?access_token=$BOB"
+> curl -si localhost:8087/v1/notifications/stream | head -1     # 401 — the route is NOT public
+> ```
+>
+> **Two things that surprise people here.** A customer closing the app sends this server *nothing it will
+> notice* — an async response that is not being written to never learns its socket is gone — so the
+> heartbeat is what discovers dead connections, not a callback; a push service without one leaks a
+> registration per customer who ever connected. And the registry is **per-instance**: a second replica
+> behind a load balancer would only reach the customers connected to *it* (single-instance locally; the
+> production shape is a shared pub/sub fan-out).
+>
+> Deliberately incomplete until **step 39**: the `data:` line is the raw event payload, not yet the
+> standardized DTO on the external status vocabulary, and the payee of an *internal* send is not notified
+> (an internal Pix emits one `PixSettled`, routed to the payer). Also note nothing depends on this
+> service — a missed push degrades UX, never correctness, because every outcome stays queryable on
+> `GET /payments/{transactionId}`.
 
 ### How the build works (there is no service image in git)
 

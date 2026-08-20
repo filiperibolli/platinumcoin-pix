@@ -1,0 +1,105 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: notification-service
+  mvc:
+    async:
+      # How long Spring MVC will wait on an async request before it times the response out. It MUST be
+      # left effectively unbounded here (-1) because an SSE response IS a never-finishing async request:
+      # any positive value would tear down every healthy stream on that schedule. The per-connection
+      # deadline that DOES apply is pix.notifications.stream-timeout-ms below, set on the emitter itself,
+      # which is the one that belongs to this service rather than to the framework.
+      request-timeout: -1
+
+# Local-dev CORS so the open-from-disk API explorer (Origin: null) can read the stream from a browser.
+# Permissive + credential-free by design; the CorsFilter is ordered ahead of the JWT filter so
+# pre-flights aren't 401'd. See infra/config/CorsConfig.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
+# The secret must match auth-service's — this service VALIDATES tokens, it never issues them.
+#
+# The SSE stream is deliberately NOT on public-paths. Step 05 left a hook here for it, and step 38
+# resolved the handshake a different way: infra/security/SseTokenHandshakeFilter promotes a
+# ?access_token= query parameter into an Authorization header just before the shared JwtAuthFilter runs,
+# so the route stays fully protected and common-lib remains the ONLY code in the platform that decides
+# whether a token is good. See that class for the trade-off a token-in-a-URL accepts.
+jwt:
+  secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
+  public-paths:
+    - /actuator/**
+
+pix:
+  notifications:
+    # The authenticated SSE route. Configuration rather than a constant because the handshake filter has
+    # to match EXACTLY this path and nothing else — one place to change, no way for the two to drift.
+    stream-path: /v1/notifications/stream
+    # How long one SSE connection may live before the server closes it and the client reconnects.
+    # 30 minutes: long enough that a reconnect is rare, short enough that a leaked registration (a
+    # client that vanished in a way even the heartbeat missed) cannot outlive the session that made it.
+    # A closing stream is a non-event for the customer — EventSource reconnects on its own, which is a
+    # large part of why SSE was chosen over WebSocket.
+    stream-timeout-ms: ${NOTIFICATION_STREAM_TIMEOUT_MS:1800000}
+    # The queue this service consumes (created by infra/localstack/init/08-messaging-notify.sh,
+    # subscribed to pix-events with a filter policy of eventType IN [PixSettled, PixReceived,
+    # PixReversed]). Resolved to its URL at startup — booting healthy while consuming nothing would be
+    # the worst possible failure mode for a push service.
+    queue-name: ${NOTIFICATION_QUEUE_NAME:notification-queue}
+    handshake:
+      # The query parameter a browser's native EventSource may present its token in, since EventSource
+      # cannot set request headers. Blank it to disable the query-string path entirely and accept only
+      # the Authorization header.
+      token-parameter: ${NOTIFICATION_TOKEN_PARAM:access_token}
+    heartbeat:
+      # How often every open stream is pinged with an SSE comment. 25s sits under the ~30s idle timeout
+      # that is the shortest one commonly found in proxies and load balancers, so a silent stream is
+      # never reclaimed underneath us. It is also the sweep that DISCOVERS clients which vanished
+      # without closing, so it doubles as the registry's garbage collector.
+      fixed-delay-ms: ${NOTIFICATION_HEARTBEAT_DELAY_MS:25000}
+    consumer:
+      # How long a receive blocks waiting for work. 20s is the SQS maximum and matches the queue's own
+      # ReceiveMessageWaitTimeSeconds: an idle system costs one request per 20s instead of a stream of
+      # empty ones, and a message that arrives is picked up in milliseconds.
+      wait-time-seconds: ${NOTIFICATION_WAIT_TIME_SECONDS:20}
+      # Messages per receive (SQS maximum is 10). Larger than settlement's 5 because handling one message
+      # here is an in-memory map lookup and a socket write — microseconds, not a 12s call to BACEN — so a
+      # full batch cannot come anywhere near the queue's 30s visibility timeout.
+      batch-size: ${NOTIFICATION_BATCH_SIZE:10}
+      # Gap between polls. Small because the long poll already does the waiting; fixedDelay, so a slow
+      # batch never overlaps the next tick.
+      fixed-delay-ms: ${NOTIFICATION_CONSUMER_DELAY_MS:500}
+  # Master switch for every background job here (the queue consumer and the heartbeat sweep). True in
+  # every real run; integration tests set it false and drive each tick explicitly, because Spring caches
+  # contexts across test classes and a live sweep would be writing to emitters an unrelated IT is
+  # asserting on.
+  schedulers:
+    enabled: ${PIX_SCHEDULERS_ENABLED:true}
+
+# AWS SDK → LocalStack (SQS) and the standalone dynamodb-local container (the shared dedup table only).
+# Defaults target locally-run containers; compose overrides them to the service names on the shared
+# network. Credentials are dummies LocalStack ignores but the SDK demands. ITs override these via
+# LocalStackTestBase's @DynamicPropertySource (same aws.* keys).
+aws:
+  endpoint-url: ${AWS_ENDPOINT_URL:http://localhost:4566}
+  # Standalone amazon/dynamodb-local container, separate from LocalStack's SQS endpoint above — see
+  # AwsProperties#dynamoDbEndpointUrl (docs/load/BOTTLENECK.md). Falls back to endpoint-url so
+  # LocalStackTestBase's ITs (which only override aws.endpoint-url) are unaffected.
+  dynamodb-endpoint-url: ${DYNAMODB_ENDPOINT_URL:${aws.endpoint-url}}
+  region: ${AWS_REGION:us-east-1}
+  access-key-id: ${AWS_ACCESS_KEY_ID:test}
+  secret-access-key: ${AWS_SECRET_ACCESS_KEY:test}
+
+# Actuator: expose only what compose healthchecks and the runbook rely on.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      # Enables the liveness/readiness health groups the compose healthcheck probes.
+      probes:
+        enabled: true

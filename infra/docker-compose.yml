@@ -355,6 +355,51 @@ services:
       retries: 5
       start_period: 30s
 
+  # notification-service — the real-time push service (step 38), and the platform's first
+  # long-lived-connection service: it holds one SSE stream per connected customer and feeds them from
+  # notification-queue. Nothing depends on it: a missed push degrades UX, never correctness, because
+  # every outcome stays queryable on GET /payments/{id}.
+  notification-service:
+    build:
+      context: ..
+      dockerfile: services/notification-service/Dockerfile
+    image: platinumcoin/notification-service
+    container_name: notification-service
+    ports:
+      - "8087:8087"
+    environment:
+      # Must match auth-service's JWT_SECRET. This service only VALIDATES tokens — the SSE route is
+      # fully protected, and the ?access_token= handshake a browser's EventSource needs is resolved by
+      # rewriting the parameter into an Authorization header before the shared filter runs, never by
+      # putting the path on the public allow-list (see infra/security/SseTokenHandshakeFilter).
+      JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # Reach LocalStack (SQS — notification-queue) by service name on the shared network.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md). This
+      # service touches exactly ONE table there — pix_processed_events, the shared consumer-dedup gate.
+      # It reads no ledger, no transaction and no account: everything it needs to route and display an
+      # event already travels in the event.
+      DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+    depends_on:
+      # Hard dependencies, like settlement's: this service resolves its queue URL at startup and dedupes
+      # against DynamoDB, so a not-yet-ready emulator means a service that boots healthy while pushing
+      # nothing at all.
+      localstack:
+        condition: service_healthy
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8087/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # Redis — its own container (ADR-0008), the local stand-in for ElastiCache for Redis, which LocalStack
   # does NOT emulate. Comes up in Sprint 5 because fraud is the first flow that needs it (velocity
   # counters); Sprint 9's balance cache reuses this same container. Data is ephemeral (a cache): no named

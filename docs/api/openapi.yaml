@@ -259,6 +259,31 @@ paths:
         comments keep the connection alive; clients should auto-reconnect (native
         EventSource behavior). A missed push never affects correctness — state remains
         queryable via the status endpoint.
+
+
+        Each frame carries its routing in SSE's own fields: `event:` is the event type
+        (so a browser can `addEventListener('PixReceived', …)` without parsing the body)
+        and `id:` is the `eventId` (so a reconnect resumes via `Last-Event-ID`). Lines
+        beginning with `:` are comments — the handshake (`:connected …`) and the 25s
+        keepalive (`:ping`) — which every client, EventSource included, ignores.
+
+
+        The stream is always the caller's own: the account comes from the JWT `accountId`
+        claim and no parameter names an account.
+      parameters:
+        - name: access_token
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            Alternative to the `Authorization` header, for clients that cannot set request
+            headers — notably the browser's native `EventSource`, which has no API for it.
+            **Accepted on this path only**, and it is a convenience, not a second verifier:
+            notification-service rewrites it into an `Authorization: Bearer` header before
+            the shared JWT filter runs, so an invalid token yields the identical 401. An
+            explicit `Authorization` header always takes precedence. Note the trade-off — a
+            token in a URL reaches access logs, `Referer` and browser history; the production
+            posture is a short-lived single-use stream ticket.
       responses:
         '200':
           description: Open event stream

@@ -13,7 +13,7 @@ Step 04.
 
 ## Tasks
 1. `JwtAuthFilter` (after `CorrelationIdFilter`): parse+verify HS256 with `JWT_SECRET`; on success set an `AuthenticatedUser(userId, accountId)` into the security context / request; on missing/invalid/expired ⇒ `401` problem+json (`code: UNAUTHORIZED`).
-2. Path allow-list: `/auth/login`, `/actuator/**` (and a hook for the SSE stream, refined in step 38).
+2. Path allow-list: `/auth/login`, `/actuator/**` (and a hook left for the SSE stream). **Resolved in step 38 — and the hook was not spent:** notification-service promotes `?access_token=` into an `Authorization` header just before this filter runs, so `/v1/notifications/stream` stays protected and common-lib remains the only JWT verifier in the platform. See `SseTokenHandshakeFilter`.
 3. `@AuthenticationPrincipal`-style accessor (`AuthenticatedUser current()`); helper to read `accountId` in controllers.
 4. Ship via auto-configuration; applied to auth-service now (protecting a dummy `/v1/auth/me` echo endpoint proves it) and inherited by every later service automatically.
 
