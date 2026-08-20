@@ -401,7 +401,8 @@ public class SendPixUseCase {
                 fraudDecision,
                 fraudDecision == FraudDecision.SKIPPED,
                 now,
-                now);
+                now,
+                null);   // a send this service accepts has not failed; only a reversal carries a reason
         persistWithOutbox(transaction, now);
 
         log.info("Internal Pix moved money and settled, persisted as SETTLED, returning 202 Accepted | "
@@ -471,7 +472,8 @@ public class SendPixUseCase {
                 fraudDecision,
                 fraudDecision == FraudDecision.SKIPPED,
                 now,
-                null);
+                null,
+                null);   // idem: settlement-service stamps the reason if BACEN ever refuses
         persistWithOutbox(transaction, now);
 
         log.info("External Pix debited the payer to the clearing account, persisted as DEBITED awaiting "

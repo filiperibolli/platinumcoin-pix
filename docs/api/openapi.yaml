@@ -416,7 +416,16 @@ components:
         pixKey: { type: string }
         createdAt: { type: string, format: date-time }
         settledAt: { type: string, format: date-time, nullable: true }
-        failureReason: { type: string, nullable: true }
+        failureReason:
+          type: string
+          nullable: true
+          description: >-
+            Set on `REVERSED` — BACEN's refusal reason, forwarded as settlement-service stored
+            it (step 33). `null` on every other status. Carries the same value as the
+            `Notification.failureReason` pushed for the same payment, including the same
+            known gap: what travels today is the SPI's `detail` sentence rather than its
+            machine-readable code.
+          example: CREDITOR_KEY_NOT_IN_DICT
     Notification:
       type: object
       description: >-

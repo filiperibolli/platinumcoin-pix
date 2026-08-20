@@ -263,6 +263,12 @@ public class DynamoTransactionRepository implements TransactionRepository {
      * transaction written before that stage (and on every external send), so they map back to
      * {@code null}; {@code fraudSkipped} defaults to {@code false} when the boolean attribute is absent —
      * the same shape the use case wrote.
+     *
+     * <p><b>{@code status} is read back through an enum whose writes this service does not own.</b>
+     * settlement-service moves a transaction to {@code SENT_TO_SPI}, {@code SETTLED} or {@code REVERSED}
+     * (ADR-0006), and {@code valueOf} on a constant missing here throws — which is precisely how every
+     * reversed payment came to answer {@code 500} on its own status endpoint until {@code REVERSED} was
+     * added. A consumer of somebody else's state machine has to know all of its states.
      */
     private static Transaction toTransaction(Map<String, AttributeValue> item) {
         return new Transaction(
@@ -284,6 +290,9 @@ public class DynamoTransactionRepository implements TransactionRepository {
                         ? FraudDecision.valueOf(item.get("fraudDecision").s()) : null,
                 item.containsKey("fraudSkipped") && Boolean.TRUE.equals(item.get("fraudSkipped").bool()),
                 Instant.parse(item.get("createdAt").s()),
-                item.containsKey("settledAt") ? Instant.parse(item.get("settledAt").s()) : null);
+                item.containsKey("settledAt") ? Instant.parse(item.get("settledAt").s()) : null,
+                // Written by settlement-service together with REVERSED (step 33); absent on every other
+                // state, which is why it is read defensively rather than required.
+                item.containsKey("failureReason") ? item.get("failureReason").s() : null);
     }
 }

@@ -63,6 +63,38 @@ The platform reached its halfway mark: **the full money path is built, tested an
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Fixed
+- **`GET /v1/payments/{transactionId}` answered `500` for every reversed payment.** A reachable defect on
+  the money path, introduced in step 33 and found in step 39 by running the new *Reversal* journey in the
+  API explorer end to end (then reproduced with `curl`, outside the explorer). settlement-service marks a
+  permanently refused external send **`REVERSED`** in `pix_transactions`; payment-service's own
+  `TransactionStatus` knew only `RECEIVED/DEBITED/SENT_TO_SPI/SETTLED`, so
+  `DynamoTransactionRepository.toTransaction` threw `IllegalArgumentException: No enum constant …REVERSED`
+  and the payer — whose money had just come back — could not read the payment that returned it.
+  - **Why it stings more since step 39:** the push announces `REVERSED` and names `GET /payments/{id}` as
+    its authoritative fallback ("best-effort push, authoritative poll"). The fallback was the thing that
+    failed, and only for the outcome the push exists to soften.
+  - **The guard that worked, and the one that was missing.** `PaymentResponse.externalStatusOf` is a
+    `switch` with **no `default`** precisely so a new state cannot silently map to a wrong wire value — and
+    it would have failed the build the moment `REVERSED` was added to the enum. But nothing forced the
+    *constant* to exist: the state is written by another service and read back through `valueOf`, which
+    turns an unknown name into a runtime error rather than a compile error. **An enum read across a service
+    boundary is a contract, and the consumer has to know every state the owner can write.**
+  - **Fixed:** `REVERSED` added to `TransactionStatus` (mapped to the external `REVERSED` — terminal and
+    visible, unlike `DEBITED`/`SENT_TO_SPI`), `failureReason` added to `Transaction` and read from the
+    item, so the poll now tells the payer *why* the money came back instead of being less informative than
+    the push. `FAILED`/`REJECTED` deliberately **not** added: no service writes them today, and a state
+    nobody can produce is a fiction the mapping would have to keep honest.
+  - **Tests:** `PaymentResponseTest#reversedMapsToReversedAndCarriesTheReason` (unit) and
+    `StatusQueryIT#aReversedPaymentReadsBackAsReversedInsteadOf500` — the IT marks the transaction
+    `REVERSED` with a **direct item update, the way settlement-service writes it**, never through
+    payment-service code, because the defect is in reading back state another service owns and a test that
+    produced the state through this service could not have reproduced it. `mvn -pl services/payment-service
+    verify` green: 71 unit + 40 IT.
+  - **Still open, and unchanged by this fix:** the sibling gap recorded in step 37 — an inbound transaction
+    (`in-<endToEndId>`, status `RECEIVED_SETTLED`) queried through this endpoint still `500`s. It stays
+    deferred to step 45's error-contract audit: unlike a reversal, no flow leads a client to that id.
+  AI: est 0.5h / actual ~0.7h / ~85% generated / 0 issues caught in human review
+
 - **Twin-harness drift: the external send was invisible in the API explorer and Postman.** Caught
   reviewing the manual-test harnesses against the code: since step 27 the send flow has had two
   destinations — internal (settles in one atomic posting) and external (debit to `SPI_CLEARING`, settle

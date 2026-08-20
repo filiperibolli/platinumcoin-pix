@@ -54,6 +54,6 @@ class GetPaymentStatusUseCaseTest {
         FraudDecision fraudDecision = status == TransactionStatus.SETTLED ? FraudDecision.APPROVE : null;
         return new Transaction(
                 id, "E2E-" + id, debtor, "bob@platinum.com", creditorAccountId, true, null, 12_550L,
-                status, "lunch", fraudDecision, false, createdAt, settledAt);
+                status, "lunch", fraudDecision, false, createdAt, settledAt, null);
     }
 }

@@ -23,7 +23,7 @@ class PaymentResponseTest {
     void receivedMapsToProcessingWithNoSettlement() {
         Transaction received = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", null, true, null, 12_550L,
-                TransactionStatus.RECEIVED, "lunch", null, false, CREATED, null);
+                TransactionStatus.RECEIVED, "lunch", null, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(received);
 
@@ -36,7 +36,7 @@ class PaymentResponseTest {
     void settledMapsToSettledWithSettledAt() {
         Transaction settled = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, null, 12_550L,
-                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
+                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED, null);
 
         PaymentResponse response = PaymentResponse.from(settled);
 
@@ -45,13 +45,38 @@ class PaymentResponseTest {
         assertThat(response.failureReason()).isNull();
     }
 
+    /**
+     * The failure branch of an external send (step 33): BACEN refused permanently, the compensating
+     * posting returned the money, and settlement-service wrote {@code REVERSED} onto the transaction.
+     *
+     * <p><b>This mapping was missing entirely</b> — the internal enum had no {@code REVERSED} constant at
+     * all, so the repository's {@code valueOf} threw and the payer got a <b>500</b> from the very endpoint
+     * that is supposed to be the authoritative answer about their money. Found by running the reversal
+     * journey in the API explorer end to end; reproduced with curl before this test was written.
+     */
+    @Test
+    void reversedMapsToReversedAndCarriesTheReason() {
+        Transaction reversed = new Transaction(
+                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 5_510L,
+                TransactionStatus.REVERSED, "rent", FraudDecision.APPROVE, false, CREATED, null,
+                "CREDITOR_KEY_NOT_IN_DICT");
+
+        PaymentResponse response = PaymentResponse.from(reversed);
+
+        assertThat(response.status()).isEqualTo("REVERSED");
+        // Never SETTLED-with-a-reason and never PROCESSING: a reversal is terminal, and the money is back.
+        assertThat(response.settledAt()).isNull();
+        assertThat(response.failureReason()).isEqualTo("CREDITOR_KEY_NOT_IN_DICT");
+        assertThat(response.amount()).isEqualTo("55.10");
+    }
+
     @Test
     void debitedMapsToProcessingBecauseTheMoneyHasNotReachedTheOtherBankYet() {
         // The external send (step 27): debited to clearing, awaiting settlement. The client sees the
         // same PROCESSING it saw at 202 — the internal DEBITED/SENT_TO_SPI distinction is ours, not its.
         Transaction debited = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 20_000L,
-                TransactionStatus.DEBITED, "rent", FraudDecision.APPROVE, false, CREATED, null);
+                TransactionStatus.DEBITED, "rent", FraudDecision.APPROVE, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(debited);
 
@@ -67,7 +92,7 @@ class PaymentResponseTest {
         // problem, and a status the client cannot act on has no business in the contract.
         Transaction sentToSpi = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 20_000L,
-                TransactionStatus.SENT_TO_SPI, "rent", FraudDecision.APPROVE, false, CREATED, null);
+                TransactionStatus.SENT_TO_SPI, "rent", FraudDecision.APPROVE, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(sentToSpi);
 
@@ -79,7 +104,7 @@ class PaymentResponseTest {
     void rendersIdentityAmountAndKeyFromTheTransaction() {
         Transaction settled = new Transaction(
                 "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, null, 12_550L,
-                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED);
+                TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED, null);
 
         PaymentResponse response = PaymentResponse.from(settled);
 

@@ -44,7 +44,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); an external one debits the payer into `SPI_CLEARING` and persists `DEBITED`, awaiting settlement (step 27). The wire `status` is `PROCESSING` either way — the honest state is served by `GET /payments/{id}` (step 22). |
-| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`) until settlement. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
+| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -197,7 +197,7 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `outbox.lag` gauge)
                                                                                    (inbound adapters)
 domain/model/     Transaction (record), PendingOutboxEvent (a stored event awaiting publication),
-                  TransactionStatus (enum: RECEIVED, DEBITED, SETTLED),
+                  TransactionStatus (enum: RECEIVED, DEBITED, SENT_TO_SPI, SETTLED, REVERSED),
                   KeyResolution (where a destination key lives: internal | external PSP),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
                   FraudDecision (enum: APPROVE, REVIEW, DENY, SKIPPED),

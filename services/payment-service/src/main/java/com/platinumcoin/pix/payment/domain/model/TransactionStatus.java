@@ -47,5 +47,28 @@ public enum TransactionStatus {
      * posting debited the payer and credited the payee in one transaction. The terminal state of an
      * internal send (step 21), and — via the SPI confirmation — of an external one (step 31).
      */
-    SETTLED
+    SETTLED,
+
+    /**
+     * BACEN refused the settlement permanently, and the money has been returned to the payer by a
+     * <b>compensating posting</b> (step 33) — never by undoing anything, because the ledger is
+     * append-only. The other terminal state of an external send.
+     *
+     * <p><b>Why this constant exists here at all, given payment-service never writes it.</b>
+     * settlement-service owns the transition and this service only ever <i>reads</i> it (ADR-0006) — but
+     * reading is exactly the problem: the repository rebuilds the status with
+     * {@code TransactionStatus.valueOf}, so a state this enum did not know threw
+     * {@code IllegalArgumentException} and turned {@code GET /v1/payments/&#123;id&#125;} into a
+     * <b>500</b> for every reversed payment. The payer whose money had just come back could not read
+     * the payment that returned it, and the push that announced the reversal (step 39) names that
+     * endpoint as its authoritative fallback.
+     *
+     * <p>The lesson worth keeping: an enum shared across a service boundary is a <b>contract</b>, and the
+     * consumer of a state machine has to learn every state the owner can write. The compile-time guard in
+     * {@code PaymentResponse} (a {@code switch} with no {@code default}) worked as designed — it forces
+     * the wire mapping for every constant — but nothing forced the constant to exist in the first place.
+     * {@code FAILED} and {@code REJECTED} are deliberately <b>not</b> added: no service writes them today,
+     * and a state nobody can produce is a fiction the mapping would have to keep honest.
+     */
+    REVERSED
 }

@@ -23,13 +23,13 @@ class PixOutboxEventsTest {
     private static Transaction external(FraudDecision fraud) {
         return new Transaction("tx-1", "E1234", "acc-001", "bob@otherbank.com", null, false,
                 "SPI_CLEARING", 12_550L, TransactionStatus.DEBITED, "rent", fraud,
-                fraud == FraudDecision.SKIPPED, NOW, null);
+                fraud == FraudDecision.SKIPPED, NOW, null, null);
     }
 
     private static Transaction internal(FraudDecision fraud) {
         return new Transaction("tx-2", "E5678", "acc-001", "bob@platinum.com", "acc-002", true,
                 null, 12_550L, TransactionStatus.SETTLED, "lunch", fraud,
-                fraud == FraudDecision.SKIPPED, NOW, NOW);
+                fraud == FraudDecision.SKIPPED, NOW, NOW, null);
     }
 
     private static List<String> typesOf(List<OutboxEvent> events) {
