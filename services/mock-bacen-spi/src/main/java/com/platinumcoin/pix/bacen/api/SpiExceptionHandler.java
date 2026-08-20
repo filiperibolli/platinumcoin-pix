@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.bacen.api;
 
 import com.platinumcoin.pix.bacen.spi.DictKeyNotFoundException;
+import com.platinumcoin.pix.bacen.spi.InboundDeliveryFailedException;
 import com.platinumcoin.pix.bacen.spi.SettlementRejectedException;
 import com.platinumcoin.pix.bacen.spi.SpiTimeoutException;
 import com.platinumcoin.pix.bacen.spi.SpiUnavailableException;
@@ -15,13 +16,14 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Turns the stub's four refusals into HTTP. Even a stub answers in the platform's error contract (RFC 7807
+ * Turns the stub's refusals into HTTP. Even a stub answers in the platform's error contract (RFC 7807
  * {@code application/problem+json} with a stable {@code code} plus the {@code correlationId}, via
  * common-lib's {@link ProblemDetailFactory}) — because the code on the other side of these responses is
  * <i>real</i>, and letting the fake dependency speak a different error dialect would mean the client's
  * error handling is only ever exercised against a shape it will not meet in production.
  *
- * <p>The four statuses are chosen so a caller can tell the three fundamentally different things apart:
+ * <p>The settlement-path statuses are chosen so a caller can tell the three fundamentally different
+ * things apart:
  *
  * <ul>
  *   <li>{@code 503 SPI_UNAVAILABLE} — transient. Nothing was recorded; retry the same {@code endToEndId}.</li>
@@ -77,6 +79,31 @@ public class SpiExceptionHandler {
     @ExceptionHandler(DictKeyNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleDictKeyNotFound(DictKeyNotFoundException ex) {
         return problem(HttpStatus.NOT_FOUND, "DICT_KEY_NOT_FOUND", ex.getMessage());
+    }
+
+    /**
+     * The inbound simulation could not hand its payment over (step 37). The two shapes are reported apart
+     * because they mean opposite things to whoever triggered the demo: {@code 422 INBOUND_REFUSED} — the
+     * participant made a decision (bad token, unknown key) and a real rail would bounce the payment back
+     * to the payer's PSP; {@code 502 INBOUND_DELIVERY_FAILED} — the participant never gave an answer the
+     * rail could act on, so the payment is in limbo, which is the honest state to report.
+     */
+    @ExceptionHandler(InboundDeliveryFailedException.class)
+    public ResponseEntity<ProblemDetail> handleInboundDeliveryFailed(InboundDeliveryFailedException ex) {
+        HttpStatus status = ex.permanent() ? HttpStatus.UNPROCESSABLE_ENTITY : HttpStatus.BAD_GATEWAY;
+        String code = ex.permanent() ? "INBOUND_REFUSED" : "INBOUND_DELIVERY_FAILED";
+        return problem(status, code, ex.getMessage()
+                + " | attempts=" + ex.attempts() + " participantStatus=" + ex.participantStatus());
+    }
+
+    /**
+     * A malformed simulation amount ({@code "0.00"}, {@code "1.005"}, a non-number) or a malformed ISPB.
+     * The stub validates money exactly as strictly as the real edge does — a fake that accepts what
+     * production refuses lets a bug through instead of catching it.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidArgument(IllegalArgumentException ex) {
+        return problem(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", ex.getMessage());
     }
 
     private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code, String detail) {

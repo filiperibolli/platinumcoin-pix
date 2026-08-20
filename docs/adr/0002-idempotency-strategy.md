@@ -22,6 +22,14 @@ Mobile clients retry on timeouts. A retried `POST /payments/pix` must never debi
    - Key exists but `status=IN_PROGRESS` (crash mid-flight) → `409` with `Retry-After`. **Orphan handling:** the record stores `claimedAt`; an `IN_PROGRESS` claim older than a staleness window (60s — far beyond any legitimate in-flight request) is treated as abandoned and re-claimed by the retry, so a crash between claim and completion never blocks the client until the 24h TTL.
 2. **Ledger layer**: entry items keyed by `txId` with `attribute_not_exists` inside the `TransactWriteItems` — an internal replay of the same `txId` is rejected by the database itself. Defense in depth: even a bug above cannot double-post.
 3. **SPI layer**: `endToEndId` (Pix standard) is the idempotency key toward BACEN; retrying a settlement after timeout is safe, and settlement-service queries status before blind retries.
+   - **The rail is idempotent in both directions (step 37).** `POST /v1/inbound/pix` — the webhook BACEN calls to deliver a Pix to us — carries **no `Idempotency-Key` header**, and that is layer 1 applied rather than skipped: the header exists for the one *untrusted, client-facing* money-moving POST that has **no natural id**, and this call has one. The transaction id is derived, `in-<endToEndId>`, so the item's partition key embeds the rail's own id and `attribute_not_exists(pk)` on the record **is** the dedupe — the same conditional-claim idiom as layer 1, keyed by a natural id instead of a client-supplied one, and therefore stronger (a client cannot forget it, reuse it, or send two for one payment). Deduping by querying the `E2E#` GSI instead would be a read-then-check over an *eventually consistent* index: the exact check-then-act race the conditional write exists to close.
+
+## Ordering: claim-then-work, or work-then-claim?
+Layer 1 claims **before** doing the work, and `SettlePixUseCase` claims its `eventId` before calling BACEN, for one reason: the work has a **non-idempotent external effect**, so a second attempt is a second real event.
+
+Where the work is *already* idempotent, the ordering flips — and step 37's inbound credit is the case. Its ledger posting is idempotent by the same derived `txId`, so no ordering can double-credit; but claiming first would introduce a failure that otherwise does not exist. A crash between the claim and the posting would leave an `endToEndId` marked handled whose money never arrived, and every redelivery would be politely refused by our own guard — the payment lost silently, with no error anywhere. Posting first inverts the residual risk into a harmless one: a committed credit with no record, which the next delivery replays and completes.
+
+**The rule:** claim first when the work is not idempotent; do the work first when it is and the claim is the durable record of it.
 
 ## Scope & semantics
 - Scope per `accountId` — two users may coincidentally use the same UUID.

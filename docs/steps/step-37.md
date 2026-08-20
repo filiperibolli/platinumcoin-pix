@@ -17,6 +17,24 @@ Steps 30 (mock-bacen), 31/33 (settlement + ledger posting patterns), 36 (queues)
 3. settlement `POST /v1/inbound/pix`: dedupe by `endToEndId` (conditional write); resolve key → accountId (account-service); ledger posting `debit SPI_CLEARING / credit user` (`entryType=PIX_IN`); persist INBOUND tx `RECEIVED_SETTLED`; outbox `PixReceived`; 200 ack.
 4. Unknown key ⇒ documented handling (reject/return; BACEN would bounce).
 
+> **Implementation note (written while building, 2026-08-20) — the dedupe is *inside* the record, and runs
+> after the posting.** Task 3 lists the dedupe first, which is the right instinct when the work has a
+> non-idempotent external effect (it is exactly why `SettlePixUseCase` claims its `eventId` before calling
+> BACEN). Here it is the wrong order. `txId` is derived as `in-<endToEndId>`, so:
+> - the ledger posting is already idempotent by that `txId` — a redelivery replays it as a no-op, and
+>   nothing can double-credit regardless of ordering;
+> - the conditional write that records the transaction (`attribute_not_exists(pk)` on `TX#in-<e2e>`,
+>   together with the `PixReceived` outbox item in one `TransactWriteItems`) **is** the endToEndId dedupe —
+>   strongly consistent, unlike a `gsi1` query, which is eventually consistent and would let two concurrent
+>   deliveries both read "absent".
+>
+> Claiming first would add a failure mode that otherwise does not exist: a crash between the claim and the
+> posting leaves an `endToEndId` marked handled whose money never arrived, and every redelivery is politely
+> refused by our own guard — the payment lost silently, the worst outcome available. Posting first inverts
+> the residual risk into a harmless one (a committed credit with no transaction row, completed by the next
+> delivery). Order implemented: **token → resolve → post → conditional record**. See ARCHITECTURE §6.8 and
+> `docs/data-model.md` §4.
+
 ## Tests (TDD)
 - `InboundPixIT` — simulate inbound to bob ⇒ bob credited, INBOUND tx + PixReceived outbox; **redelivery of the same endToEndId ⇒ single credit** (dedupe).
 - Webhook auth test — missing/wrong `X-Webhook-Token` ⇒ 401, no posting, no transaction.

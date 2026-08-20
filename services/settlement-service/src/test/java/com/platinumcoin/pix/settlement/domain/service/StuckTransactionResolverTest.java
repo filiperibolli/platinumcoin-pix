@@ -291,6 +291,13 @@ class StuckTransactionResolverTest {
                 long amountCents, String description) {
             reversals.add(txId);
         }
+
+        /** The reconciliation resolver never receives money — an inbound credit here would be a defect. */
+        @Override
+        public void creditInbound(String txId, String clearingAccount, String payeeAccount,
+                long amountCents, String description) {
+            throw new AssertionError("the stuck-transaction resolver must never post an inbound credit");
+        }
     }
 
     private static final class RecordingLimits implements DailyLimitRelease {

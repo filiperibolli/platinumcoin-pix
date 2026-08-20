@@ -32,10 +32,10 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Web + Actuator. This service exposes NO business endpoint — its only inbound adapter is a
-             queue consumer — but it still serves /actuator/health so compose can gate on it, and
-             spring-boot-starter-web is what common-lib's RestClient customizer and the Boot web stack
-             need for the outbound SPI call. -->
+        <!-- Web + Actuator. Until step 37 this service exposed no business endpoint at all (its only
+             inbound adapter was the queue consumer) and needed the web stack only for /actuator/health,
+             common-lib's RestClient customizer and the outbound SPI call. Step 37 added the inbound Pix
+             webhook, so it now serves a real route as well. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
@@ -43,6 +43,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Bean Validation for the inbound webhook's wire shape (step 37): a malformed delivery is
+             refused at the edge with 400 VALIDATION_ERROR, before any use case sees it. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
         <!-- DynamoDB SDK v2: the guarded status transitions and the PixSettled outbox item are written

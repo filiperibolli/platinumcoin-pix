@@ -5,20 +5,29 @@ spring:
   application:
     name: settlement-service
 
-# No CORS block, unlike every other service: settlement-service exposes NO business endpoint, so there is
-# no browser origin to allow and nothing to add to Postman or the API explorer. Its only inbound adapter
-# is the queue consumer, and its whole HTTP footprint is the actuator surface compose gates on.
+# Local-dev CORS, arriving with this service's first HTTP endpoint (step 37) so the open-from-disk API
+# explorer (tools/api-explorer/index.html, Origin: null) can exercise the inbound webhook — including its
+# 401 — from the browser. Permissive + credential-free by design; the CorsFilter is ordered ahead of the
+# JWT filter so pre-flights aren't 401'd. See infra/config/CorsConfig.
+web:
+  cors:
+    allowed-origin-patterns: "*"
+
+# The JWT config is required even though this service authenticates nothing with a token: common-lib
+# auto-configures the shared JwtAuthFilter for every servlet service, and the platform keeps ONE
+# authentication posture rather than a per-service opt-out. The secret must match auth-service's;
+# public-paths is the allow-list the filter skips.
 #
-# The JWT config below is still required: common-lib auto-configures the shared JwtAuthFilter for every
-# servlet service, and the platform keeps ONE authentication posture rather than a per-service opt-out —
-# a service that could quietly skip token validation is a hole waiting for the day it grows an endpoint,
-# and this one does exactly that in step 37 (inbound Pix from BACEN). The secret must match
-# auth-service's; public-paths is the allow-list the filter skips, which today is everything this service
-# serves.
+# /v1/inbound/** is on that allow-list because BACEN holds no PlatinumCoin token — a real participant
+# authenticates to the SPI with mTLS and an ICP-Brasil certificate (ADR-0007), a whole trust domain away
+# from our HS256 tokens. JWT-exempt is NOT anonymous: the route credits money, so it is guarded by the
+# shared pix.inbound.webhook-token below, checked inside the use case before anything else happens
+# (threat model, boundary B4).
 jwt:
   secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
   public-paths:
     - /actuator/**
+    - /v1/inbound/**
 
 # Pix participant identifier (ISPB — 8 digits), sent to the rail as the debtor participant. Same value
 # payment-service bakes into every endToEndId; one place to change PlatinumCoin's participant code.
@@ -30,6 +39,19 @@ pix:
   # (ambient IAM role / mTLS) is the step-45 sweep (ADR-0013).
   service-auth:
     token-ttl-seconds: ${SERVICE_TOKEN_TTL_SECONDS:60}
+  # Where an EXTERNAL send parks the money it debits (step 27) and, symmetrically, where an INBOUND Pix
+  # draws the money it credits from (step 37). It MUST be the same id payment-service uses — both
+  # directions net against one clearing balance, and step 52 shards it into SPI_CLEARING#00..#15, which is
+  # exactly why it is configuration in both services rather than a constant in either.
+  clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  inbound:
+    # The shared secret BACEN presents on POST /v1/inbound/pix as X-Webhook-Token. The route is JWT-exempt
+    # (an external party holds no PlatinumCoin token) but it CREDITS MONEY, so it is never anonymous: an
+    # unauthenticated inbound webhook would let any process that can reach this port mint spendable
+    # balance (threat model, boundary B4). A sandbox stand-in — production is mTLS + BACEN message
+    # signing. Empty by default ON PURPOSE: a service with no token configured refuses every delivery
+    # rather than accepting an empty header, so a misconfiguration fails closed.
+    webhook-token: ${SPI_WEBHOOK_TOKEN:}
   settlement:
     # The ledger account a CLEARING_RELEASE credits when an external send settles (step 33): money that
     # has left the bank to the SPI network. Seeded at 0 by infra/localstack/init/05-seed-ledger.sh.
@@ -100,9 +122,18 @@ pix:
 # The BACEN SPI (mock-bacen-spi, step 30). Defaults target a locally-run stub on 9090
 # (docs/local-dev.md §2); compose overrides it to the service name on the shared network.
 services:
+  # account-service's DICT seam, called by the inbound flow (step 37) to turn the destination Pix key
+  # into the account to credit. Short timeouts because the RAIL is waiting on this call (BACEN holds the
+  # webhook open): a hung directory must surface as a 503 the rail re-presents, never a pinned thread.
+  # Same budget account-service itself allows for the DICT hop on the send path.
+  account-service:
+    base-url: ${ACCOUNT_SERVICE_BASE_URL:http://localhost:8082}
+    connect-timeout-ms: ${ACCOUNT_CONNECT_TIMEOUT_MS:500}
+    read-timeout-ms: ${ACCOUNT_READ_TIMEOUT_MS:1500}
   # ledger-service, called on a DEFINITIVE settlement outcome (step 33): CLEARING_RELEASE on success,
-  # the compensating reversal on a permanent refusal. Short timeouts — a hung ledger surfaces as a
-  # timeout (nothing posted) and the message redelivers, which the idempotent -rel/-rev txId makes safe.
+  # the compensating reversal on a permanent refusal — and, since step 37, the PIX_IN credit of an
+  # inbound Pix. Short timeouts — a hung ledger surfaces as a timeout (nothing posted) and the message
+  # redelivers (or the rail re-presents), which the idempotent -rel/-rev/in- txId makes safe.
   ledger-service:
     base-url: ${LEDGER_BASE_URL:http://localhost:8085}
     connect-timeout-ms: ${LEDGER_CONNECT_TIMEOUT_MS:2000}

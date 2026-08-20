@@ -44,6 +44,12 @@ public class StubLedgerClient implements LedgerClient {
         apply(new Posting(txId, clearingAccount, payerAccount, amountCents));
     }
 
+    @Override
+    public void creditInbound(String txId, String clearingAccount, String payeeAccount, long amountCents,
+            String description) {
+        apply(new Posting(txId, clearingAccount, payeeAccount, amountCents));
+    }
+
     private void apply(Posting posting) {
         if (unavailable) {
             throw new LedgerUnavailableException("stub ledger unavailable", null);

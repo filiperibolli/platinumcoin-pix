@@ -255,6 +255,16 @@ services:
       BACEN_FAILURE_RATE: "0.0"         # fraction answered 503, recording NOTHING (transient ⇒ retryable)
       BACEN_TIMEOUT_RATE: "0.0"         # fraction that SETTLE and then hang — the query-before-retry case
       BACEN_TIMEOUT_HANG_MS: "15000"    # must exceed the client's 12s timeout (step 31) to mean anything
+      # ── Inbound delivery (step 37): the ONE direction where this stub is the caller ────────────────
+      # POST /simulate/inbound-pix presents a payment to settlement-service's webhook. There is NO
+      # depends_on for it, deliberately: settlement-service already gates on this stub being healthy, so
+      # a dependency back would be a cycle compose refuses to start. The base URL is resolved per call,
+      # not at boot, so the stub comes up fine on its own and a delivery before settlement is ready just
+      # retries.
+      SETTLEMENT_BASE_URL: http://settlement-service:8086
+      # Must match settlement-service's SPI_WEBHOOK_TOKEN. A mismatch shows up as 422 INBOUND_REFUSED
+      # (the participant answered 401) — the threat-model boundary doing its job, not a bug.
+      SPI_WEBHOOK_TOKEN: dev-only-inbound-webhook-token-change-me
     networks:
       - pix-net
     healthcheck:
@@ -278,13 +288,25 @@ services:
     ports:
       - "8086:8086"
     environment:
-      # Must match auth-service's JWT_SECRET. Nothing is authenticated here yet — the platform keeps ONE
-      # authentication posture rather than a per-service opt-out, and step 37 gives this service its first
-      # HTTP endpoint (inbound Pix).
+      # Must match auth-service's JWT_SECRET. No token authenticates anything here — the inbound webhook
+      # of step 37 is JWT-exempt (BACEN holds no PlatinumCoin token) and guarded by SPI_WEBHOOK_TOKEN
+      # instead — but the platform keeps ONE authentication posture rather than a per-service opt-out,
+      # and this service mints its own service token for the ledger call (step 33) with this secret.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
+      # The shared secret mock-bacen presents on POST /v1/inbound/pix as X-Webhook-Token (step 37). The
+      # route CREDITS MONEY, so it is never anonymous: without this, any process that can reach port 8086
+      # could mint spendable balance (threat model, boundary B4). Must match mock-bacen-spi's value; a
+      # sandbox stand-in for the production posture (mTLS + BACEN message signing).
+      SPI_WEBHOOK_TOKEN: dev-only-inbound-webhook-token-change-me
       # PlatinumCoin's participant id, sent to the rail as the debtor participant. Same value
       # payment-service bakes into every endToEndId.
       PIX_ISPB: "12345678"
+      # Where an external send parks money and where an inbound Pix draws it from (step 37). MUST be the
+      # identical id payment-service uses, or the two directions stop netting against one balance.
+      PIX_CLEARING_ACCOUNT_ID: SPI_CLEARING
+      # account-service's DICT, called by the inbound flow to turn the destination key into the account
+      # to credit. Reached by service name on the shared network.
+      ACCOUNT_SERVICE_BASE_URL: http://account-service:8082
       # The rail this service settles against. 12s read timeout (ADR-0003): above BACEN's 10s, below the
       # queue's 30s visibility timeout — a longer budget would let a hung call hold a message past its
       # visibility window and have SQS redeliver work still in progress.
@@ -313,10 +335,16 @@ services:
       mock-bacen-spi:
         condition: service_healthy
       # ledger-service, needed to finalize a definitive outcome (step 33): CLEARING_RELEASE or the
-      # compensating reversal. Also not a correctness requirement — a ledger outage leaves the message
-      # for redelivery (the -rel/-rev txId makes the retry a replay) — but gating means finalization
-      # works the moment settlement starts consuming.
+      # compensating reversal, and the PIX_IN credit of an inbound Pix (step 37). Also not a correctness
+      # requirement — a ledger outage leaves the message for redelivery (the -rel/-rev/in- txId makes the
+      # retry a replay) and answers the inbound webhook 503 so the rail re-presents — but gating means
+      # both directions work the moment settlement starts.
       ledger-service:
+        condition: service_healthy
+      # account-service, whose DICT the inbound flow resolves the destination key against (step 37). Not
+      # a correctness requirement either: an unreachable directory answers the webhook 503 + Retry-After,
+      # which re-presents the payment rather than bouncing it.
+      account-service:
         condition: service_healthy
     networks:
       - pix-net

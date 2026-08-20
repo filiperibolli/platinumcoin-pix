@@ -62,7 +62,10 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `BACEN_FAILURE_RATE` | `0.0` | Fraction of settlement calls answered `503` with **nothing recorded** — transient, so the same `endToEndId` can still settle on a retry |
 | `BACEN_TIMEOUT_RATE` | `0.0` | Fraction of settlement calls that **settle and then hang** — BACEN moved the money, the caller never heard. The query-before-retry case (step 32) |
 | `BACEN_TIMEOUT_HANG_MS` | `15000` | How long such a call hangs; must exceed the client's own 12s timeout (step 31) or a "timeout" is just a slow success. Boot-time only — `POST /admin/config` cannot lower it mid-drill |
-| `SPI_WEBHOOK_TOKEN` | dev-only value in compose | Authenticates mock-bacen's inbound webhook calls to settlement-service |
+| `SPI_WEBHOOK_TOKEN` | dev-only value in compose | Authenticates mock-bacen's inbound webhook calls to settlement-service (step 37). Set on **both** services and they must match — a mismatch surfaces as `422 INBOUND_REFUSED` (the participant answered `401`), which is the threat-model boundary working, not a bug. settlement-service defaults it to **empty**, and an empty token refuses every delivery: a misconfiguration on a money-crediting route fails closed |
+| `SETTLEMENT_BASE_URL` | `http://settlement-service:8086` | Where mock-bacen presents an inbound Pix. Resolved per call, never at boot — mock-bacen must not depend on settlement-service to start, or compose would have a dependency cycle (settlement already gates on the stub) |
+| `INBOUND_MAX_ATTEMPTS` / `INBOUND_RETRY_DELAY_MS` | `3` / `500` | How often the rail re-presents a payment whose outcome it does not know (`5xx`/no answer). A `4xx` is **never** retried — it is a decision, and a real rail bounces it back to the payer's PSP |
+| `PIX_CLEARING_ACCOUNT_ID` | `SPI_CLEARING` | Where an external send parks money (step 27) and where an inbound Pix draws it from (step 37). Must be the **same** id in payment-service and settlement-service, or the two directions stop netting against one balance |
 | `FRAUD_TIMEOUT_MS` | `200` | Fraud budget in payment-service |
 | `SNS_TOPIC_ARN` | `arn:aws:sns:us-east-1:000000000000:pix-events` | Topic the outbox publisher drains into (injected, never looked up by name — ADR-0013) |
 | `OUTBOX_PUBLISHER_DELAY_MS` | `1000` | Outbox poll interval (`fixedDelay`, so ticks never overlap) |
@@ -853,7 +856,53 @@ docker compose -f infra/docker-compose.yml exec mock-bacen-spi \
   curl -s -X POST localhost:9090/admin/config -d '{"rejectKeys":[]}' -H 'Content-Type: application/json'
 ```
 
-### 5.6 Receive Pix + real-time notification
+### 5.6 Receive Pix (step 37)
+
+Bob must have registered `bob@platinum.com` first (§5.2) — the payee is whatever *our* directory says the
+key belongs to, never something the caller names.
+
+```bash
+# make BACEN generate an inbound Pix to bob and deliver it to settlement-service's webhook
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}' | jq
+# → {"endToEndId":"E99999999...","amountCents":30000,"participantTxId":"in-E99999999...",
+#    "outcome":"CREDITED","deliveryAttempts":1}
+
+# bob was credited: debit SPI_CLEARING / credit acc-002 (entryType=PIX_IN) — the MIRROR of an
+# outbound send, which debits the payer and credits clearing
+curl -s localhost:8085/internal/ledger/accounts/acc-002/balance \
+  -H "Authorization: Bearer $BOB" | jq
+```
+
+**Prove the dedupe.** Re-present the same payment straight at the webhook with the id the call above
+returned — this is what BACEN does when it never got an answer:
+
+```bash
+E2E=E99999999202608201030abcdef012   # paste the endToEndId from the response above
+curl -s -X POST localhost:8086/v1/inbound/pix \
+  -H 'Content-Type: application/json' \
+  -H 'X-Webhook-Token: dev-only-inbound-webhook-token-change-me' \
+  -d "{\"endToEndId\":\"$E2E\",\"pixKey\":\"bob@platinum.com\",\"amountCents\":30000,
+       \"payerName\":\"External Payer\",\"payerIspb\":\"99999999\"}" | jq
+# → {"outcome":"ALREADY_PROCESSED"} — 200, and bob's balance is UNCHANGED. The transaction id is
+#   in-<endToEndId>, so the conditional write on that item IS the endToEndId dedupe.
+```
+
+**Prove the guard.** The webhook credits money, so it is never anonymous even though it is JWT-exempt
+(threat model, boundary B4):
+
+```bash
+curl -s -i -X POST localhost:8086/v1/inbound/pix -H 'Content-Type: application/json' \
+  -d '{"endToEndId":"E99999999202608201030forged0000","pixKey":"bob@platinum.com","amountCents":999999}'
+# → 401 WEBHOOK_UNAUTHORIZED, nothing resolved, nothing posted, no transaction
+
+# and a key nobody here answers for is bounced permanently — the rail does NOT retry a 4xx
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"nobody@nowhere.com","amount":"1.00"}' | jq
+# → 422 INBOUND_REFUSED (the participant answered 422 KEY_NOT_FOUND)
+```
+
+### 5.6.1 Real-time notification (steps 38–39)
 
 ```bash
 # terminal 1: subscribe to bob's notification stream
@@ -861,9 +910,7 @@ BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application
   -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
 curl -N localhost:8087/v1/notifications/stream -H "Authorization: Bearer $BOB"
 
-# terminal 2: make BACEN generate an inbound Pix to bob
-curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
-  -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}'
+# terminal 2: trigger the inbound Pix of §5.6 again
 # terminal 1 shows the SSE event "PIX_RECEIVED" in real time
 ```
 
