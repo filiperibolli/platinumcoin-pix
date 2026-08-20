@@ -54,6 +54,35 @@ bacen:
   # How long such a call hangs. Must sit past the client's own timeout (settlement-service allows 12s,
   # step 31) or a "timeout" is just a slow success. Boot-time only, on purpose.
   timeout-hang-ms: ${BACEN_TIMEOUT_HANG_MS:15000}
+  # ── Inbound delivery: the rail handing a Pix TO PlatinumCoin (step 37) ──────────────────────────────
+  # POST /simulate/inbound-pix mints an endToEndId and presents the payment to the participant's webhook.
+  # This is the ONE direction where the stub is the caller rather than the callee, so it needs to know
+  # where the participant lives and how to authenticate to it.
+  inbound:
+    # settlement-service's inbound webhook. Defaults to a locally-run service on 8086 (docs/local-dev.md
+    # §2); compose overrides it to the service name on the shared network. Resolved lazily on each call,
+    # NOT at startup — mock-bacen must not depend on settlement-service to boot, or compose would have a
+    # dependency cycle (settlement already gates on this stub being healthy).
+    participant-base-url: ${SETTLEMENT_BASE_URL:http://localhost:8086}
+    # The shared secret presented as X-Webhook-Token. MUST match settlement-service's SPI_WEBHOOK_TOKEN;
+    # a mismatch surfaces as 422 INBOUND_REFUSED (the participant answered 401), which is exactly the
+    # threat-model boundary working. Never logged (ADR-0012).
+    webhook-token: ${SPI_WEBHOOK_TOKEN:}
+    # How many times the rail re-presents a payment whose outcome it does not know (5xx / no answer).
+    # Retrying is the FEATURE: it is what exercises the participant's endToEndId dedupe for real. A 4xx
+    # is never retried — it is a decision, and a real rail bounces it back to the payer's PSP instead.
+    max-attempts: ${INBOUND_MAX_ATTEMPTS:3}
+    retry-delay-ms: ${INBOUND_RETRY_DELAY_MS:500}
+    # The participant credits synchronously (resolve the key, post to the ledger, one conditional write),
+    # so a few seconds is generous; a longer budget would just hold the demo's HTTP call open.
+    connect-timeout-ms: ${INBOUND_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${INBOUND_READ_TIMEOUT_MS:5000}
+    # Who the payment appears to come from when the request does not say. The ISPB is Banco OtherBank's,
+    # the participant already in the DICT below — so a demo's inbound and outbound examples name the same
+    # counterpart bank.
+    default-payer-ispb: ${INBOUND_DEFAULT_PAYER_ISPB:99999999}
+    default-payer-name: ${INBOUND_DEFAULT_PAYER_NAME:External Payer}
+
   # The DICT: Pix keys held at OTHER participants. account-service delegates any key it does not hold
   # locally to GET /spi/dict/{key} (step 30) and surfaces the ispb as `externalBank`. Keys need the
   # [bracket] form because they contain dots and @ — Spring's relaxed binding would otherwise read them

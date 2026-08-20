@@ -954,6 +954,141 @@
       ]
     },
     {
+      "name": "settlement-service",
+      "description": "The SPI connector, in **both directions** — port 8086. Its outbound half is queue-driven and has no HTTP surface at all (send an external Pix and watch it reach `SETTLED`; there is nothing to click here for it). Its **inbound** half, step 37, is this webhook: the route BACEN calls to deliver a Pix to one of our customers.\n\n**JWT-exempt, never anonymous.** `/v1/inbound/**` is on `jwt.public-paths` because BACEN holds no PlatinumCoin token — a real participant presents mTLS + an ICP-Brasil certificate, a whole trust domain away from our HS256 tokens. But the route **credits money**, so it is guarded by the shared `SPI_WEBHOOK_TOKEN` (`{{spiWebhookToken}}`), compared constant-time before anything else runs: without it, any process reaching port 8086 could mint spendable balance (threat model, boundary B4).\n\nNormally you trigger this through **mock-bacen-spi › Simulate an inbound Pix**; the requests here exist to poke the two properties that flow hides — the **dedupe** and the **guard**. Run the simulate request first: it fills `{{inboundEndToEndId}}`.",
+      "item": [
+        {
+          "name": "Re-present the same endToEndId (dedupe ⇒ ALREADY_PROCESSED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK — a redelivery is a success, not an error', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('deduped, nothing credited twice', () =>",
+                  "  pm.expect(body.outcome).to.eql('ALREADY_PROCESSED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Webhook-Token",
+                "value": "{{spiWebhookToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endToEndId\": \"{{inboundEndToEndId}}\",\n  \"pixKey\": \"bob@platinum.com\",\n  \"amountCents\": 30000,\n  \"payerName\": \"External Payer\",\n  \"payerIspb\": \"99999999\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{settlementBaseUrl}}/v1/inbound/pix",
+              "host": [
+                "{{settlementBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbound",
+                "pix"
+              ]
+            },
+            "description": "What BACEN does when it never got an answer: present the **same payment again**. Run **mock-bacen-spi › Simulate an inbound Pix to bob** first, then this — and check bob's balance before and after (**ledger-service › Balance**). It does not move.\n\n`200 {outcome:\"ALREADY_PROCESSED\"}`, not an error: the rail asked \"did you accept this payment?\", and to one already credited the truthful answer is still yes. An error here would have BACEN re-presenting a payment that *was* delivered.\n\n**How it is deduped.** The transaction id is `in-<endToEndId>`, so the item's partition key embeds the rail's own id and `attribute_not_exists(pk)` **is** the dedupe — strongly consistent, atomic, correct under concurrent redelivery. Querying the `E2E#` GSI instead would be a read-then-check over an *eventually consistent* index: two simultaneous deliveries could both read \"absent\" and both credit.\n\nThe same determinism makes the ledger posting idempotent, which is why the credit runs **before** the conditional record rather than after a claim — a crash in between replays harmlessly, whereas claiming first would mark a payment handled whose money never arrived."
+          }
+        },
+        {
+          "name": "Forged webhook — no token (401, nothing credited)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('problem+json with a stable code', () =>",
+                  "  pm.expect(body.code).to.eql('WEBHOOK_UNAUTHORIZED'));",
+                  "pm.test('the refusal does not echo the secret back', () =>",
+                  "  pm.expect(pm.response.text()).to.not.include(pm.environment.get('spiWebhookToken')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endToEndId\": \"E99999999202608201030forged0000\",\n  \"pixKey\": \"bob@platinum.com\",\n  \"amountCents\": 99999999,\n  \"payerName\": \"Mallory\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{settlementBaseUrl}}/v1/inbound/pix",
+              "host": [
+                "{{settlementBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "inbound",
+                "pix"
+              ]
+            },
+            "description": "The boundary that stands between \"JWT-exempt\" and \"anonymous\" (threat model **B4**). No `X-Webhook-Token`, a fresh `endToEndId` and an absurd amount — `401 WEBHOOK_UNAUTHORIZED`, and **nothing happens**: no directory lookup, no ledger posting, no transaction. Check bob's balance to confirm.\n\nThe check is the *first* thing the use case does, deliberately — so a forged call cannot cost anything, nor reveal by side effect whether the key it named exists. The refusal never echoes the configured token back, and neither token is ever logged (ADR-0012: the log-the-values licence stops at secrets).\n\nTry it with a **wrong** token too, and with one that merely starts correctly: the comparison is equality and constant-time, so a correct prefix buys nothing — not even timing information."
+          }
+        },
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{settlementBaseUrl}}/actuator/health",
+              "host": [
+                "{{settlementBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "health"
+              ]
+            },
+            "description": "Liveness/readiness for the compose healthcheck. Public — `/actuator/**` is on the JWT allow-list."
+          }
+        }
+      ]
+    },
+    {
       "name": "ledger-service",
       "description": "The ledger — port 8085, the ONLY writer of `pix_ledger` (ADR-0006). Steps 13-14 ship both halves: a **strongly consistent** balance read (`ConsistentRead=true`, because the ledger must read its own writes — a stale balance would show money that is already spent). Every request here needs a token: `/internal/**` is deliberately not public, and this service has no `/v1` surface at all, because no end user talks to the ledger. See services/ledger-service/README.md.",
       "item": [
@@ -1870,6 +2005,57 @@
           }
         },
         {
+          "name": "Simulate an inbound Pix to bob (money ARRIVES)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('credited on the first delivery', () => pm.expect(body.outcome).to.eql('CREDITED'));",
+                  "pm.test('money stays integer cents', () => pm.expect(body.amountCents).to.eql(30000));",
+                  "pm.test(\"the endToEndId carries the PAYER's ispb, not ours\", () =>",
+                  "  pm.expect(body.endToEndId).to.match(/^E99999999/));",
+                  "pm.test('our txId is derived from it', () =>",
+                  "  pm.expect(body.participantTxId).to.eql('in-' + body.endToEndId));",
+                  "pm.collectionVariables.set('inboundEndToEndId', body.endToEndId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pixKey\": \"bob@platinum.com\",\n  \"amount\": \"300.00\",\n  \"payerName\": \"External Payer\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{bacenBaseUrl}}/simulate/inbound-pix",
+              "host": [
+                "{{bacenBaseUrl}}"
+              ],
+              "path": [
+                "simulate",
+                "inbound-pix"
+              ]
+            },
+            "description": "**The trigger that makes money arrive** (step 37) — the one direction where this stub is the *caller*: it mints an `endToEndId` and presents the payment to settlement-service's webhook (`POST :8086/v1/inbound/pix`, `X-Webhook-Token`), retrying like a real rail.\n\nReceiving is the **mirror** of sending: an outbound send debits the payer and credits `SPI_CLEARING`; this debits `SPI_CLEARING` and credits bob (`entryType=PIX_IN`). Same double entry, opposite direction — Σ balances still moves by exactly the amount received and no leg dangles.\n\nRegister `bob@platinum.com` first (**account-service › Register Pix key**): the payee is whatever *our* directory says the key belongs to, never something the caller names — the inbound mirror of Domain Safety Rule #1 (note the body has no account field at all).\n\n`amount` is a decimal string here because a **human** types it; the webhook one hop later carries integer `amountCents`, because a machine-to-machine rail edge has no reader to format for. The response's `endToEndId` is saved to `{{inboundEndToEndId}}` so the next request can re-present it.\n\nA key nobody here answers for ⇒ `422 INBOUND_REFUSED` (the participant answered `422 KEY_NOT_FOUND`) — a real rail bounces the payment back to the payer's PSP rather than re-presenting it forever."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",
@@ -1897,6 +2083,10 @@
     },
     {
       "key": "spiRecordedAt",
+      "value": ""
+    },
+    {
+      "key": "inboundEndToEndId",
       "value": ""
     }
   ]

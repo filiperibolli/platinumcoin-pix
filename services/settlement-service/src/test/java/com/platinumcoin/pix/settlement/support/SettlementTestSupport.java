@@ -1,15 +1,17 @@
 package com.platinumcoin.pix.settlement.support;
 
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
+import com.platinumcoin.pix.settlement.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 /**
- * Test wiring shared by settlement-service's ITs: the two external systems — the BACEN rail and, since
- * step 33, the ledger — are stubbed; everything else is real: DynamoDB, SQS, the queue's subscription,
- * the dedup table, the daily-limit counter and every guarded transition.
+ * Test wiring shared by settlement-service's ITs: the external systems — the BACEN rail, the ledger
+ * (step 33) and the key directory (step 37) — are stubbed; everything else is real: DynamoDB, SQS, the
+ * queue's subscription, the dedup table, the daily-limit counter, the inbound webhook's conditional write
+ * and every guarded transition.
  *
  * <p>{@code @Primary} rather than a bean-definition override: the real {@code HttpSpiSettlementClient} and
  * {@code HttpSettlementLedgerClient} stay in the context (so a wiring mistake in either still fails these
@@ -37,5 +39,15 @@ public class SettlementTestSupport {
     @Primary
     public StubLedgerClient stubLedgerClient() {
         return new StubLedgerClient();
+    }
+
+    /**
+     * account-service's DICT for the inbound ITs (step 37) — {@code @Primary} for the same reason, so the
+     * inbound use case resolves keys against an arranged map instead of a second running service.
+     */
+    @Bean
+    @Primary
+    public StubPixKeyResolver stubPixKeyResolver() {
+        return new StubPixKeyResolver();
     }
 }

@@ -1,7 +1,9 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
+import com.platinumcoin.pix.settlement.domain.port.InboundTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
+import com.platinumcoin.pix.settlement.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationMetrics;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationTransactionStore;
@@ -12,6 +14,7 @@ import com.platinumcoin.pix.settlement.domain.port.StuckTransactionStore;
 import com.platinumcoin.pix.settlement.domain.service.ReconciliationSloAlert;
 import com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer;
 import com.platinumcoin.pix.settlement.domain.service.StuckTransactionResolver;
+import com.platinumcoin.pix.settlement.domain.usecase.ReceiveInboundPixUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixUseCase;
 import java.time.Clock;
@@ -22,7 +25,7 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Composition root for settlement-service's plain-Java domain (ADR-0010 + ADR-0011): {@code infra/}
- * instantiates the use case and wires it to its three ports, so no {@code domain/} class carries a
+ * instantiates each use case and wires it to its ports, so no {@code domain/} class carries a
  * Spring annotation — enforced by {@code SettlementArchitectureTest}. The adapters themselves are
  * {@code @Repository}/{@code @Component}-scanned in {@code infra/}; this class binds what has no
  * framework home.
@@ -53,7 +56,30 @@ public class SettlementBeansConfig {
     }
 
     /**
-     * The one capability of this service. {@code pix.ispb} is PlatinumCoin's participant id, sent to the
+     * The receiving capability (step 37): take one Pix the rail delivered to us, credit its payee and
+     * announce it.
+     *
+     * <p>Two values are injected rather than hard-coded, for different reasons. The <b>webhook token</b>
+     * is a secret shared with mock-bacen and must be settable per environment — and it is handed in as a
+     * plain {@code String} so the domain never learns where it came from. The <b>clearing account</b> is
+     * the same {@code SPI_CLEARING} payment-service parks outbound money in ({@code pix.clearing-account-id},
+     * step 27): both directions must name the identical account or the clearing balance stops netting,
+     * and step 52 shards that id, which is precisely why it is configuration in both services.
+     */
+    @Bean
+    ReceiveInboundPixUseCase receiveInboundPixUseCase(
+            PixKeyResolver keys,
+            LedgerClient ledger,
+            InboundTransactionStore inboundTransactions,
+            @Value("${pix.inbound.webhook-token:}") String webhookToken,
+            @Value("${pix.clearing-account-id}") String clearingAccountId,
+            Clock clock) {
+        return new ReceiveInboundPixUseCase(
+                keys, ledger, inboundTransactions, webhookToken, clearingAccountId, clock);
+    }
+
+    /**
+     * The settling capability. {@code pix.ispb} is PlatinumCoin's participant id, sent to the
      * rail as the debtor participant — configuration rather than a constant, because it is the same
      * value payment-service bakes into every {@code endToEndId} and it changes per deployment, never per
      * transaction.

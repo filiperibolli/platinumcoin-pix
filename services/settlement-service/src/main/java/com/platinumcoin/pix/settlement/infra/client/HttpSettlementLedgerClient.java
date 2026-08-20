@@ -18,15 +18,19 @@ import org.springframework.web.client.RestClientResponseException;
 /**
  * The only place HTTP touches the ledger from settlement-service (ADR-0010). Implements
  * {@link LedgerClient} against ledger-service's {@code POST /internal/ledger/postings} — the platform's
- * one money-moving operation (ADR-0006) — for the two definitive-outcome postings of step 33.
+ * one money-moving operation (ADR-0006) — for the two definitive-outcome postings of step 33 and the
+ * inbound credit of step 37.
  *
- * <h2>The two postings, both idempotent by {@code txId}</h2>
+ * <h2>The three postings, all idempotent by {@code txId}</h2>
  * <ul>
  *   <li><b>{@code CLEARING_RELEASE}</b> — {@code debit clearing / credit SPI_SETTLED}. On a confirmed
  *       settlement the money left the bank, so the parked clearing balance is drawn back out into the
  *       "settled to the network" account, keeping Σ balances invariant.</li>
  *   <li><b>{@code PIX_REVERSAL}</b> — {@code debit clearing / credit payer}. On a permanent refusal the
  *       money never left, so it goes back to the payer — a new, append-only posting, never an edit.</li>
+ *   <li><b>{@code PIX_IN}</b> (step 37) — {@code debit clearing / credit payee}. Money arriving from
+ *       another participant enters our books through the same clearing account an outbound send parks
+ *       money in — the exact mirror of {@code PIX_OUT}, which debits the payer and credits clearing.</li>
  * </ul>
  * The credit counter-account for a release ({@code SPI_SETTLED}) and the {@code entryType} vocabulary are
  * the ledger's language and live here; the domain named only the accounts it knows.
@@ -53,6 +57,7 @@ public class HttpSettlementLedgerClient implements LedgerClient {
 
     private static final String ENTRY_TYPE_CLEARING_RELEASE = "CLEARING_RELEASE";
     private static final String ENTRY_TYPE_PIX_REVERSAL = "PIX_REVERSAL";
+    private static final String ENTRY_TYPE_PIX_IN = "PIX_IN";
 
     private final RestClient restClient;
     private final ServiceTokenIssuer serviceTokens;
@@ -96,6 +101,13 @@ public class HttpSettlementLedgerClient implements LedgerClient {
             String description) {
         // debit clearing / credit payer: return the parked money to the payer.
         post(txId, clearingAccount, payerAccount, amountCents, ENTRY_TYPE_PIX_REVERSAL, description);
+    }
+
+    @Override
+    public void creditInbound(String txId, String clearingAccount, String payeeAccount, long amountCents,
+            String description) {
+        // debit clearing / credit the payee: money arriving from the Pix network lands on a user's balance.
+        post(txId, clearingAccount, payeeAccount, amountCents, ENTRY_TYPE_PIX_IN, description);
     }
 
     private void post(String txId, String debitAccount, String creditAccount, long amountCents,

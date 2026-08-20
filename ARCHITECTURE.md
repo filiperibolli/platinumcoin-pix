@@ -230,6 +230,7 @@ nothing to orchestrate on our side of an already-settled inbound payment.
 | `GET /v1/accounts/me/statement?cursor=&limit=` | Paginated statement | Cursor = DynamoDB `LastEvaluatedKey` (opaque, base64) |
 | `POST /v1/pix-keys` / `GET /v1/pix-keys` / `DELETE /v1/pix-keys/{keyValue}` | Key management | Uniqueness enforced by conditional write |
 | `GET /v1/notifications/stream` | SSE stream | notification-service |
+| `POST /v1/inbound/pix` | **Not a client endpoint** — the webhook BACEN calls to deliver a Pix to us (§6.8) | settlement-service. JWT-exempt (an external party holds no token of ours) and guarded by the shared `SPI_WEBHOOK_TOKEN`; idempotent by `endToEndId`. Deliberately **absent from `docs/api/openapi.yaml`**, which is the *client-facing* contract — no app ever calls this |
 | `POST /v1/accounts/me/statement/exports` | Async cold-statement export | `202` + `statusUrl`; `Idempotency-Key` required (S14 — added to the OpenAPI contract-first in step 53) |
 | `GET /v1/statement-exports/{exportId}` | Export status / download | `PENDING → READY` with a presigned `downloadUrl` (S14, §6.14) |
 
@@ -614,12 +615,12 @@ sequenceDiagram
     participant LED as ledger-service
     participant NOT as notification-service
     participant App
-    SPI->>SET: POST /v1/inbound/pix (endToEndId, pixKey, amount)
-    SET->>SET: dedupe by endToEndId (conditional write)
+    SPI->>SET: POST /v1/inbound/pix (endToEndId, pixKey, amountCents) + X-Webhook-Token
+    SET->>SET: validate the shared token — before anything else
     SET->>ACC: resolve pixKey → accountId
-    SET->>LED: posting: debit SPI_CLEARING / credit user (atomic)
-    SET->>SET: tx RECEIVED_SETTLED + outbox(PixReceived)
-    SET-->>SPI: 200 (ack)
+    SET->>LED: posting: debit SPI_CLEARING / credit user (txId = in-&lt;endToEndId&gt;)
+    SET->>SET: tx RECEIVED_SETTLED + outbox(PixReceived), one TransactWriteItems<br/>guarded by attribute_not_exists(pk) — this IS the endToEndId dedupe
+    SET-->>SPI: 200 (ack) — CREDITED, or ALREADY_PROCESSED on a redelivery
     Note over SET,NOT: outbox → SNS → notification-queue
     NOT-->>App: SSE push "You received R$ X"
 ```
@@ -628,6 +629,20 @@ The inbound webhook is **authenticated with a shared token** (`SPI_WEBHOOK_TOKEN
 money, so it is never anonymous; the production posture is mTLS + BACEN message signing (threat model,
 boundary B4). It is handled synchronously and idempotently by settlement-service; a buffering queue in
 front of it is a documented production evolution, not local infra.
+
+**The transaction id is `in-<endToEndId>`, derived and never generated** — the choice the whole flow rests
+on. Because the partition key embeds the rail's own id, `attribute_not_exists(pk)` *is* the dedupe:
+strongly consistent and atomic, where deduping by querying `gsi1` would be a read-then-check over an
+eventually-consistent index that two simultaneous deliveries could both pass. The same determinism makes
+the ledger posting idempotent (its `txId` guard), which is why the credit runs **before** the conditional
+record rather than after a claim: a crash in between replays harmlessly, whereas claiming first would mark
+a payment handled whose money never arrived and have every redelivery refused by our own guard — the
+payment lost silently. Contrast `SettlePixUseCase`, which *does* claim before acting: there the work is a
+call to BACEN, which is not idempotent on our side, so the ordering flips with the risk.
+
+**The payee comes from our directory, never the payload** — the inbound mirror of Domain Safety Rule #1.
+The webhook body has no `creditorAccountId` field at all, so a caller holding a valid token still cannot
+address money to an account of its choosing.
 
 ---
 

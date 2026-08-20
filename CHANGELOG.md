@@ -138,6 +138,66 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Inbound Pix flow: mock-bacen generator → settlement webhook, dedupe by endToEndId, credit posting,
+  PixReceived (step 37)
+  **The money path now runs in both directions, and receiving needed no new mechanism.** An outbound send
+  debits the payer and credits `SPI_CLEARING`; an inbound one debits `SPI_CLEARING` and credits the user
+  (`entryType=PIX_IN`) — same double entry, opposite direction, same clearing account standing in for the
+  rest of the Pix network on our books. That the mirror fit without inventing anything is the design
+  claim this step actually tests.
+  - **settlement-service gains its first HTTP endpoint**, `POST /v1/inbound/pix`: validate the shared
+    token → resolve the key against account-service's DICT → post `debit SPI_CLEARING / credit payee` →
+    record the `INBOUND` transaction as `RECEIVED_SETTLED` **plus** its `PixReceived` outbox item in one
+    conditional `TransactWriteItems`. `200 {outcome:"CREDITED"|"ALREADY_PROCESSED"}`; `401` / `422`
+    (permanent) and `503 + Retry-After` (transient) as problem+json. It also gains the pieces its first
+    route implies: `SettlementExceptionHandler`, `CorsConfig` ordered ahead of the JWT filter,
+    `spring-boot-starter-validation`, and a Postman folder + API-explorer section (previously
+    non-applicable for want of a browser-reachable route).
+  - **`txId = in-<endToEndId>`, derived and never generated** — the load-bearing choice. Because the
+    partition key embeds the rail's own id, `attribute_not_exists(pk)` *is* the endToEndId dedupe:
+    strongly consistent and atomic, where the tempting alternative (query `gsi1`, write if absent) is a
+    read-then-check over an *eventually consistent* index that two simultaneous deliveries could both
+    pass. The same determinism makes the ledger posting idempotent by `txId`.
+  - **The credit runs before the dedupe, deliberately — the step file said the opposite and the step file
+    is now annotated with why.** Claiming first is right when the work has a non-idempotent external
+    effect (exactly why `SettlePixUseCase` claims its `eventId` before calling BACEN). Here it would add a
+    failure mode that otherwise does not exist: a crash between claim and posting leaves an `endToEndId`
+    marked handled whose money never arrived, and every redelivery is refused by our own guard — the
+    payment lost silently. Posting first inverts the residual risk into a harmless one (a committed credit
+    with no transaction row, completed by the next delivery).
+  - **JWT-exempt is not anonymous.** `/v1/inbound/**` is on `jwt.public-paths` (BACEN holds no
+    PlatinumCoin token — a real participant presents mTLS + an ICP-Brasil certificate), but the route
+    *credits money*, so it is guarded by the shared `SPI_WEBHOOK_TOKEN`, compared **constant-time** as the
+    very first act of the use case — before any directory lookup or posting, so a forged call costs
+    nothing and reveals nothing by side effect (threat model, boundary **B4**). The token defaults to
+    **empty** and an empty token refuses every delivery: a misconfiguration on a money-crediting route
+    fails closed. Neither token is logged or echoed (ADR-0012).
+  - **The payee comes from our directory, never the payload** — the inbound mirror of Domain Safety
+    Rule #1. The webhook body has no `creditorAccountId` field at all, so a caller holding a valid token
+    still cannot address money to an account of its choosing.
+  - **mock-bacen-spi gains `POST /simulate/inbound-pix`** `{pixKey, amount, payerName?, payerIspb?}`: mint
+    an `endToEndId` stamped with the **payer's** ISPB (an id names the participant that *originated* the
+    payment) and present it to the participant's webhook. **Retrying is the feature** — a rail that
+    delivered once would never exercise the receiving side's dedupe, so a `5xx`/no answer re-presents the
+    same id while a `4xx` stops at once and bounces (retrying a `401` forever is how a real integration
+    wedges itself). `/simulate/…` not `/spi/…`: it stubs no real BACEN API, so it is named as the test
+    hook it is. Money is a decimal string here (a human types it) and integer cents one hop later.
+  - **Tests:** `ReceiveInboundPixUseCaseTest` (8, plain Java — a shared call-trace pins the *ordering*:
+    a forged webhook resolves/posts/records nothing; the posting precedes the record; a directory outage
+    is not an unknown key), `InboundPixIT` (5, real DynamoDB — credit + item + `gsi1`/`gsi2` +
+    `PixReceived` in the sparse index; **redelivery ⇒ single credit**; **Σ balances invariant**; unknown
+    key ⇒ `422`, nothing posted), `InboundWebhookAuthIT` (4 — missing/wrong/prefix token ⇒ `401` **and
+    nothing happened**, the half a status-only assertion would miss), `InboundWebhookClientTest` (4,
+    against a real socket) and `SpiInboundIT` (5). `mvn verify` green across all modules.
+  - Docs: ARCHITECTURE §6.8 diagram corrected to the implemented order, data-model §4 gains the `INBOUND`
+    item and settlement's new **create** right (behind its own port, so neither store can do the other's
+    job), local-dev §3/§5.6 gain the env vars and the dedupe/401 drills, both service READMEs updated.
+  - **Known gap, deferred to step 45's error-contract audit** (recorded in data-model §4):
+    payment-service's `GET /v1/payments/{id}` parses `status` with `valueOf` into an enum that has no
+    `RECEIVED_SETTLED` and reads `debtorAccountId` unconditionally, so a client that *guessed* an inbound
+    `txId` would get `500` instead of `404`. A contract wart, not a money bug — unreachable through any
+    flow, nothing written or moved — and fixing it in payment-service was out of this step's scope.
+  AI: est 5h / actual ~4h / ~90% generated / 0 issues caught in human review
 - LocalStack init: notification-queue (filtered) with DLQ (step 36)
   **Fan-out made concrete: a second consumer group off the same topic.** `08-messaging-notify.sh` hangs
   `notification-queue` + `notification-queue-dlq` off the existing `pix-events` topic, tuned exactly like

@@ -52,7 +52,7 @@ graph TB
         PAY[payment-service<br/>orchestration, idempotency, limits]
         FRAUD[fraud-service<br/>score &lt; 200ms]
         LED[ledger-service<br/>double-entry, ACID]
-        SET[settlement-service<br/>SPI connector, retries, reconciliation]
+        SET[settlement-service<br/>SPI connector both ways, retries, reconciliation]
         NOT[notification-service<br/>real-time push]
     end
 

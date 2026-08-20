@@ -19,6 +19,7 @@ final class FakeLedgerClient implements LedgerClient {
     private final List<String> trace;
     private final List<Posting> releases = new ArrayList<>();
     private final List<Posting> reversals = new ArrayList<>();
+    private final List<Posting> inboundCredits = new ArrayList<>();
     private boolean unavailable;
 
     FakeLedgerClient(List<String> trace) {
@@ -44,6 +45,16 @@ final class FakeLedgerClient implements LedgerClient {
         reversals.add(new Posting(txId, clearingAccount, payerAccount, amountCents));
     }
 
+    @Override
+    public void creditInbound(String txId, String clearingAccount, String payeeAccount, long amountCents,
+            String description) {
+        trace.add("ledger.creditInbound");
+        if (unavailable) {
+            throw new LedgerUnavailableException("fake ledger unavailable", null);
+        }
+        inboundCredits.add(new Posting(txId, clearingAccount, payeeAccount, amountCents));
+    }
+
     void beUnavailable() {
         this.unavailable = true;
     }
@@ -54,5 +65,9 @@ final class FakeLedgerClient implements LedgerClient {
 
     List<Posting> reversals() {
         return reversals;
+    }
+
+    List<Posting> inboundCredits() {
+        return inboundCredits;
     }
 }

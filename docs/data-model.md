@@ -147,7 +147,7 @@ It doubles as the **stored posting record**: with `ReturnValuesOnConditionCheckF
 
 ## 4. `pix_transactions` (owner: payment-service)
 
-Access patterns: get transaction by id (status query); find by endToEndId (reconciliation, inbound dedup); scan stuck transactions by status+age; **write outbox events atomically with the transaction** (same table → same `TransactWriteItems`); reserve/release daily-limit usage per account per calendar day.
+Access patterns: get transaction by id (status query); find by endToEndId (reconciliation and support lookups — **not** the inbound dedup, which is a conditional write on the item itself, see step 37 below); scan stuck transactions by status+age; **write outbox events atomically with the transaction** (same table → same `TransactWriteItems`); reserve/release daily-limit usage per account per calendar day.
 
 | | Value |
 |---|---|
@@ -203,13 +203,15 @@ Both are written only when set, so a not-yet-settled item carries neither — an
 by settlement-service, which is the platform's one documented exception to table ownership (ADR-0006): the
 status change and the `PixSettled` it announces must commit in **one** `TransactWriteItems`, and an
 internal API between the writer and this table would reintroduce the dual write the outbox exists to
-remove. Its write surface is exactly these **guarded** transitions and nothing else:
+remove. Its write surface is exactly these **guarded** writes and nothing else — three transitions on an
+existing outbound transaction, plus (step 37) the **creation** of an inbound one:
 
 | Transition | Condition (inside the write) | Attributes written |
 |---|---|---|
 | `DEBITED → SENT_TO_SPI` | `attribute_exists(pk) AND (status = DEBITED OR status = SENT_TO_SPI)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt` |
 | `SENT_TO_SPI → SETTLED` | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
 | `(DEBITED \| SENT_TO_SPI) → REVERSED` (step 33; guard widened step 35) | `attribute_exists(pk) AND (status = SENT_TO_SPI OR status = DEBITED)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
+| **create** `→ RECEIVED_SETTLED` (step 37, inbound) | `attribute_not_exists(pk)` | the whole `INBOUND` item below + the `OUTBOX#<eventId>` (`PixReceived`) item |
 
 - `settledAt` is **BACEN's** instant (the SPI's `recordedAt`), not ours: the money moved on the rail, and
   reconciliation (step 35) compares the two systems on exactly that fact.
@@ -233,6 +235,60 @@ remove. Its write surface is exactly these **guarded** transitions and nothing e
 - The first transition accepts an item **already** in `SENT_TO_SPI` (re-claiming a retry is not a
   regression) but never one outside those two states — dragging a `SETTLED` transaction back onto the rail
   would send the same money twice.
+
+**The inbound transaction (step 37, owner: settlement-service).** A Pix *received* from another
+participant is written by settlement-service too, and it is the one item on this table nothing else ever
+touches:
+
+```json
+{
+  "pk": "TX#in-E99999999202608201030abcdef012",
+  "sk": "META",
+  "gsi1pk": "E2E#E99999999202608201030abcdef012",
+  "gsi2pk": "STATUS#RECEIVED_SETTLED",
+  "gsi2sk": "2026-08-20T10:30:00Z",
+  "txId": "in-E99999999202608201030abcdef012",
+  "endToEndId": "E99999999202608201030abcdef012",
+  "direction": "INBOUND",
+  "creditorAccountId": "acc-002",
+  "creditorKey": "bob@platinum.com",
+  "creditorInternal": true,
+  "clearingAccountId": "SPI_CLEARING",
+  "amountCents": 30000,
+  "status": "RECEIVED_SETTLED",
+  "payerName": "External Payer",
+  "payerIspb": "99999999",
+  "settledAt": "...", "createdAt": "...", "updatedAt": "..."
+}
+```
+
+- **`txId` is `in-<endToEndId>`, derived and never generated** — the single most load-bearing choice in the
+  inbound flow. Because the partition key embeds the rail's own id, `attribute_not_exists(pk)` **is** the
+  endToEndId dedupe: strongly consistent, atomic, correct under concurrent redelivery. Deduping by
+  querying `gsi1` instead would be a read-then-check over an *eventually consistent* index — two
+  simultaneous deliveries could both read "absent" and both credit. The same determinism makes the ledger
+  posting idempotent (its `txId` guard), which is what lets the credit run *before* the conditional
+  record: a crash in between replays harmlessly, whereas claiming first would mark a payment handled whose
+  money never arrived and have every redelivery politely refused by our own guard.
+- **No `debtorAccountId`**: the payer banks elsewhere, so the debit leg is `clearingAccountId` — the
+  mirror of an outbound send, which debits the payer and credits clearing (`entryType=PIX_IN`,
+  `debit SPI_CLEARING / credit payee`). Σ balances moves by exactly the amount received and no leg dangles.
+- `payerName`/`payerIspb` are **descriptive only** — the statement counterpart line and the notification
+  text. Nothing branches on them; they carry no authority. The payee is whatever *our* directory says the
+  key belongs to, never an account id the caller names (the inbound mirror of Domain Safety Rule #1).
+- `status` is written **straight to the terminal `RECEIVED_SETTLED`** and never transitions: an inbound
+  payment arrives already settled, so there is no in-flight stage to model (ARCHITECTURE §4). `gsi2pk`
+  therefore points at a terminal status and the stuck-transaction scan — which queries only `DEBITED` and
+  `SENT_TO_SPI` — never sees it.
+- No `fraudDecision`/`fraudSkipped` (nothing is scored: the money is arriving, not leaving) and no
+  daily-limit reservation (limits bound what an account may *send*).
+
+> **Known gap, noted in step 37 for the step-45 error-contract audit.** payment-service's
+> `GET /v1/payments/{id}` reads this table and parses `status` with `valueOf` into its own enum, which has
+> no `RECEIVED_SETTLED`, and reads `debtorAccountId` unconditionally. A client that guessed an inbound
+> `txId` (`in-<endToEndId>`) would therefore get a `500` instead of a `404`. It is a contract wart, not a
+> money bug — no user can reach it through any flow, and nothing is written or moved — and it is fixed in
+> the step-45 sweep alongside the rest of the error-contract audit.
 
 `creditorInternal` is written on **every** transaction (step 27), internal ones included — `true` when
 the destination key resolved inside PlatinumCoin, `false` when it belongs to another PSP. A boolean has
@@ -285,7 +341,12 @@ learn where the payee banks in order to know a payment completed. The payload di
 that genuinely differ: an internal `PixSettled` carries `creditorAccountId`, an external one carries
 `creditorIspb`. On a permanent refusal it instead writes **`PixReversed`** (step 33, carrying
 `failureReason`) — the same publish path, announcing the failure branch of the funnel so notification and
-audit act on it. The item is byte-identical in shape to payment-service's, which is what lets **one**
+audit act on it. And an **inbound** Pix announces **`PixReceived`** (step 37), written in the same
+`TransactWriteItems` as the transaction it announces; its payload carries `creditorAccountId` — the
+routing field the notification flow (steps 38–39) answers "whose stream is this?" from, without having to
+re-resolve the directory inside an asynchronous fan-out. Those three — `PixSettled`, `PixReversed`,
+`PixReceived` — are exactly the user-facing outcomes the `notification-queue` subscription filters for
+(step 36). The item is byte-identical in shape to payment-service's, which is what lets **one**
 publisher drain the whole sparse index: `gsi3` is a property of the table, not of the writer.
 
 `correlationId` carries the request's id into the asynchronous half, so one `grep` still reconstructs the

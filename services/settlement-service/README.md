@@ -1,17 +1,20 @@
 # settlement-service
 
-> The SPI connector: it settles external Pix against BACEN. The platform's first **queue-driven**
-> service — nobody calls it, it long-polls `settlement-queue` — so it scales with queue depth, not with
-> user traffic (ADR-0006).
+> The SPI connector, in **both directions**: it settles external Pix against BACEN, and it receives the
+> ones BACEN delivers to us. The platform's first **queue-driven** service — the outbound half long-polls
+> `settlement-queue` rather than being called — so that half scales with queue depth, not user traffic
+> (ADR-0006).
 
-- **Port:** `8086` (Actuator only — this service exposes **no business endpoint**)
+- **Port:** `8086` — one business endpoint (the inbound Pix webhook, step 37) plus Actuator
 - **Depends on:** `common-lib` (event envelope, `ProcessedEventStore`, correlation-id log pattern),
-  LocalStack (DynamoDB + SQS), mock-bacen-spi, **ledger-service** (finalization postings, step 33)
+  LocalStack (DynamoDB + SQS), mock-bacen-spi, **ledger-service** (postings), **account-service**
+  (the DICT lookup an inbound Pix resolves its payee with)
 - **Consumes:** `settlement-queue` (SNS `pix-events`, filtered to `eventType=PixDebited`)
-- **Writes:** `pix_transactions` (guarded status transitions + outbox items + the daily-limit release on a
-  reversal), `pix_processed_events`
-- **Calls:** ledger-service `POST /internal/ledger/postings` on a definitive outcome (step 33):
-  `CLEARING_RELEASE` on settlement, the compensating `PIX_REVERSAL` on a permanent refusal
+- **Writes:** `pix_transactions` (guarded status transitions + the **creation** of inbound transactions +
+  outbox items + the daily-limit release on a reversal), `pix_processed_events`
+- **Calls:** ledger-service `POST /internal/ledger/postings` — `CLEARING_RELEASE` on settlement, the
+  compensating `PIX_REVERSAL` on a permanent refusal (step 33), `PIX_IN` on an inbound Pix (step 37);
+  account-service `GET /internal/pix-keys/resolve` (step 37)
 
 ## Why it exists
 
@@ -96,13 +99,44 @@ increment `reconciliation.resolved{action}` (settled|reversed), and `Reconciliat
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
+| `POST` | `/v1/inbound/pix` | `X-Webhook-Token` | The webhook BACEN calls to deliver a Pix to one of our customers (step 37). Idempotent by `endToEndId` |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
-No business endpoint, therefore **no Postman folder and no API-explorer card** — the twin manual-test
-harnesses cover public endpoints, and this service has none (the new-service checklist's item 6 is
-non-applicable here; CORS is likewise absent for want of a browser-reachable route). The way to exercise
-it is to send an external Pix and watch the transaction reach `SETTLED`; see *Test* below. It gains its
-first HTTP endpoint in step 37 (inbound Pix from BACEN).
+### `POST /v1/inbound/pix` — receiving is the mirror of sending
+
+Body (integer cents, like `POST /spi/settlements` — this is a machine-to-machine rail edge, not the
+client-facing API): `{endToEndId, pixKey, amountCents, payerName?, payerIspb?}`. There is deliberately
+**no `creditorAccountId` field**: the payee is whatever *our* directory says the key belongs to, so a
+caller cannot address money to an account of its choosing even with a valid token — the inbound mirror of
+Domain Safety Rule #1.
+
+What it does, in this order: **check the shared token**, resolve the key to one of our accounts, post
+`debit SPI_CLEARING / credit payee` (`entryType=PIX_IN`, `txId=in-<endToEndId>`), then record the
+`INBOUND` transaction as `RECEIVED_SETTLED` together with its `PixReceived` outbox event in one
+conditional `TransactWriteItems`. That last condition — `attribute_not_exists(pk)` on `TX#in-<e2e>` — **is**
+the `endToEndId` dedupe, and it works because the transaction id is a pure function of the rail's id.
+
+*Why the posting runs before the dedupe.* The credit is idempotent by `txId`, so a redelivery replays it
+as a no-op; claiming first would instead mark a payment handled whose money never arrived, and every
+redelivery would be politely refused by our own guard — a payment lost silently. The residual risk this
+way is a committed credit with no transaction row, which the next delivery completes.
+
+| Answer | Meaning to the rail |
+| ------ | ------------------- |
+| `200 {outcome:"CREDITED"}` | Delivered and credited |
+| `200 {outcome:"ALREADY_PROCESSED"}` | A redelivery of an id already credited — still a success; an error here would have BACEN re-presenting a payment that *was* delivered |
+| `401 WEBHOOK_UNAUTHORIZED` | Missing/wrong shared token. **Permanent** — nothing resolved, posted or recorded |
+| `422 KEY_NOT_FOUND` | No account here answers for the key. **Permanent** — bounce it back to the payer's PSP |
+| `503 DIRECTORY_UNAVAILABLE` / `LEDGER_UNAVAILABLE` + `Retry-After` | **Transient** — nothing credited, re-present the payment |
+
+**Authentication: JWT-exempt, never anonymous.** `/v1/inbound/**` is on `jwt.public-paths` because BACEN
+holds no PlatinumCoin token (a real participant presents mTLS + an ICP-Brasil certificate — ADR-0007). But
+the route *credits money*, so it is guarded by the shared `SPI_WEBHOOK_TOKEN`, compared constant-time
+inside the use case before anything else runs: without it, any process reaching port 8086 could mint
+spendable balance (threat model, boundary B4). Production posture is mTLS + BACEN message signing.
+
+The **outbound** half still has no HTTP surface — the way to exercise it is to send an external Pix and
+watch the transaction reach `SETTLED`; see *Test* below.
 
 ## Configuration
 
@@ -129,37 +163,52 @@ first HTTP endpoint in step 37 (inbound Pix from BACEN).
 | `LEDGER_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service, called on a definitive outcome (step 33; compose: `http://ledger-service:8085`) |
 | `LEDGER_READ_TIMEOUT_MS` / `LEDGER_CONNECT_TIMEOUT_MS` | `3000` / `2000` | Ledger call budgets — a hung ledger surfaces as a timeout (nothing posted) and the message redelivers |
 | `PIX_SETTLED_ACCOUNT_ID` / `pix.settlement.settled-account-id` | `SPI_SETTLED` | Credit account of a `CLEARING_RELEASE` — money settled out to the SPI network (seeded at 0) |
-| `SERVICE_TOKEN_TTL_SECONDS` / `pix.service-auth.token-ttl-seconds` | `60` | TTL of the self-minted service token presented to ledger-service (step 33) |
+| `SERVICE_TOKEN_TTL_SECONDS` / `pix.service-auth.token-ttl-seconds` | `60` | TTL of the self-minted service token presented to ledger-service (step 33) and account-service (step 37) |
+| `SPI_WEBHOOK_TOKEN` / `pix.inbound.webhook-token` | **empty** | Shared secret guarding `POST /v1/inbound/pix` (step 37); must match mock-bacen-spi's. Empty by design — an unconfigured service refuses every delivery, so a misconfiguration on a money-crediting route **fails closed** |
+| `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | The clearing account an inbound Pix debits. Must be the **same** id payment-service credits on an external send, or the two directions stop netting against one balance |
+| `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service's DICT, resolving an inbound key to its payee (compose: `http://account-service:8082`) |
+| `ACCOUNT_READ_TIMEOUT_MS` / `ACCOUNT_CONNECT_TIMEOUT_MS` | `1500` / `500` | Directory budget — the **rail** is waiting on this call, so a hung directory must surface as `503` (re-present), never a pinned thread |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | Must match auth-service's. Verifies inbound tokens and (step 33) **signs** the service token settlement presents to ledger-service |
 | `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack defaults | AWS SDK wiring |
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
-api/               SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
+api/               InboundPixController (POST /v1/inbound/pix, step 37) + InboundPixRequest +
+                   InboundPixAck + SettlementExceptionHandler,
+                   SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
                    SettlementDlqDepthGauge (@Scheduled DLQ depth probe),
                    StuckTransactionScanner (@Scheduled 60s reconciliation scan + oldest-age gauge, step 34),
                    SettlementMessage (inbound adapter)
 domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus, StuckTransaction,
-                   SpiReconciliation, ReconcilableTransaction (step 35)                       (plain Java)
+                   SpiReconciliation, ReconcilableTransaction (step 35),
+                   InboundTransaction (step 37)                                               (plain Java)
 domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore,
                    LedgerClient, DailyLimitRelease, StuckTransactionStore,
                    StuckTransactionReconciler, ReconciliationTransactionStore,
-                   ReconciliationMetrics (step 35)                                   (outbound interfaces)
+                   ReconciliationMetrics (step 35), PixKeyResolver,
+                   InboundTransactionStore (step 37)                                 (outbound interfaces)
 domain/exception/  TransitionNotAllowedException, SpiCallFailedException,
-                   SpiSettlementRejectedException, LedgerUnavailableException                (plain Java)
-domain/service/    SettlementOutboxEvents (mints PixSettled / PixReversed),
+                   SpiSettlementRejectedException, LedgerUnavailableException,
+                   InvalidWebhookTokenException, InboundKeyNotFoundException,
+                   DirectoryUnavailableException, InboundAlreadyRecordedException (step 37)   (plain Java)
+domain/service/    SettlementOutboxEvents (mints PixSettled / PixReversed / PixReceived),
                    SettlementFinalizer (shared finalize/reverse), StuckTransactionResolver,
                    ReconciliationSloAlert (step 35)                                          (plain Java)
 domain/usecase/    SettlePixUseCase + SettlePixCommand + SettleOutcome,
-                   ScanStuckTransactionsUseCase + ScanOutcome (step 34)                      (plain Java)
-infra/client/      HttpSpiSettlementClient (12s read timeout, 3-way reconcile), HttpSettlementLedgerClient
-infra/persistence/ DynamoSettlementTransactionStore (the guarded writes), DynamoDailyLimitRelease,
+                   ScanStuckTransactionsUseCase + ScanOutcome (step 34),
+                   ReceiveInboundPixUseCase + ReceiveInboundPixCommand +
+                   ReceiveInboundOutcome (step 37)                                           (plain Java)
+infra/client/      HttpSpiSettlementClient (12s read timeout, 3-way reconcile), HttpSettlementLedgerClient,
+                   HttpPixKeyResolver (the DICT hop of the inbound flow, step 37)
+infra/persistence/ DynamoSettlementTransactionStore (the guarded transitions), DynamoDailyLimitRelease,
                    DynamoProcessedEvents, DynamoStuckTransactionStore (GSI2 scan, step 34),
                    DynamoReconciliationTransactionStore (point read),
-                   MicrometerReconciliationMetrics (step 35)
-infra/security/    ServiceTokenIssuer (mints the HS256 service token for the ledger call, step 33)
-infra/config/      AwsClientsConfig, AwsProperties, SettlementBeansConfig, SchedulingConfig
+                   MicrometerReconciliationMetrics (step 35),
+                   DynamoInboundTransactionStore (the conditional create, step 37)
+infra/security/    ServiceTokenIssuer (mints the HS256 service token for the ledger/DICT calls)
+infra/config/      AwsClientsConfig, AwsProperties, SettlementBeansConfig, SchedulingConfig,
+                   CorsConfig (local dev, ordered ahead of the JWT filter, step 37)
 ```
 
 The queue consumer is an **inbound adapter**, not infrastructure: a queue is a way of *entering* the
@@ -172,10 +221,13 @@ settlement path by calling the store or the rail directly.
 **Why this service writes a table payment-service owns.** ADR-0006 records it as a deliberate exception:
 the outbox guarantee requires the state change and the event it announces to commit in *one*
 `TransactWriteItems`, and an internal API between the writer and the table would reintroduce exactly the
-dual write the outbox exists to eliminate. The price is paid by keeping the write surface narrow — two
-named, guarded transitions, never a free-form update.
+dual write the outbox exists to eliminate. The price is paid by keeping the write surface narrow — three
+named, guarded transitions plus one conditional **create** for an inbound transaction (step 37), never a
+free-form update. The two rights live behind separate ports (`SettlementTransactionStore` may only move an
+existing outbound transaction between named states; `InboundTransactionStore` may only create an inbound
+one), so neither can do the other's job.
 
-**Who publishes `PixSettled`.** This service *writes* the event; it does not deliver it. The sparse
+**Who publishes `PixSettled` / `PixReceived`.** This service *writes* the event; it does not deliver it. The sparse
 `gsi3` index is a property of the table, and payment-service's polling publisher already drains all of
 it, so the event goes out with no second publisher. The trade-off is explicit: settlement's events are
 delivered only while payment-service is running. Splitting the index per writer is the change that would
@@ -215,6 +267,15 @@ watch -n1 "curl -s localhost:8084/v1/payments/\$TX -H 'Authorization: Bearer $TO
 docker compose -f infra/docker-compose.yml logs settlement-service | grep "cid=<correlationId>"
 ```
 
+And the **inbound** direction — money arriving (`docs/local-dev.md` §5.6 has the dedupe and 401 drills):
+
+```bash
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}' | jq
+# → {"endToEndId":"E99999999…","outcome":"CREDITED","participantTxId":"in-E99999999…"}
+# re-POST the same endToEndId straight at :8086/v1/inbound/pix ⇒ ALREADY_PROCESSED, balance unchanged
+```
+
 ## Related decisions
 
 - [ADR-0003](../../docs/adr/0003-async-settlement-and-reconciliation.md) — asynchronous settlement, the
@@ -224,7 +285,10 @@ docker compose -f infra/docker-compose.yml logs settlement-service | grep "cid=<
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — `endToEndId` is the idempotency key toward
   BACEN, which is what makes any retry above the rail safe.
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — queue-driven service; the documented
-  exception that lets it write `pix_transactions` directly, under guarded transitions only.
+  exception that lets it write `pix_transactions` directly, under guarded writes only.
+- [`docs/threat-model.md`](../../docs/threat-model.md) — boundary **B4**: a forged inbound webhook could
+  credit an account with fake money; mitigated locally by the shared token + `endToEndId` dedupe, in
+  production by mTLS + BACEN message signing.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) / [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md)
   — hexagonal-lite; the queue consumer is an inbound adapter with no policy of its own.
 - [ADR-0013](../../docs/adr/0013-aws-credentials-and-iam-posture.md) — service-to-service auth posture; the

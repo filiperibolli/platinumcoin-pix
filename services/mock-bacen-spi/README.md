@@ -5,8 +5,9 @@
 > here, no invariant is defended here, and its memory is wiped by a restart.
 
 - **Port:** `9090`
-- **Depends on:** `common-lib` (correlation-id log pattern + RFC 7807 error model) — and nothing else. No
-  DynamoDB, no Redis, no token.
+- **Depends on:** `common-lib` (correlation-id log pattern + RFC 7807 error model). Since step 37 it also
+  *calls* settlement-service's inbound webhook — lazily, per request, never at boot: gating startup on it
+  would be a dependency cycle (settlement-service already waits for this stub to be healthy).
 - **Infra:** none. Settlements are held in an in-memory map.
 
 ## Why it exists
@@ -37,6 +38,7 @@ tested against a dependency that lies in exactly this way.
 | `POST` | `/admin/config` | none | Re-arm the dial at runtime. **Partial**: an absent field is left unchanged, so `{"failureRate":1.0}` does not reset the latency. Also carries `rejectKeys` (step 35): a DICT-known key on the list is refused at settlement, so a real send can be driven to a reversal — `{"rejectKeys":["bob@otherbank.com"]}` to arm, `{"rejectKeys":[]}` to clear. Out-of-range ⇒ `400 VALIDATION_ERROR`. |
 | `GET` | `/admin/config` | none | What is armed right now (including the read-only `timeoutHangMs`). |
 | `GET` | `/spi/dict/{key}` | none | Which participant holds a Pix key → `{key, keyType, ispb, participant}`; unknown ⇒ `404 DICT_KEY_NOT_FOUND`. |
+| `POST` | `/simulate/inbound-pix` | none | **The trigger that makes money arrive** (step 37). Body `{pixKey, amount, payerName?, payerIspb?}`. Mints an `endToEndId` and presents the payment to settlement-service's webhook with the shared `X-Webhook-Token`, retrying like a real rail. |
 | `GET` | `/actuator/health` | none | Liveness/readiness for the compose healthcheck. |
 
 **Request** (`POST /spi/settlements`) — money is integer cents, never a decimal string:
@@ -54,6 +56,34 @@ tested against a dependency that lies in exactly this way.
   it into the `503` would erase the distinction the settlement flow has to act on.
 - **A retry that changes the amount replays the amount actually settled**, and logs the mismatch loudly. An
   `endToEndId` identifies *one* transfer; a second amount is not a correction.
+
+### `POST /simulate/inbound-pix` — the one direction where the stub is the *caller* (step 37)
+
+```bash
+curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}' | jq
+```
+
+It performs the two acts the originating side of a Pix performs: mint the `endToEndId` and present the
+payment to the receiving participant, re-presenting it while the outcome is unknown. Three decisions in it
+are deliberate:
+
+- **`/simulate/…`, not `/spi/…`.** Everything under `/spi` stubs a real BACEN API that PlatinumCoin calls.
+  This has no real counterpart at all — no participant asks BACEN to send it money — so it is a *test hook*
+  on the rail, in the same family as `/admin/config`. Naming it apart keeps the honest boundary visible.
+- **The `endToEndId` carries the *payer's* ISPB** (`99999999` by default), never PlatinumCoin's: an
+  end-to-end id names the participant that originated the payment.
+- **Retrying is the feature.** A rail that delivered once and gave up would never exercise the receiving
+  side's `endToEndId` dedupe. A `5xx` or no answer ⇒ re-present the **same** id (up to `INBOUND_MAX_ATTEMPTS`);
+  a `4xx` ⇒ stop at once and bounce — it is a decision, and retrying a `401` forever is how a real
+  integration wedges itself. The `/admin/config` dial deliberately does **not** apply here: those knobs
+  model BACEN misbehaving *toward* us on the settlement path.
+
+Money is a decimal string on this endpoint (`"300.00"`) and integer cents one hop later on the webhook —
+not an inconsistency: this one is typed by a human in a runbook, the webhook is machine-to-machine. Answers:
+`200` with the participant's own outcome (`CREDITED` / `ALREADY_PROCESSED`); `422 INBOUND_REFUSED` when the
+participant refused permanently (bad token, unknown key); `502 INBOUND_DELIVERY_FAILED` when it never gave
+an answer the rail could act on.
 
 ### The DICT is deliberately outside the failure injection
 
@@ -73,17 +103,28 @@ directory is *unreachable* is decided on the caller's side: account-service answ
 | `BACEN_TIMEOUT_HANG_MS` / `bacen.timeout-hang-ms` | `15000` | How long such a call hangs. Boot-time only — a value lowerable mid-drill would turn a "timeout" into a slow success |
 | `bacen.dict[<key>]` | `bob@otherbank.com`, `carol@otherbank.com` → ISPB `99999999`; `+5511977776666`, `98765432100` → ISPB `88888888` | The external-PSP keys this stub answers for |
 | `JWT_SECRET` | dev-only value | Present only because the inherited filter builds its key eagerly. **Nothing here verifies a signature** |
+| `SETTLEMENT_BASE_URL` / `bacen.inbound.participant-base-url` | `http://localhost:8086` | Where an inbound Pix is delivered (compose: `http://settlement-service:8086`). Resolved per call, never at boot |
+| `SPI_WEBHOOK_TOKEN` / `bacen.inbound.webhook-token` | empty | Shared secret presented as `X-Webhook-Token`; must match settlement-service's. Never logged (ADR-0012) |
+| `INBOUND_MAX_ATTEMPTS` / `INBOUND_RETRY_DELAY_MS` | `3` / `500` | The rail's re-presentation budget for an **unknown** outcome. A `4xx` is never retried |
+| `INBOUND_DEFAULT_PAYER_ISPB` / `INBOUND_DEFAULT_PAYER_NAME` | `99999999` / `External Payer` | Who an inbound payment appears to come from when the request does not say. The ISPB is Banco OtherBank's — the participant already in the DICT, so inbound and outbound examples name the same counterpart |
 
 ## Architecture (the ADR-0010 scope note, used deliberately)
 
 ```
 api/     SpiSettlementController, SpiDictController, AdminConfigController,
+         SpiInboundController (POST /simulate/inbound-pix, step 37),
          SettlementRequest/SettlementView, DictEntryResponse, AdminConfigRequest/Response,
-         SpiExceptionHandler                                                  (inbound adapters)
+         InboundPixRequest/InboundPixResponse, SpiExceptionHandler             (inbound adapters)
 spi/     Settlement, SettlementStatus, SettlementStore, SpiBehavior, SpiDirectory, DictEntry,
-         SpiUnavailable/SpiTimeout/SettlementRejected/DictKeyNotFound exceptions   (the stub core)
+         SpiUnavailable/SpiTimeout/SettlementRejected/DictKeyNotFound exceptions,
+         InboundPixGenerator, InboundWebhookClient, Amount,
+         InboundDeliveryFailedException (step 37)                                  (the stub core)
 config/  BacenProperties, BacenConfig, CorsConfig
 ```
+
+`InboundWebhookClient` is the one **outbound** adapter here, and it lives in `spi/` rather than an
+`infra/client/` of its own: with no `domain/` to protect there is no dependency rule for it to cross, and a
+lone package for a single class would be structure without a reason (the ADR-0010 scope note again).
 
 ADR-0010 (restated in ADR-0011) grants stubs a thinner structure, and this module takes it: **no ports, no
 `domain/`, no use-case layer, no `*ArchitectureTest`**. The exemption is bounded — every other item on the
