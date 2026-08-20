@@ -59,9 +59,9 @@ public abstract class LocalStackTestBase {
                 // before ready.d runs, so waiting on the port alone would race the init; we wait on
                 // the last script's final log line instead, guaranteeing tables, seed AND messaging
                 // resources are present. This pattern must track whichever script sorts last in
-                // ready.d — today 07-processed-events.sh (step 29; it moved the marker off
-                // 06-messaging-core.sh); appending a script after it moves the marker again.
-                .waitingFor(Wait.forLogMessage(".*\\[init\\] consumer dedup ready.*", 1)
+                // ready.d — today 08-messaging-notify.sh (step 36; it moved the marker off
+                // 07-processed-events.sh); appending a script after it moves the marker again.
+                .waitingFor(Wait.forLogMessage(".*\\[init\\] notify messaging ready.*", 1)
                         .withStartupTimeout(Duration.ofMinutes(2)));
 
         // Mount each real init script into ready.d with the executable bit — LocalStack runs any

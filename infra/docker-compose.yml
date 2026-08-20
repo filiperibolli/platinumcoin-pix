@@ -424,21 +424,21 @@ services:
       # and simply died with `QueueDoesNotExist`.
       #
       # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
-      # probe asserts a resource created by the LAST init script (07-processed-events.sh) exists —
-      # scripts run in lexical order (inside THIS container's init runner, regardless of which endpoint
-      # each one targets), so that one existing means all of them ran, including 01-05 against
-      # dynamodb-local. The check itself now runs `aws` (not `awslocal`, which is hardcoded to
-      # localhost:4566) against `dynamodb-local:8000` — reachable from inside this container over the
-      # shared network — since that table now lives there, not here. This mirrors exactly what the
-      # Testcontainers harness already does (LocalStackTestBase waits on that script's final log line);
-      # compose and the tests now agree on what readiness means.
+      # probe asserts a resource created by the LAST init script (08-messaging-notify.sh, step 36)
+      # exists — scripts run in lexical order (inside THIS container's init runner, regardless of which
+      # endpoint each one targets), so that one existing means all of them ran, including 01-05/07
+      # against dynamodb-local. The last script now creates SQS resources, so the probe checks
+      # notification-queue via `aws sqs get-queue-url` against LocalStack's own SQS at localhost:4566
+      # (SQS lives here, unlike DynamoDB, which moved to dynamodb-local). This mirrors exactly what the
+      # Testcontainers harness does (LocalStackTestBase waits on that same script's final log line);
+      # compose and the tests agree on what readiness means.
       #
-      # IF YOU ADD A SCRIPT THAT SORTS AFTER 07, MOVE THIS PROBE (and the harness's marker) TO IT.
+      # IF YOU ADD A SCRIPT THAT SORTS AFTER 08, MOVE THIS PROBE (and the harness's marker) TO IT.
       # (tools/k6/seed/ deliberately does NOT live here, even though it seeds DynamoDB too: this
       # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
       # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
       # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://dynamodb-local:8000 dynamodb describe-table --table-name pix_processed_events >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name notification-queue >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5

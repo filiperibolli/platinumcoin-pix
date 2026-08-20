@@ -138,6 +138,22 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- LocalStack init: notification-queue (filtered) with DLQ (step 36)
+  **Fan-out made concrete: a second consumer group off the same topic.** `08-messaging-notify.sh` hangs
+  `notification-queue` + `notification-queue-dlq` off the existing `pix-events` topic, tuned exactly like
+  settlement-queue (redrive after 5 receives → DLQ, visibility 30s, long-poll 20s, DLQ retention 14d,
+  narrow `sqs:SendMessage` policy) but with a **disjoint** filter policy —
+  `eventType ∈ {PixSettled, PixReceived, PixReversed}`, the user-facing outcomes only, never settlement's
+  internal `PixDebited`. No new topic (fan-out happens at the subscription, ADR-0004); settlement's own
+  policy is left untouched (the two are already disjoint). Deliberately **no** `inbound-pix-queue`: step 37
+  processes the BACEN inbound webhook synchronously, and a queue with no consumer is worse than no queue.
+  Being the new last `ready.d` script, `08` takes over the **readiness marker** from `07`
+  (`[init] notify messaging ready: …`): both the Testcontainers harness (`LocalStackTestBase`) and the
+  compose healthcheck now key off it — the probe switched from `describe-table pix_processed_events` to
+  `sqs get-queue-url notification-queue`. `MessagingInitIT` gains three assertions (queue + DLQ exist,
+  redrive to its own DLQ, filter policy is the three user-facing types and not `PixDebited`); runbook and
+  init README mirrored.
+  AI: est 1h / actual ~1h / ~92% generated / 0 issues caught in human review
 - Reconciliation resolver (query SPI → finalize/reverse), idempotent, with the <5-min SLO alert (step 35)
   **The resolver half of reconciliation: turning "eventual" into "eventually *bounded*".** The step-34 scan
   finds stuck transactions; step 35 resolves them. `StuckTransactionResolver` (the real

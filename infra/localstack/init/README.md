@@ -47,11 +47,24 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
   does not add that for you, and without it delivery fails *silently*. The
   subscription is created **guarded** (no duplicate on restart) with
   `FilterPolicy={"eventType":["PixDebited"]}` and `RawMessageDelivery=true`.
-  Its final log line (`[init] messaging ready: …`) is the readiness marker the
-  Testcontainers harness (`LocalStackTestBase`) waits on — **if you append a
-  script that sorts after this one, move that marker.** Asserted by
-  `MessagingInitIT` in common-lib (resources, redrive, and a real
+  Asserted by `MessagingInitIT` in common-lib (resources, redrive, and a real
   publish→receive proof of the filter policy + raw delivery).
+- **`07-processed-events.sh`** (step 29) — the consumer-side dedup table
+  `pix_processed_events` (`pk=CONSUMER#<name>#EVT#<eventId>`, `sk=META`, TTL 7d
+  on `expiresAt`), the one table shared by every consumer (ADR-0006). No GSI —
+  the only access pattern is a conditional `PutItem` on the primary key.
+  Idempotent (`describe-table || create-table`, TTL guarded).
+- **`08-messaging-notify.sh`** (step 36) — the **second** consumer off
+  `pix-events`: `notification-queue` + `notification-queue-dlq`, same tuning as
+  settlement (redrive after 5 receives, visibility 30s, long-poll 20s, DLQ
+  retention 14d) and the same narrow `sqs:SendMessage` policy. Its subscription
+  is **guarded** with `FilterPolicy={"eventType":["PixSettled","PixReceived","PixReversed"]}`
+  (the user-facing outcomes only — disjoint from settlement's `PixDebited`) and
+  `RawMessageDelivery=true`. Its final log line (`[init] notify messaging ready: …`)
+  is the readiness marker the Testcontainers harness (`LocalStackTestBase`) waits
+  on and the compose healthcheck probe asserts — **it is the last script, so if you
+  append one that sorts after it, move both markers.** Asserted by `MessagingInitIT`
+  (queue + DLQ + the filter policy).
 
 Each later sprint that flips on a new AWS service adds its own resource script in
 the same directory, matching the vertical-delivery discipline (one flow's infra
