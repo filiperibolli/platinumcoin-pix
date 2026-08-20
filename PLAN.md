@@ -94,7 +94,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 36](docs/steps/step-36.md) — LocalStack init: `notification-queue` (+DLQ, filtered subscription)
 - [x] [Step 37](docs/steps/step-37.md) — mock-bacen inbound generator → inbound flow: dedupe by endToEndId, credit posting
-- [ ] [Step 38](docs/steps/step-38.md) — notification-service: consume notification-queue, SSE stream per user
+- [x] [Step 38](docs/steps/step-38.md) — notification-service: consume notification-queue, SSE stream per user
 - [ ] [Step 39](docs/steps/step-39.md) — wire PixSettled/PixReceived/PixReversed to real-time pushes end to end
 
 ## Sprint 9 — Balance & statement with cache

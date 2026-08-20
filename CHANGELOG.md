@@ -198,6 +198,99 @@ The platform reached its halfway mark: **the full money path is built, tested an
     `txId` would get `500` instead of `404`. A contract wart, not a money bug — unreachable through any
     flow, nothing written or moved — and fixing it in payment-service was out of this step's scope.
   AI: est 5h / actual ~4h / ~90% generated / 0 issues caught in human review
+
+- notification-service: per-user SSE stream consuming notification-queue with heartbeats and cleanup
+  (step 38)
+  **The platform's first long-lived-connection service, and the honest ending to `202 Accepted`.** Every
+  other service handles a request and lets the thread go; this one keeps state per connected human for as
+  long as they hold the app open. That changes what "correct" means — the registry must shrink as
+  reliably as it grows, writes arrive from servlet threads while reads come from the consumer and the
+  heartbeat, and a client that vanishes has to be *discovered* rather than announced.
+  - **`GET /v1/notifications/stream`** (JWT, `text/event-stream`, port 8087) registers an `SseEmitter`
+    under the caller's account. Frames carry their routing in SSE's own fields — `event:` = the event
+    type, `id:` = the `eventId` (so a reconnect resumes via `Last-Event-ID`) — leaving `data:` purely the
+    business payload. The stream is the caller's own **by construction**: the account comes from the JWT
+    `accountId` claim and no path, query or body field names an account, so "stream someone else's
+    payments" is not a request the API can express (the read-side of Domain Safety Rule #1 — stronger
+    than an ownership check, because nothing is left to check).
+  - **`NotificationQueueConsumer`** long-polls `notification-queue`, dedupes by `eventId` against the
+    shared `pix_processed_events` gate under `CONSUMER#notification-service`, and routes each event to
+    the affected account's emitters. **Routing is the one policy decision here** and reads as one
+    sentence: *an outcome of a send belongs to the payer, an arrival belongs to the payee* —
+    `PixSettled`/`PixReversed` → `debtorAccountId`, `PixReceived` → `creditorAccountId`. Both accounts
+    travel in the payload precisely so this consumer never re-resolves the directory: a synchronous
+    lookup inside an asynchronous fan-out would let a directory outage stop unrelated notifications.
+  - **Best-effort, written as code rather than intention.** Every outcome acks (`DELIVERED`,
+    `NO_SUBSCRIBER`, `DUPLICATE`, `UNROUTABLE`); only a thrown exception leaves the message for
+    redelivery, and the use case releases its dedup claim on the way out so the redelivery is real work.
+    An event for a customer with nothing open is **dropped**, because the outcome stays queryable on
+    `GET /payments/{transactionId}` and holding messages for someone who may not open the app for a week
+    only fills the DLQ with work that can never succeed. It also **claims before acting** — the exact
+    opposite of `ReceiveInboundPixUseCase`, which posts before recording: pushing twice is a visible
+    defect while losing a push in a crash window costs nothing already answered elsewhere. Same
+    mechanism, opposite ordering, because the risks are opposite.
+  - **The heartbeat is a keepalive *and* the garbage collector** — the step's real lesson. Every 25s each
+    stream gets an SSE comment (`:ping`), which every client including `EventSource` ignores for free.
+    Outward it sits under the ~30s idle timeout common in proxies and carrier NATs, so a silent Pix
+    stream is never reclaimed. Inward it is the only way this side learns a client is gone: **a customer
+    closing the app sends the server nothing it will notice** — an async response that is not being
+    written to never learns its socket died — so the next attempted write is what discovers it. A push
+    service without a heartbeat leaks a registration per customer who ever connected;
+    `SseIT#aDisconnectedClientIsRemovedFromTheRegistry` pins exactly that mechanism.
+  - **The SSE handshake: the step-05 allow-list hook was resolved without being spent.** A browser's
+    native `EventSource` cannot set request headers, so a header-only stream is a stream no `EventSource`
+    can open. Rather than making the path public and verifying the token inside notification-service,
+    `SseTokenHandshakeFilter` (ordered immediately before common-lib's `JwtAuthFilter`) promotes
+    `?access_token=` into an `Authorization` header for **this one path**, and an explicit header always
+    wins. The route stays fully protected and **common-lib remains the only code in the platform that
+    decides whether a token is good** — a fix or a hardening lands once, not twice. The accepted cost is
+    recorded in the class, the README and `JwtAuthProperties`: a token in a URL reaches access logs,
+    `Referer` and browser history; bounded here by a 15-minute token, one path, and a sandbox, with a
+    short-lived single-use stream ticket as the production posture.
+  - **`SubscriberRegistry<S>` is generic, and that is the design point worth reading twice.** The
+    controller must hand Spring MVC back an `SseEmitter` — a framework type `domain/` may not name — yet
+    the object is created by the adapter that owns the transport, so it has to travel out *through* the
+    use case. The type parameter lets the domain name that handle without knowing it: `domain/` stays
+    plain Java, `api/` sees a concrete `OpenNotificationStreamUseCase<SseEmitter>`, nothing is laundered
+    through `Object` and a cast, and `NotificationBeansConfig` is the single place SSE is named. Without
+    it the natural way to build a push service is to let `SseEmitter` spread into the domain — and then
+    the routing rule can only be tested with a servlet container running.
+  - **Tests (40, all green): 28 unit + 12 integration.** `NotificationRoutingTest` and
+    `DeliverNotificationUseCaseTest` pin the addressee and the dedupe in plain Java (including an
+    explicit money invariant: R$ 1.234.567,89 survives as exact integer cents, chosen because it is past
+    `Integer.MAX_VALUE` in cents — `NotificationMessage` reads the amount as `Number#longValue`, since
+    Jackson binds an untyped JSON integer to `Integer` or `Long` depending on the *amount*).
+    `SseEmitterRegistryTest` covers isolation, multi-device fan-out, eviction and a 200-thread
+    subscribe/close storm. `SseIT` runs a **real socket against a real server** — MockMvc completes the
+    exchange, which is the one thing this service never does — and asserts bob's `PixReceived` reaches
+    bob and never alice, and vice versa. `SseHeartbeatIT` and `SseHandshakeAuthIT` cover the keepalive
+    and all four auth shapes.
+  - **Two defects the tests caught before review.** (1) `SseEmitterRegistry` called
+    `emitter.completeWithError` on a failed write, but Tomcat *refuses* that once its async context has
+    already errored — the `IllegalStateException` escaped and aborted the whole heartbeat sweep, so one
+    dead connection would have cost every later stream its keepalive; tear-down is now best-effort while
+    removal is not. (2) The first draft of the disconnect test assumed a closed client produces a
+    server-side callback; it does not, which is what turned the heartbeat into the documented cleanup
+    mechanism rather than a nice-to-have.
+  - **A new `infra/web/` role folder** (ADR-0010 amended 2026-08-20, CLAUDE.md updated in the same
+    change): a registry of live SSE emitters is not persistence (nothing is durable), not a `client/`
+    (it calls no external service), not security and not config — a service that pushes to clients has an
+    outbound *transport* adapter the four existing roles had no honest home for.
+  - Docs: `services/notification-service/README.md`, compose entry + healthcheck, `docs/local-dev.md`
+    §3 env vars and a §4 step-38 callout with the two-terminal drill, Postman folder (4 requests) and an
+    API-explorer section whose stream card **actually streams** — `fetch` + `ReadableStream`, appending
+    frames as they arrive, which is also what lets it demonstrate the header path a browser's
+    `EventSource` cannot use. `docs/api/openapi.yaml` gains the optional `access_token` query parameter
+    and the frame-shape description — the route itself was already contracted (mid-project consistency
+    pass), but the handshake alternative this step introduces was not, and an undocumented way to
+    authenticate is drift whichever direction it points.
+  - **Deliberately left to step 39** (which owns them): the pushed `data:` line is the raw event payload,
+    not yet the standardized DTO on the external status vocabulary; and the payee of an **internal** send
+    is not notified — an internal Pix emits one `PixSettled`, routed to the payer, and the event →
+    recipient mapping is step 39's task. Also noted, not fixed: the registry is per-instance (a second
+    replica would only reach the customers connected to *it*; `NotificationChannel` is already the seam
+    for a shared fan-out), and there is no cap on connections per account.
+  AI: est 4h / actual ~2h / ~90% generated / 0 issues caught in human review
 - LocalStack init: notification-queue (filtered) with DLQ (step 36)
   **Fan-out made concrete: a second consumer group off the same topic.** `08-messaging-notify.sh` hangs
   `notification-queue` + `notification-queue-dlq` off the existing `pix-events` topic, tuned exactly like
