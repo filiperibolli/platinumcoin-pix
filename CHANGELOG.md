@@ -213,6 +213,12 @@ The platform reached its halfway mark: **the full money path is built, tested an
     disjoint for the other two consumers — land on audit-queue). New `S3InitIT`: both buckets exist,
     versioning `Enabled`, lock `COMPLIANCE/1825`, the object retained, the version delete refused, and the
     archive bucket asserted *plain* so that decision stays deliberate. `mvn verify` green across all modules.
+    - **CI caught a race the local run hid.** The audit test waited for *one* of the two published
+      eventIds and then asserted on *both*: SNS→SQS delivery is neither ordered nor simultaneous, so the
+      helper could return with the second event still in flight and throw it away — green on a developer
+      machine, red on the first CI run. `receiveUntil` now takes the ids as varargs and only returns once
+      **every** one of them has arrived (naming the missing ones when it gives up), which is the honest
+      shape for any assertion about a fan-out.
   - **Both readiness markers moved to `09-audit.sh`** (it now sorts last): `LocalStackTestBase` waits on
     `[init] audit storage ready: …` and the compose healthcheck probes the last resource it creates
     (`s3api head-bucket --bucket pix-statement-archive`). Three older init scripts still claimed to *be*

@@ -9,6 +9,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -281,7 +283,9 @@ class MessagingInitIT extends LocalStackTestBase {
         publish(SUBSCRIBED_EVENT_TYPE, debitedEventId);
         publish(UNSUBSCRIBED_EVENT_TYPE, settledEventId);
 
-        List<Message> delivered = receiveUntil(AUDIT_QUEUE_NAME, settledEventId);
+        // Both ids are awaited: they are published back to back but SNS delivers them independently,
+        // so waiting on one and asserting on two would be a race (it was, until CI said so).
+        List<Message> delivered = receiveUntil(AUDIT_QUEUE_NAME, debitedEventId, settledEventId);
 
         assertThat(delivered).map(Message::body)
                 .as("an unfiltered subscription delivers the event types the OTHER consumers filter out")
@@ -306,12 +310,18 @@ class MessagingInitIT extends LocalStackTestBase {
     }
 
     /**
-     * Long-polls the given queue until the expected event shows up (or fails the test after ~20s),
-     * returning <b>every</b> message the queue handed over on the way — the filtered-out event would be
-     * in there if the filter policy were wrong. Each message is deleted as it is collected, so the
-     * queue is left empty for the next test.
+     * Long-polls the given queue until <b>every</b> expected event has shown up (or fails the test
+     * after ~20s), returning every message the queue handed over on the way — the filtered-out event
+     * would be in there if the filter policy were wrong. Each message is deleted as it is collected,
+     * so the queue is left empty for the next test.
+     *
+     * <p><b>Wait for all of them, never just the last one.</b> SNS→SQS delivery is neither ordered nor
+     * simultaneous: two events published back to back can arrive in either order and in different
+     * batches. Returning as soon as <i>one</i> id was seen would discard the other and turn a caller
+     * that asserts on both into a race — which is exactly how this helper first shipped, green on a
+     * developer machine and red on CI.
      */
-    private static List<Message> receiveUntil(String queueName, String expectedEventId) {
+    private static List<Message> receiveUntil(String queueName, String... expectedEventIds) {
         List<Message> collected = new ArrayList<>();
         Instant deadline = Instant.now().plus(Duration.ofSeconds(20));
         while (Instant.now().isBefore(deadline)) {
@@ -319,11 +329,19 @@ class MessagingInitIT extends LocalStackTestBase {
                 collected.add(message);
                 SQS.deleteMessage(request -> request.queueUrl(queueUrl(queueName)).receiptHandle(message.receiptHandle()));
             }
-            if (collected.stream().anyMatch(message -> message.body().contains(expectedEventId))) {
+            if (Stream.of(expectedEventIds).allMatch(expected -> hasEvent(collected, expected))) {
                 return collected;
             }
         }
-        throw new AssertionError("No message carrying eventId " + expectedEventId + " arrived on " + queueName);
+        String missing = Stream.of(expectedEventIds)
+                .filter(expected -> !hasEvent(collected, expected))
+                .collect(Collectors.joining(", "));
+        throw new AssertionError("No message carrying eventId " + missing + " arrived on " + queueName
+                + " within 20s (" + collected.size() + " other messages did)");
+    }
+
+    private static boolean hasEvent(List<Message> messages, String eventId) {
+        return messages.stream().anyMatch(message -> message.body().contains(eventId));
     }
 
     private static List<Message> receiveBatch(String queueName, int waitTimeSeconds) {
