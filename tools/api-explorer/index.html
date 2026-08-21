@@ -257,11 +257,27 @@
     .jstep.done .jnum { background: var(--accent-soft); color: var(--ok); border-color: var(--accent-line); }
     .jstep.fail .jnum { background: rgba(226,98,111,.12); color: var(--err); border-color: rgba(226,98,111,.4); }
     .jbody { flex: 1; min-width: 0; }
-    .jhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-    .jtitle { font: 600 13.5px var(--sans); color: var(--text); }
+    /* The whole header toggles the step open/closed, so it has to advertise that it is clickable. */
+    .jhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer;
+      user-select: none; }
+    .jhead:hover .jtitle { color: var(--accent); }
+    .jtitle { font: 600 13.5px var(--sans); color: var(--text); transition: color .14s; }
     .jcall { font: 500 11.5px var(--mono); color: var(--faint); }
-    .jstate { margin-left: auto; font: 600 11.5px var(--mono); color: var(--muted); }
+    /* "run #3 · 11:42:03" — what makes a re-click of an already-passing step visibly change something. */
+    .jruns { margin-left: auto; font: 500 10.5px var(--mono); color: var(--faint);
+      background: var(--bg-1); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+    .jstate { font: 600 11.5px var(--mono); color: var(--muted); }
     .jstep.done .jstate { color: var(--ok); } .jstep.fail .jstate { color: var(--err); }
+    .jstep.running .jstate { color: var(--blue); }
+    .jhead .chev { align-self: center; transform: rotate(90deg); }
+    .jstep.collapsed .jhead .chev { transform: rotate(0deg); }
+    .jstep.collapsed .jwhy, .jstep.collapsed .jout { display: none; }
+    /* The one place a step is still worth looking at while collapsed: it is working. */
+    .jstep.running { background: var(--surface-2); }
+    .jspin { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+      border: 2px solid var(--line-2); border-top-color: var(--blue); animation: jspin .7s linear infinite;
+      vertical-align: -1px; }
+    @keyframes jspin { to { transform: rotate(360deg); } }
     .jwhy { font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin: 7px 0 0; }
     .jwhy b { color: var(--text); font-weight: 600; }
     .jout { margin-top: 10px; }
@@ -2224,10 +2240,12 @@
       const main = $('jrnMain');
       const bar = document.createElement('div');
       bar.className = 'jrn-bar';
+      const allCollapsed = journey.steps.every((_, i) => stepCollapsed.has(`${journey.id}:${i}`));
       bar.innerHTML = `<button id="jrnRun">${ICON.send}Run all ${journey.steps.length} steps</button>`
         + `<button id="jrnReset" class="ghost">Reset</button>`
+        + `<button id="jrnFold" class="ghost">${allCollapsed ? 'Expand all' : 'Collapse all'}</button>`
         + `<span class="muted" style="font-size:12px;">…or run any step on its own — they share the ids the`
-        + ` previous ones captured.</span>`;
+        + ` previous ones captured. Click a step's title to fold it away.</span>`;
       main.appendChild(bar);
 
       const vars = document.createElement('div');
@@ -2245,6 +2263,13 @@
 
       $('jrnRun').onclick = () => runJourney(journey);
       $('jrnReset').onclick = () => { resetJourney(journey); renderPanel(); };
+      $('jrnFold').onclick = () => {
+        journey.steps.forEach((_, i) => {
+          const k = `${journey.id}:${i}`;
+          if (allCollapsed) stepCollapsed.delete(k); else stepCollapsed.add(k);
+        });
+        renderPanel();
+      };
     }
 
     function renderJourneyVars(ctx) {
@@ -2258,24 +2283,41 @@
     function journeyStepCard(journey, step, index) {
       const run = journeyRun(journey);
       const result = run.results[index];
+      const key = `${journey.id}:${index}`;
+      const running = run.runningIndex === index;
+      const collapsed = stepCollapsed.has(key) && !running;
       const card = document.createElement('div');
-      card.className = 'jstep' + (result ? (result.ok ? ' done' : ' fail') : '');
+      card.className = 'jstep'
+        + (running ? ' running' : (result ? (result.ok ? ' done' : ' fail') : ''))
+        + (collapsed ? ' collapsed' : '');
+      const badge = result && result.runNo
+        ? `<span class="jruns">run #${result.runNo} · ${escapeHtml(result.at)}</span>` : '';
       card.innerHTML = `
-        <div class="jnum">${result && result.ok ? '✓' : index + 1}</div>
+        <div class="jnum">${running ? '<span class="jspin"></span>' : (result && result.ok ? '✓' : index + 1)}</div>
         <div class="jbody">
           <div class="jhead">
             <span class="jtitle">${step.title}</span>
             <span class="jcall">${escapeHtml(step.call)}</span>
-            <span class="jstate">${result ? escapeHtml(result.state) : ''}</span>
+            ${badge || '<span class="jruns" style="visibility:hidden"></span>'}
+            <span class="jstate">${running ? 'running…' : (result ? escapeHtml(result.state) : '')}</span>
+            ${ICON.chev}
           </div>
           <p class="jwhy">${step.why}</p>
           <div class="jout"></div>
         </div>`;
 
+      card.querySelector('.jhead').onclick = () => {
+        if (stepCollapsed.has(key)) stepCollapsed.delete(key); else stepCollapsed.add(key);
+        renderPanel();
+      };
+
       const out = card.querySelector('.jout');
       const btn = document.createElement('button');
       btn.className = 'ghost mini';
-      btn.innerHTML = `${ICON.send}Run step ${index + 1}`;
+      btn.disabled = running;
+      btn.innerHTML = running
+        ? `<span class="jspin"></span>&nbsp;Running…`
+        : `${ICON.send}Run step ${index + 1}`;
       btn.onclick = () => runStep(journey, index);
       out.appendChild(btn);
 
@@ -2310,6 +2352,14 @@
 
     /** Steps whose folded middle the reader has expanded, keyed `<journeyId>:<stepIndex>`. */
     const wireExpanded = new Set();
+
+    /**
+     * Steps the reader has collapsed, keyed `<journeyId>:<stepIndex>`. Collapsed is the exception, not
+     * the default: a journey is meant to be read top to bottom, and the prose under each title is the
+     * part that teaches. Once a step has run, though, its transcript can be a screenful of JSON, so the
+     * header folds the whole card away and leaves the line that still matters — number, title, status.
+     */
+    const stepCollapsed = new Set();
 
     /**
      * The request/response transcript of one step.
@@ -2379,24 +2429,50 @@
       try { return JSON.stringify(JSON.parse(t), null, 2); } catch (_) { return t; }
     };
 
-    async function runStep(journey, index) {
+    /**
+     * Run one step, and make the click visible.
+     *
+     * <p>Re-running a step that already passed used to change nothing on screen: the same response
+     * re-rendered identically, so there was no way to tell a click had registered. Three things fix that
+     * — a <b>running</b> state while it is in flight (spinner, disabled button, blue status), a
+     * <b>run counter and timestamp</b> in the header, which move on every run even when the response is
+     * byte-identical, and a <b>toast</b> on completion. During "Run all" the per-step success toast is
+     * suppressed: eight of them plus the summary is noise nobody asked for, and the user did not click
+     * those steps individually.
+     */
+    async function runStep(journey, index, fromRunAll = false) {
       const run = journeyRun(journey);
       const step = journey.steps[index];
+
+      run.runningIndex = index;
+      renderPanel();
+      // Yield a macrotask so the running state actually paints before a fast call resolves — without
+      // this a 30ms request would finish inside the same frame and the feedback would never be seen.
+      await new Promise((r) => setTimeout(r, 16));
+
       // Open the wire log for the duration of the step: every call send() makes lands in it, including
       // the ones a failing step made before it threw — that transcript is usually the diagnosis.
       const log = [];
       wireLog = log;
+      run.counts = run.counts || [];
+      run.counts[index] = (run.counts[index] || 0) + 1;
+      const stamp = { runNo: run.counts[index], at: new Date().toLocaleTimeString('pt-BR') };
       try {
         const result = await step.run(run.ctx);
-        result.wire = log;
+        Object.assign(result, stamp, { wire: log });
         run.results[index] = result;
         if (!result.ok) toast('Step ' + (index + 1) + ' did not pass', result.state || '', 'bad');
+        else if (!fromRunAll) toast('Step ' + (index + 1) + ' passed', result.state || '', 'ok');
       } catch (e) {
-        run.results[index] = { ok: false, state: 'error', body: e.message, wire: log };
+        run.results[index] = { ok: false, state: 'error', body: e.message, wire: log, ...stamp };
         toast('Step ' + (index + 1) + ' failed', e.message, 'bad');
       } finally {
         wireLog = null;
+        run.runningIndex = -1;
       }
+      // A step that did not pass expands itself: its transcript is the reason, and hunting for a
+      // chevron to find out why something broke is exactly the wrong moment to make someone click.
+      if (!run.results[index].ok) stepCollapsed.delete(`${journey.id}:${index}`);
       renderPanel();
       return run.results[index].ok;
     }
@@ -2408,10 +2484,17 @@
      * mock-BACEN reject knob). Skipping cleanup on failure is how one failed run silently poisons every
      * later one — which is precisely what happened while this journey was being built.
      */
-    /** Forget a journey's results, its captured ids, and which folded transcripts were expanded. */
+    /**
+     * Forget a journey's results, its captured ids, its run counters, and the per-step view state
+     * (which transcripts were expanded, which cards were collapsed) — Reset means the journey looks
+     * exactly as it did before anyone touched it.
+     */
     function resetJourney(journey) {
-      journeyState[journey.id] = { ctx: { vars: {} }, results: [] };
-      journey.steps.forEach((_, i) => wireExpanded.delete(`${journey.id}:${i}`));
+      journeyState[journey.id] = { ctx: { vars: {} }, results: [], counts: [], runningIndex: -1 };
+      journey.steps.forEach((_, i) => {
+        wireExpanded.delete(`${journey.id}:${i}`);
+        stepCollapsed.delete(`${journey.id}:${i}`);
+      });
     }
 
     async function runJourney(journey) {
@@ -2420,10 +2503,10 @@
       let stoppedAt = -1;
       for (let i = 0; i < journey.steps.length; i++) {
         if (stoppedAt >= 0) {
-          if (journey.steps[i].always) await runStep(journey, i);
+          if (journey.steps[i].always) await runStep(journey, i, true);
           continue;
         }
-        const ok = await runStep(journey, i);
+        const ok = await runStep(journey, i, true);
         if (!ok) stoppedAt = i;
       }
       if (stoppedAt >= 0) {

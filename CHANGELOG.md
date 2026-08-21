@@ -291,6 +291,20 @@ The platform reached its halfway mark: **the full money path is built, tested an
     (invalidation, not TTL expiry); then page the statement with `limit=5`, assert newest-first, decimal
     amounts and a masked counterpart, follow the opaque cursor to page 2 and assert **zero overlapping
     txIds**, and finish on a tampered cursor → `400 INVALID_CURSOR`.
+  - **Steps fold.** A run leaves eight cards of JSON on the page, so the header of every step now
+    toggles the whole card shut, leaving the line that still carries the information — number, title,
+    call, status — plus **Collapse all / Expand all** in the journey bar. Collapsed the journey reads as
+    an eight-line index of what happened; expanded it reads as the tutorial it was written to be. A step
+    that **fails auto-expands**: its transcript is the reason it failed, and hunting for a chevron is the
+    wrong thing to ask of someone at that moment.
+  - **A click on "Run step" is always visible now.** Re-running a step that already passed used to
+    change nothing on screen — same response, re-rendered identically — so there was no way to tell the
+    click had registered. Three things fix it: a **running** state while the call is in flight (spinner
+    in the step number, disabled button, blue status — `.jstep.running` had been defined in CSS since
+    the journeys landed and was never once applied), a **`run #N · HH:MM:SS` badge** in the header,
+    which moves on every run even when the response is byte-identical, and a **toast** on completion.
+    Per-step success toasts are suppressed during "Run all" — eight of them plus the summary is noise,
+    and nobody clicked those steps individually.
   - **A real bug found by the verification, not by reading:** `phoneConnect` flipped `phone.state` to
     `connecting` *after* an `await`, while journey steps start it without awaiting and then poll
     `state !== 'live'`. With a connection already open the flag was still `live` from the previous one,
@@ -300,8 +314,10 @@ The platform reached its halfway mark: **the full money path is built, tested an
   - **Verified in a headless browser against the live compose stack: 44/44 steps across all six
     journeys**, no page errors, no whole-JWT anywhere in the rendered panel, and no horizontal page
     overflow. The stream steps of three journeys went from *no* transcript to one — they were the
-    steps hiding the bug above.
-  AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
+    steps hiding the bug above. The fold and the run feedback carry their own 13 assertions (collapse
+    hides the body but keeps the title, Collapse all folds 8/8, a second click on an unchanged step
+    moves the badge from `run #1` to `run #2`, a toast confirms the click).
+  AI: est 2h / actual 2h / ~90% generated / 2 issues caught in human review
 
 - Public statement API through payment-service with opaque cursor pagination and edge money formatting
   (step 41)
