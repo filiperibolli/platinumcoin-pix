@@ -60,11 +60,35 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
   retention 14d) and the same narrow `sqs:SendMessage` policy. Its subscription
   is **guarded** with `FilterPolicy={"eventType":["PixSettled","PixReceived","PixReversed"]}`
   (the user-facing outcomes only — disjoint from settlement's `PixDebited`) and
-  `RawMessageDelivery=true`. Its final log line (`[init] notify messaging ready: …`)
-  is the readiness marker the Testcontainers harness (`LocalStackTestBase`) waits
-  on and the compose healthcheck probe asserts — **it is the last script, so if you
-  append one that sorts after it, move both markers.** Asserted by `MessagingInitIT`
-  (queue + DLQ + the filter policy).
+  `RawMessageDelivery=true`. Asserted by `MessagingInitIT` (queue + DLQ + the filter
+  policy).
+- **`09-audit.sh`** (step 42) — the **third** consumer off `pix-events` plus the
+  project's first object storage. `audit-queue` + `audit-queue-dlq` are tuned like
+  the other two branches, but the subscription carries **no filter policy at all**:
+  audit does not *act* on events, it *records that they happened*, and any filter is
+  a list somebody must remember to extend — the first unlisted event type would be
+  missing from the trail silently, forever. The script therefore also *removes* a
+  filter policy if one drifted in (empty `--attribute-value`), because converging to
+  "none" has to be an action. Two buckets: **`pix-audit-log`** created with
+  `--object-lock-enabled-for-bucket` (create-time-only in real AWS; it turns
+  versioning on) + a default retention of **COMPLIANCE / 1825 days** — COMPLIANCE
+  rather than GOVERNANCE because the latter is bypassable by a principal holding
+  `s3:BypassGovernanceRetention`, i.e. the privileged operator an audit trail exists
+  to keep honest; and **`pix-statement-archive`**, a deliberately *plain* bucket (no
+  versioning, no lock) because it holds derived, rebuildable data that step 43
+  rewrites monthly. Its final log line (`[init] audit storage ready: …`) is the
+  readiness marker the Testcontainers harness (`LocalStackTestBase`) waits on, and
+  the compose healthcheck probe asserts the last resource it creates
+  (`s3api head-bucket --bucket pix-statement-archive`) — **it is the last script, so
+  if you append one that sorts after it, move both markers.** Asserted by
+  `MessagingInitIT` (the unfiltered third branch) and `S3InitIT` (both buckets,
+  versioning, lock configuration, and the refused delete).
+  **LocalStack vs AWS:** LocalStack 3 does more than accept the Object Lock
+  configuration — it *enforces* it (deleting a retained version answers
+  `AccessDenied`, which `S3InitIT` pins). What stays AWS-only is everything below the
+  API: WORM at the storage layer, surviving `docker compose down -v` (the emulator's
+  state is ephemeral), replication of the trail, and IAM actually denying anything
+  (ADR-0013).
 
 Each later sprint that flips on a new AWS service adds its own resource script in
 the same directory, matching the vertical-delivery discipline (one flow's infra
@@ -82,6 +106,9 @@ at a time). The exact `create-table` commands are mirrored in `docs/local-dev.md
   queue is the same name plus `-dlq` (`settlement-queue` / `settlement-queue-dlq`).
   Every queue has exactly one DLQ; queues carry a filter policy on the `eventType`
   message attribute so a consumer only ever receives the event types it handles.
+- **Bucket names** (set in step 42): `pix-<purpose>` — same `pix` prefix as the tables,
+  but **hyphenated**, because an S3 bucket name is a DNS label: lower-case, no
+  underscores (`pix_audit_log` is simply not a legal bucket name).
 - The LocalStack `SERVICES` list in `../../docker-compose.yml` is **enforced**, not a
   hint: a call to an unlisted service answers `501 Service '<x>' is not enabled`. A
   script that uses a new AWS service must land in the same change as the `SERVICES`

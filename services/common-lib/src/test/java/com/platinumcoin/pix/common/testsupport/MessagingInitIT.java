@@ -25,9 +25,12 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
 
 /**
- * Infrastructure IT for the messaging backbone created by {@code 06-messaging-core.sh} (step 26):
- * the SNS topic {@code pix-events}, the {@code settlement-queue} with its {@code settlement-queue-dlq}
- * (redrive, maxReceiveCount 5) and the SNS→SQS subscription with a filter policy on {@code eventType}.
+ * Infrastructure IT for the messaging backbone created by the init scripts: the SNS topic
+ * {@code pix-events} with its three fan-out branches, each a queue + DLQ (redrive, maxReceiveCount 5)
+ * and a subscription — {@code settlement-queue} filtered to {@code PixDebited}
+ * ({@code 06-messaging-core.sh}, step 26), {@code notification-queue} filtered to the user-facing
+ * outcomes ({@code 08-messaging-notify.sh}, step 36), and {@code audit-queue} with <b>no filter at
+ * all</b> ({@code 09-audit.sh}, step 42).
  *
  * <p><b>Why an IT for a shell script.</b> Steps 29/31 (publisher/consumer) will exercise this
  * plumbing indirectly, but a broken filter policy or a missing redrive would show up there as a
@@ -54,6 +57,10 @@ class MessagingInitIT extends LocalStackTestBase {
     /** The notification consumer's queue + DLQ (step 36) — the second fan-out branch off pix-events. */
     private static final String NOTIFY_QUEUE_NAME = "notification-queue";
     private static final String NOTIFY_DLQ_NAME = "notification-queue-dlq";
+
+    /** The audit consumer's queue + DLQ (step 42) — the third branch, the only UNFILTERED one. */
+    private static final String AUDIT_QUEUE_NAME = "audit-queue";
+    private static final String AUDIT_DLQ_NAME = "audit-queue-dlq";
 
     /** The one event type settlement subscribes to; step 36 adds a SECOND queue, it does not widen this. */
     private static final String SUBSCRIBED_EVENT_TYPE = "PixDebited";
@@ -85,17 +92,14 @@ class MessagingInitIT extends LocalStackTestBase {
 
     /**
      * Leave no message behind for the next test. Each test still matches on its own random
-     * {@code eventId}, so this is hygiene rather than a correctness crutch.
+     * {@code eventId}, so this is hygiene rather than a correctness crutch — but it matters more for
+     * audit-queue than for the others: being unfiltered, it collects <b>every</b> event any test in
+     * this class publishes.
      */
     @BeforeEach
-    void drainSettlementQueue() {
-        List<Message> drained;
-        do {
-            drained = receiveBatch(0);
-            drained.forEach(message -> SQS.deleteMessage(request -> request
-                    .queueUrl(queueUrl(QUEUE_NAME))
-                    .receiptHandle(message.receiptHandle())));
-        } while (!drained.isEmpty());
+    void drainConsumerQueues() {
+        drain(QUEUE_NAME);
+        drain(AUDIT_QUEUE_NAME);
     }
 
     @Test
@@ -201,7 +205,7 @@ class MessagingInitIT extends LocalStackTestBase {
         publish(UNSUBSCRIBED_EVENT_TYPE, filteredEventId);
         String deliveredBody = publish(SUBSCRIBED_EVENT_TYPE, deliveredEventId);
 
-        List<Message> everythingDelivered = receiveUntil(deliveredEventId);
+        List<Message> everythingDelivered = receiveUntil(QUEUE_NAME, deliveredEventId);
 
         Message received = everythingDelivered.stream()
                 .filter(message -> message.body().contains(deliveredEventId))
@@ -217,6 +221,72 @@ class MessagingInitIT extends LocalStackTestBase {
         assertThat(everythingDelivered).map(Message::body)
                 .as("%s is not on the filter policy and must never be delivered", UNSUBSCRIBED_EVENT_TYPE)
                 .noneMatch(body -> body.contains(filteredEventId));
+    }
+
+    /**
+     * Step 42 hangs the THIRD consumer off the same topic: audit-queue with its own DLQ. Same shape as
+     * the other two branches — the difference is in the subscription below, not here.
+     */
+    @Test
+    void auditQueueAndItsDlqExist() {
+        assertThat(queueUrl(AUDIT_QUEUE_NAME)).as("audit consumer queue").endsWith("/" + AUDIT_QUEUE_NAME);
+        assertThat(queueUrl(AUDIT_DLQ_NAME)).as("its dead-letter queue").endsWith("/" + AUDIT_DLQ_NAME);
+    }
+
+    /**
+     * A poison audit message must not block the trail behind it — but it must not vanish either: it is
+     * evidence. Same redrive discipline as the other two consumers (ADR-0003), and the DLQ keeps it for
+     * the SQS maximum of 14 days.
+     */
+    @Test
+    void auditQueueRedrivesToItsDlqAfterFiveReceives() {
+        String redrivePolicy = queueAttribute(AUDIT_QUEUE_NAME, QueueAttributeName.REDRIVE_POLICY);
+
+        assertThat(redrivePolicy).as("audit-queue must carry a redrive policy").isNotBlank();
+        assertThat(redrivePolicy.replace(" ", ""))
+                .contains("\"maxReceiveCount\":\"5\"", ":" + AUDIT_DLQ_NAME + "\"");
+        assertThat(queueAttribute(AUDIT_DLQ_NAME, QueueAttributeName.MESSAGE_RETENTION_PERIOD))
+                .as("a failed audit line is evidence — it survives a long weekend").isEqualTo("1209600");
+    }
+
+    /**
+     * The one asymmetry of the fan-out, and the whole point of step 42: audit subscribes with <b>no
+     * filter policy at all</b>. settlement and notification each name the event types they act on;
+     * audit must record what happened, and a filter is a list of event types someone has to remember
+     * to extend — the first `FraudCheckSkipped` nobody added would simply be missing from the trail,
+     * silently, forever. Absence of configuration is the configuration here, so it is asserted.
+     */
+    @Test
+    void auditSubscriptionHasNoFilterPolicyAtAll() {
+        Subscription subscription = subscriptionFor(AUDIT_QUEUE_NAME);
+        assertThat(subscription.protocol()).isEqualTo("sqs");
+
+        Map<String, String> attributes = subscriptionAttributes(subscription);
+        assertThat(attributes.get("FilterPolicy"))
+                .as("no filter policy — the audit trail must be complete, not curated")
+                .isNull();
+        assertThat(attributes.get("RawMessageDelivery")).isEqualTo("true");
+    }
+
+    /**
+     * The behavioural half of the assertion above: the two event types that are deliberately
+     * <i>disjoint</i> for the other two consumers — settlement's internal {@code PixDebited} and
+     * notification's user-facing {@code PixSettled} — both land on audit-queue from a single pass.
+     */
+    @Test
+    void everyEventTypeReachesTheAuditQueue() {
+        String debitedEventId = UUID.randomUUID().toString();
+        String settledEventId = UUID.randomUUID().toString();
+
+        publish(SUBSCRIBED_EVENT_TYPE, debitedEventId);
+        publish(UNSUBSCRIBED_EVENT_TYPE, settledEventId);
+
+        List<Message> delivered = receiveUntil(AUDIT_QUEUE_NAME, settledEventId);
+
+        assertThat(delivered).map(Message::body)
+                .as("an unfiltered subscription delivers the event types the OTHER consumers filter out")
+                .anyMatch(body -> body.contains(debitedEventId))
+                .anyMatch(body -> body.contains(settledEventId));
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
@@ -236,32 +306,43 @@ class MessagingInitIT extends LocalStackTestBase {
     }
 
     /**
-     * Long-polls until the expected event shows up (or fails the test after ~20s), returning
-     * <b>every</b> message the queue handed over on the way — the filtered-out event would be in
-     * there if the filter policy were wrong. Each message is deleted as it is collected, so the
+     * Long-polls the given queue until the expected event shows up (or fails the test after ~20s),
+     * returning <b>every</b> message the queue handed over on the way — the filtered-out event would be
+     * in there if the filter policy were wrong. Each message is deleted as it is collected, so the
      * queue is left empty for the next test.
      */
-    private static List<Message> receiveUntil(String expectedEventId) {
+    private static List<Message> receiveUntil(String queueName, String expectedEventId) {
         List<Message> collected = new ArrayList<>();
         Instant deadline = Instant.now().plus(Duration.ofSeconds(20));
         while (Instant.now().isBefore(deadline)) {
-            for (Message message : receiveBatch(5)) {
+            for (Message message : receiveBatch(queueName, 5)) {
                 collected.add(message);
-                SQS.deleteMessage(request -> request.queueUrl(queueUrl(QUEUE_NAME)).receiptHandle(message.receiptHandle()));
+                SQS.deleteMessage(request -> request.queueUrl(queueUrl(queueName)).receiptHandle(message.receiptHandle()));
             }
             if (collected.stream().anyMatch(message -> message.body().contains(expectedEventId))) {
                 return collected;
             }
         }
-        throw new AssertionError("No message carrying eventId " + expectedEventId + " arrived on " + QUEUE_NAME);
+        throw new AssertionError("No message carrying eventId " + expectedEventId + " arrived on " + queueName);
     }
 
-    private static List<Message> receiveBatch(int waitTimeSeconds) {
+    private static List<Message> receiveBatch(String queueName, int waitTimeSeconds) {
         return SQS.receiveMessage(request -> request
-                .queueUrl(queueUrl(QUEUE_NAME))
+                .queueUrl(queueUrl(queueName))
                 .maxNumberOfMessages(10)
                 .waitTimeSeconds(waitTimeSeconds)
                 .messageAttributeNames("All")).messages();
+    }
+
+    /** Empties a queue without waiting — hygiene between tests, never an assertion. */
+    private static void drain(String queueName) {
+        List<Message> drained;
+        do {
+            drained = receiveBatch(queueName, 0);
+            drained.forEach(message -> SQS.deleteMessage(request -> request
+                    .queueUrl(queueUrl(queueName))
+                    .receiptHandle(message.receiptHandle())));
+        } while (!drained.isEmpty());
     }
 
     /**

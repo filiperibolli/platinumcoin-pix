@@ -12,9 +12,9 @@
 # at-least-once delivery into effectively-once processing (docs/data-model.md §6).
 #
 # Numbered 07 so it sorts before the messaging-notify script (08, step 36). It was the readiness
-# marker until step 36 appended 08 after it; the marker now lives on 08's final log line (see
-# LocalStackTestBase and docker-compose.yml). If you ever append a script after the current last
-# one, MOVE THAT MARKER.
+# marker until step 36 appended 08 after it; the marker now lives on the final log line of the LAST
+# script — today 09-audit.sh (step 42) — see LocalStackTestBase and docker-compose.yml. If you ever
+# append a script after the current last one, MOVE THAT MARKER.
 #
 # Idempotent: `describe-table || create-table`, and `describe-time-to-live` before enabling TTL —
 # safe to re-run on container restart. `down -v` wipes the volume and recreates a clean world.
@@ -25,9 +25,10 @@ set -euo pipefail
 # of LocalStack itself (docs/load/BOTTLENECK.md), over the shared network. Unset — e.g. under
 # LocalStackTestBase's Testcontainers harness, which runs this same script against a lone LocalStack
 # container with no dynamodb-local sibling — it falls back to LocalStack's own DynamoDB at 4566.
-# Being the LAST script (see above) still makes this table the readiness marker: under compose, the
-# `localstack` service's own healthcheck separately runs `aws dynamodb describe-table` against
-# dynamodb-local's endpoint FROM INSIDE the localstack container, over this same shared network.
+# (When this script WAS the readiness marker, that fallback also had to work for the compose
+# healthcheck, which probes from inside the localstack container over this same shared network. The
+# marker has since moved to the last script — 09-audit.sh, step 42 — but the endpoint fallback below
+# is unchanged and still required by the Testcontainers harness.)
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-1

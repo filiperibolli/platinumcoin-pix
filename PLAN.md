@@ -108,7 +108,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** every state transition lands as an immutable S3 record; cold statement archive.
 **Infra que sobe:** SQS `audit-queue` + S3 buckets. · **Diagram:** ARCHITECTURE §6.10
 
-- [ ] [Step 42](docs/steps/step-42.md) — LocalStack init: `audit-queue` (+DLQ, all-events subscription) + S3 buckets
+- [x] [Step 42](docs/steps/step-42.md) — LocalStack init: `audit-queue` (+DLQ, all-events subscription) + S3 buckets
 - [ ] [Step 43](docs/steps/step-43.md) — immutable audit trail: audit-queue consumer → S3 JSON lines; statement cold-archive job
 
 ## Sprint 11 — Observability

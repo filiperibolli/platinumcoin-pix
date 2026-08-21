@@ -18,10 +18,9 @@
 # worse than no queue (it hides backpressure and rots). We only create infrastructure something
 # actually drains (the discipline of vertical delivery).
 #
-# Numbered 08 so it sorts LAST → its final log line is the readiness marker the Testcontainers
-# harness waits on (LocalStackTestBase; it moved here from 07-processed-events.sh with this step)
-# and the compose healthcheck probe asserts (docker-compose.yml). If you ever append a script after
-# this one, MOVE BOTH markers.
+# Numbered 08 so it sorts after the messaging core. Its final log line was the readiness marker for
+# the Testcontainers harness and the compose healthcheck between steps 36 and 42; step 42 appended
+# 09-audit.sh after it and moved both markers there (LocalStackTestBase, docker-compose.yml).
 #
 # Idempotent: create-if-absent, then always converge attributes (set-queue-attributes /
 # set-subscription-attributes are idempotent, so a re-run also repairs drift). Mirrors the shape of
