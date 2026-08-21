@@ -1,18 +1,23 @@
 package com.platinumcoin.pix.ledger.infra.config;
 
 import com.platinumcoin.pix.ledger.domain.port.BalanceCacheInvalidator;
+import com.platinumcoin.pix.ledger.domain.port.LedgerArchiveReader;
 import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
+import com.platinumcoin.pix.ledger.domain.port.StatementArchive;
 import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
+import com.platinumcoin.pix.ledger.domain.usecase.ArchiveOldEntriesUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetBalanceUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.PostDoubleEntryUseCase;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -99,5 +104,24 @@ public class LedgerBeansConfig {
     PostDoubleEntryUseCase postDoubleEntryUseCase(
             LedgerRepository ledger, BalanceCacheInvalidator balanceCache, Clock clock) {
         return new PostDoubleEntryUseCase(ledger, balanceCache, clock);
+    }
+
+    /**
+     * The cold-archive capability (step 43). Both knobs are configuration rather than constants because
+     * they are the operational dial of the job: {@code hot-window-days} is where the online statement
+     * ends and the archive begins — the number a product decision moves, not a developer — and
+     * {@code max-accounts-per-run} bounds one run so a large ledger degrades into more runs instead of
+     * one enormous one. Same {@link Clock} as the postings, so the cutoff is measured against the very
+     * clock that stamped the entries being compared.
+     */
+    @Bean
+    ArchiveOldEntriesUseCase archiveOldEntriesUseCase(
+            LedgerArchiveReader archiveReader,
+            StatementArchive archive,
+            @Value("${pix.archive.hot-window-days}") long hotWindowDays,
+            @Value("${pix.archive.max-accounts-per-run}") int maxAccountsPerRun,
+            Clock clock) {
+        return new ArchiveOldEntriesUseCase(
+                archiveReader, archive, Duration.ofDays(hotWindowDays), maxAccountsPerRun, clock);
     }
 }

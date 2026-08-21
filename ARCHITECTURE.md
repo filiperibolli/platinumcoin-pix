@@ -151,7 +151,8 @@ graph TB
     NOT -->|event dedup| DDB
     SET <--> BACEN
     SET --> LED
-    SET --> S3
+    SET -->|audit writer: every event,<br/>batched JSONL| S3
+    LED -->|statement cold archive,<br/>monthly JSONL| S3
     PAY --> S3
 ```
 
@@ -701,9 +702,49 @@ Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts
 
 An `audit-queue` subscribed to *all* events — the one subscription in the platform with **no filter
 policy**, because audit does not act on events, it records that they happened, and a filter is a list
-someone must remember to extend — feeds an `AuditWriter` that appends JSON lines to S3, partitioned
-`yyyy/MM/dd/HH/<service>-<uuid>.jsonl`. A `StatementArchiver` copies ledger entries older than the hot
-window to a cold-archive bucket. Immutability posture on `pix-audit-log`: **Object Lock (compliance
+someone must remember to extend — feeds an `AuditWriter` **in settlement-service** that appends JSON
+lines to S3, partitioned `yyyy/MM/dd/HH/<service>-<uuid>.jsonl`. A `StatementArchiver` **in
+ledger-service** copies ledger entries older than the hot window to a cold-archive bucket, one object
+per account and month.
+
+**Where each job lives, and why.** The audit writer is a queue consumer, so it goes where the platform's
+other queue consumer already is. The archiver is not free to choose: it reads `pix_ledger`, and
+ledger-service is that table's owner (ADR-0006 — services never share tables, and archiving needs none
+of the atomicity that justifies that ADR's two documented exceptions). Reading it from settlement-service
+would have bought one S3-writing service at the price of a third exception to the platform's clearest
+boundary rule.
+
+**Two writes, two very different postures.** The audit line is written **once and never again**: keys
+carry a UUID, so the trail only grows, and the bucket's own Object Lock stamps five years of retention
+onto every object without the writer opting in — a writer that had to ask could forget to. The archive
+object is **rewritten whole** on every run: it is derived data (the ledger stays the source of truth),
+which makes the job idempotent, makes an interrupted run a non-event, and is how the boundary month
+grows as the window rolls forward. That difference is exactly why one bucket is locked and the other is
+plain (step 42).
+
+**Batching, and what it costs.** The writer flushes at ~100 events *or* 30 seconds, whichever comes
+first — the age measured from the **oldest** buffered event, so a trickle of traffic can never leave a
+line unwritten indefinitely. Trading a little durability latency for two orders of magnitude fewer S3
+requests is safe here precisely because it is not the money path: the event was already committed by its
+producer and is held by SQS until the batch lands. Two consequences are worth naming. The buffer holds a
+message longer than the queue's 30s visibility timeout, so the consumer **extends the lease** on what it
+buffers — whoever holds a message owns its lease — and it deletes **only after** the write, so a crash
+costs a duplicate line, never a missing one. Duplicates are tolerated rather than prevented: a durable
+dedup gate would have to be marked *before* the write, and a marked-then-failed write would erase an
+audit line permanently.
+
+**The time partition is ingestion time**, not event time — one flush is one object, and an object cannot
+be written into an hour a reader may already have scanned. The price is stated rather than hidden: an
+event delayed across the boundary lands in the next hour's prefix, so an exact-by-event-time query reads
+the neighbouring partition and filters on the `occurredAt` inside each line.
+
+**Deletion of hot data is deliberately not implemented.** A real deployment finishes the job — once an
+archive object is written *and verified*, the entries it covers are removed from DynamoDB (a TTL
+attribute, or a bounded delete pass), and that removal is what reclaims the storage the cold tier exists
+for. Locally it is skipped for two reasons: the emulator's S3 state is ephemeral (a `down -v` takes the
+archive with it, so deleting would destroy history in exchange for nothing), and *no code path that can
+delete a ledger entry* is a stronger guarantee of append-only history (safety rule 5) than a careful
+one. Both ports are read-only or write-only by construction. Immutability posture on `pix-audit-log`: **Object Lock (compliance
 mode) at bucket creation — which brings versioning with it and freezes it — + 5-year default
 retention**, inherited by every object without the writer opting in. `pix-statement-archive` is
 deliberately a **plain** bucket: derived, rebuildable data (the ledger stays the source of truth) whose
@@ -719,9 +760,23 @@ sequenceDiagram
     participant SET as settlement-service (AuditWriter)
     participant S3 as S3 audit-log
     SNS->>Q: every event (fan-out, no filter)
-    Q->>SET: batch (100 events or 30s)
-    SET->>S3: append JSONL yyyy/MM/dd/HH/<service>-<uuid>.jsonl
+    Q->>SET: receive + extend lease (batch window > 30s visibility)
+    Note over SET: buffer until 100 events or 30s (oldest-first age)
+    SET->>S3: PutObject JSONL yyyy/MM/dd/HH/<service>-<uuid>.jsonl
     Note over SET,S3: bucket: versioning + Object Lock (compliance) + retention 5y
+    SET->>Q: DeleteMessage — only AFTER the lines are durable
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant JOB as ledger-service (StatementArchiver, hourly)
+    participant DDB as DynamoDB pix_ledger
+    participant S3 as S3 statement-archive
+    JOB->>DDB: Scan sk=BALANCE — the account list
+    JOB->>DDB: Query pk=ACCOUNT#id, sk BETWEEN ENTRY# AND ENTRY#<cutoff>
+    JOB->>S3: PutObject account=<id>/yyyy-MM.jsonl (whole month, rewritten)
+    Note over JOB,DDB: nothing is deleted — locally on purpose; prod deletes after verifying
 ```
 
 ---

@@ -161,24 +161,42 @@ api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance + /entr
         InternalPostingController (POST /internal/ledger/postings),
         PostingRequest / PostingResponse, BalanceResponse (cents → decimal string),
         StatementResponse / StatementEntry (page + cents → signed decimal string),
-        LedgerExceptionHandler (domain exception → problem+json)                  (inbound adapters)
+        LedgerExceptionHandler (domain exception → problem+json),
+        StatementArchiver (@Scheduled cold-archive run, step 43)                  (inbound adapters)
 domain/model/     Balance, LedgerEntry, StatementPage, PostingCommand, PostingResult (records),
+                  ArchivedEntry (one line of the cold archive, step 43),
                   Direction (enum)                                                    (plain Java)
 domain/port/      LedgerRepository, BalanceCacheInvalidator (deletes only — it cannot read a
-                  balance, so it cannot be misused to decide one)             (outbound interfaces)
+                  balance, so it cannot be misused to decide one),
+                  LedgerArchiveReader (read-only bulk view) + StatementArchive
+                  (write-only, step 43 — neither can delete an entry)          (outbound interfaces)
 domain/exception/ LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
                   PostingConflict / LedgerBusy / InvalidCursor exceptions             (plain Java)
 domain/service/   AccountPolicy (system vs customer account rules)                     (plain Java)
-domain/usecase/   GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase       (plain Java)
+domain/usecase/   GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase,
+                  ArchiveOldEntriesUseCase + ArchiveOutcome (step 43)                  (plain Java)
 infra/persistence/ DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
                    reading of cancellationReasons live here and nowhere else),
-                   RedisBalanceCacheInvalidator (one DEL of the two `balance:` keys, step 40)
-infra/config/      DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
+                   RedisBalanceCacheInvalidator (one DEL of the two `balance:` keys, step 40),
+                   DynamoLedgerArchiveReader (BALANCE scan + cold-entry key range, step 43),
+                   S3StatementArchive (account=<id>/yyyy-MM.jsonl, step 43)
+infra/config/      DynamoConfig, S3Config, SchedulingConfig,
+                   LedgerBeansConfig (composition root, incl. the Clock),
                    AwsProperties, CorsConfig                                (outbound adapter + wiring)
 ```
 
 `Clock` is injected rather than read as `Instant.now()`: the posting's instant becomes part of both
 ENTRY sort keys, so it is a value the ledger decides — and a key a test can assert.
+
+**The statement cold archive (step 43).** ledger-service owns `pix_ledger`, so it is the service that
+archives it — no other service may read the table (ADR-0006), and archiving needs none of the atomicity
+that justifies that ADR's two documented exceptions. An hourly job copies entries older than
+`pix.archive.hot-window-days` into S3 `pix-statement-archive`, one JSONL object per account and month,
+rewritten whole (the archive is *derived* data, so a rewrite is idempotent and lets the boundary month
+grow as the window rolls). **Nothing is deleted from the ledger**: production would remove the archived
+entries after verifying the object, and skipping that locally means no code path in this service can
+delete a posting — safety rule 5 held by construction rather than by care. The two ports enforce it:
+`LedgerArchiveReader` only reads, `StatementArchive` only writes.
 
 Two ArchUnit rules in `LedgerArchitectureTest` fail the build on a violation: `domain/` imports
 nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson), and `api/` never depends on an
@@ -191,10 +209,15 @@ mechanical rather than a review habit.
 | -------------- | ------------- | ------- |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — every balance read requires a token. |
-| `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
+| `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge (**S3**, for the cold archive — DynamoDB has its own endpoint below); compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
 | `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis, used **only** to delete `balance:<accountId>` after a posting (step 40); compose overrides the host to `redis`. A Redis outage costs display freshness (bounded by payment-service's 5s TTL), never a posting. |
+| `STATEMENT_ARCHIVE_BUCKET` / `pix.archive.bucket` | `pix-statement-archive` | The cold archive (step 43) — a deliberately **plain** bucket (no versioning, no Object Lock): derived, rebuildable data whose monthly object each run rewrites whole. |
+| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` / `pix.archive.hot-window-days` | `90` (**`0` in compose**) | Where the online statement ends and the archive begins. Compose uses `0` so a freshly seeded sandbox archives something instead of looking broken. |
+| `STATEMENT_ARCHIVE_DELAY_MS` / `pix.archive.fixed-delay-ms` | `3600000` (**`60000` in compose**) | How often the job runs — hourly batch work over cold data; every minute in the sandbox so a demo does not wait an hour. |
+| `STATEMENT_ARCHIVE_MAX_ACCOUNTS` / `pix.archive.max-accounts-per-run` | `500` | Per-run bound on the account **scan**; a larger ledger degrades into more runs, not one enormous one. |
+| `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs (today: the cold-archive job); ITs set it `false` and drive a run explicitly. |
 
 ## Run
 
@@ -214,7 +237,9 @@ docker compose -f infra/docker-compose.yml up -d --build ledger-service
 ## Test
 
 ```bash
-mvn -pl services/ledger-service verify         # unit (*Test) + integration (*IT, Testcontainers)
+mvn -pl services/ledger-service -am verify     # unit (*Test) + integration (*IT, Testcontainers)
+# NOTE the -am: LocalStackTestBase ships in common-lib's test-jar, and a stale one in ~/.m2 fails as
+# `501 Service 's3' is not enabled` or a hang on the readiness wait (docs/local-dev.md §6).
 
 # happy path (needs a token; mint one from auth-service)
 TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
@@ -277,6 +302,24 @@ curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?cursor=not-a-va
 > parent POM** (`docker.api.version`, default `1.44`) — a plain `mvn verify` works, no flag. If you
 > are on an engine older than API 1.44, override it: `mvn verify -Ddocker.api.version=1.41`
 > (see `docs/local-dev.md` §6).
+
+### The cold archive by hand (step 43)
+
+```bash
+# The compose stack runs the job every minute with a ZERO-day hot window, so any posting is archived.
+alias awsl='aws --endpoint-url=http://localhost:4566'
+
+awsl s3 ls s3://pix-statement-archive/ --recursive
+# account=acc-001/2026-08.jsonl
+
+awsl s3 cp s3://pix-statement-archive/account=acc-001/2026-08.jsonl - | jq -c .
+# {"accountId":"acc-001","txId":"tx-…","direction":"DEBIT","amountCents":-12550,…}
+#  ↑ signed integer cents: the archive is an internal artefact, not an API edge
+
+# The point of the feature: NOTHING left the ledger — the online statement still answers in full.
+curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=50" \
+  -H "Authorization: Bearer $TOKEN" | jq '.entries | length'
+```
 
 ## Related decisions
 

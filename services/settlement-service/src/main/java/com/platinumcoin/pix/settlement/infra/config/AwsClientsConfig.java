@@ -13,13 +13,14 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.sqs.SqsClient;
 
 /**
- * The AWS composition root: the two long-lived, thread-safe clients this service needs — DynamoDB (the
- * guarded transitions, the outbox item, the dedup table) and SQS (the settlement queue) — plus the
- * shared {@link ProcessedEventStore} they back. Kept in {@code infra/} so no AWS type ever leaks toward
- * the domain (ADR-0010).
+ * The AWS composition root: the three long-lived, thread-safe clients this service needs — DynamoDB (the
+ * guarded transitions, the outbox item, the dedup table), SQS (the settlement and audit queues) and S3
+ * (the immutable audit trail, step 43) — plus the shared {@link ProcessedEventStore} they back. Kept
+ * in {@code infra/} so no AWS type ever leaks toward the domain (ADR-0010).
  *
  * <p>The queue URL itself is resolved by the consumer that uses it (see
  * {@code SettlementQueueConsumer}), so nothing has to travel between {@code api/} and {@code infra/} —
@@ -55,6 +56,29 @@ public class AwsClientsConfig {
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                .build();
+    }
+
+    /**
+     * The audit trail's object store (step 43).
+     *
+     * <p><b>{@code forcePathStyle}.</b> The SDK defaults to virtual-hosted addressing —
+     * {@code http://<bucket>.<host>/<key>} — which needs a wildcard DNS entry per bucket that no local
+     * emulator has. Path style puts the bucket in the path instead ({@code http://<host>/<bucket>/<key>}),
+     * which is what LocalStack serves. AWS has deprecated path style for new buckets, so this is one of
+     * the few places where the local shape genuinely differs from production and the flag would come off
+     * in a real deployment (ADR-0013 territory: the local endpoint override goes with it).
+     */
+    @Bean
+    S3Client s3Client(AwsProperties aws) {
+        log.info("Built the S3 client for the audit trail, credentials are never logged | endpoint={} "
+                + "region={} forcePathStyle=true", aws.endpointUrl(), aws.region());
+        return S3Client.builder()
+                .endpointOverride(URI.create(aws.endpointUrl()))
+                .region(Region.of(aws.region()))
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                .forcePathStyle(true)
                 .build();
     }
 

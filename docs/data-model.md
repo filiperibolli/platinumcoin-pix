@@ -1,6 +1,6 @@
 # Data Model — DynamoDB tables (and the Redis keys)
 
-All tables run on LocalStack DynamoDB, created by `infra/localstack/init` scripts. Naming: `pix_<table>`. Amounts are stored as **integer cents** (`amountCents: Number`) — never floats — to avoid rounding bugs; the API exposes decimal strings. §7 covers the **Redis** keys — cached, derived state, never a source of truth.
+All tables run on LocalStack DynamoDB, created by `infra/localstack/init` scripts. Naming: `pix_<table>`. Amounts are stored as **integer cents** (`amountCents: Number`) — never floats — to avoid rounding bugs; the API exposes decimal strings. §7 covers the **Redis** keys — cached, derived state, never a source of truth, and §8 the **S3** objects — the immutable audit trail and the cold statement archive (step 43).
 
 > **Learning note — how to model in DynamoDB:** unlike relational design (normalize, then query anything), DynamoDB design starts from the **access patterns** and shapes keys around them. Each table below lists its access patterns first; the key schema is the answer to those patterns.
 
@@ -475,7 +475,60 @@ Redis is not a table, but it is state with a schema, and — uniquely in this pl
 
 ---
 
-## 8. Capacity & local settings
+## 8. Object storage (S3) — the audit trail and the cold archive
+
+Two buckets, created by `infra/localstack/init/09-audit.sh` (step 42) and written in step 43. They hold **append-only files**, not items, but they are schema all the same: something has to read them back in five years.
+
+### 8.1 `pix-audit-log` — the immutable trail (owner: settlement-service, the only writer)
+
+| | Value |
+|---|---|
+| Key | `yyyy/MM/dd/HH/<service>-<uuid>.jsonl` — the **ingestion** hour, in UTC |
+| Body | JSON Lines: one event envelope per line, exactly as published, compacted to a single line |
+| Content type | `application/x-ndjson` |
+| Written by | `AuditWriter` (settlement-service), batched at ~100 events **or** 30s |
+| Source | `audit-queue` — the platform's one subscription with **no filter policy** |
+
+```json
+{"eventId":"evt-7a2b","eventType":"PixSettled","occurredAt":"2026-08-21T14:30:12.481Z","correlationId":"c-91f0","payload":{"txId":"tx-9f1c","amountCents":12550,"status":"SETTLED"}}
+```
+
+**The immutability posture, and what each part buys.** The bucket is created with `--object-lock-enabled-for-bucket` plus a **default retention of COMPLIANCE / 1825 days** (5 years — the BACEN retention):
+
+| Property | Why it is that and not the alternative |
+|---|---|
+| **Object Lock, COMPLIANCE mode** | GOVERNANCE mode is bypassable by any principal holding `s3:BypassGovernanceRetention` — i.e. exactly the privileged operator an audit trail exists to keep honest. COMPLIANCE cannot be shortened by anyone, root included. |
+| **Retention as a *bucket default*** | Every object inherits it at `PutObject` with no caller opt-in, so the writer **cannot forget to retain a line**. A per-object retention would be a per-object opportunity to omit one. |
+| **Versioning** | Comes with Object Lock and is frozen by it — on a locked bucket versioning is not configuration you converge, it is a property you inherit and can never suspend (an explicit `put-bucket-versioning` is rejected outright). Suspending versioning would be the first move of anyone erasing a trail. |
+| **A UUID in every key** | Keys are unique, so the trail only ever grows: two writers never contend and a retry never overwrites. On a locked bucket an overwrite would instead pile up undeletable versions of the "same" file. |
+| **Ingestion-time partition** | One flush is one object, and an object is never written into an hour a reader may already have scanned. The cost: an event delayed across the boundary lands in the next hour's prefix, so an exact-by-event-time query reads the neighbouring partition and filters on the `occurredAt` inside each line. |
+
+**Duplicates are tolerated, gaps are not.** Delivery is at-least-once. Within a batch the `eventId` collapses a redelivery to one line; across batches a duplicate line is simply possible, and that is the deliberate choice: a durable dedup gate (`pix_processed_events`, §6) would have to be marked *before* the S3 write, so a marked-then-failed write would erase an audit line permanently. Recording a fact twice is a nuisance a reader filters by `eventId`; failing to record it once is the only real error.
+
+**What LocalStack proves and what it does not.** It *enforces* the lock at the API — deleting a retained version answers `AccessDenied`, and a fresh object comes back already carrying `RetainUntilDate ≈ today + 5y` (both asserted by `S3InitIT`). What stays AWS-only is everything below the API: WORM at the storage layer, surviving a `docker compose down -v` (the emulator's state is ephemeral), replication, and IAM actually denying anything (ADR-0013).
+
+### 8.2 `pix-statement-archive` — the cold statement (owner: ledger-service, the only writer)
+
+| | Value |
+|---|---|
+| Key | `account=<accountId>/yyyy-MM.jsonl` — Hive-style partition, one object per account **and month** |
+| Body | JSON Lines: one `ArchivedEntry` per line, oldest first |
+| Written by | `StatementArchiver` (ledger-service), hourly, rewriting each month's object **whole** |
+| Source | `pix_ledger` ENTRY items older than `pix.archive.hot-window-days` |
+
+```json
+{"accountId":"acc-001","txId":"tx-9f1c","direction":"DEBIT","amountCents":-12550,"counterpartAccountId":"SPI_CLEARING","timestamp":"2026-05-04T10:00:00Z","entryType":"PIX_OUT","description":"PIX to bob@otherbank.com"}
+```
+
+**Deliberately a plain bucket** — no versioning, no Object Lock. This is *derived, rebuildable* data: the ledger stays the source of truth, so a month's object is a projection. Rewriting it whole is what makes the job idempotent and is how the boundary month grows as the window rolls forward; on a locked bucket that same behaviour would accumulate undeletable versions of a regenerable file and buy no compliance at all.
+
+**The line is not `LedgerEntry`.** It carries its own `accountId` (in the table that is the partition key, but an archive object is read alone, years later, by a process that has only the file) and the `description` (which the statement API composes at its edge — an archive without it is a statement nobody can read back). Money stays **signed integer cents**: this is an internal artefact, not an API edge, and decimal formatting is exactly the lossy convenience a five-year record must not carry.
+
+**Nothing is deleted from `pix_ledger` — locally, on purpose.** A production deployment finishes the job: once an object is written *and verified*, the entries it covers are removed (a TTL attribute on the archived items, or a bounded delete pass), and that removal is what reclaims the hot storage the cold tier exists for. It is skipped here because the emulator's S3 state is ephemeral (a `down -v` would take the archive with it, so deleting would destroy history in exchange for nothing) and because *no code path capable of deleting a ledger entry* is a stronger guarantee of append-only history (safety rule 5) than a careful one. The ports enforce it: `LedgerArchiveReader` can only read, `StatementArchive` can only write.
+
+---
+
+## 9. Capacity & local settings
 
 - All tables **on-demand** (PAY_PER_REQUEST) — no capacity planning locally, matches the auto-scaling NFR in prod.
 - No DynamoDB Streams used (polling outbox — ADR-0004); GSI3 on `pix_transactions` is sparse.

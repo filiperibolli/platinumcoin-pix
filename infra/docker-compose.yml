@@ -101,8 +101,9 @@ services:
       # Must match auth-service's JWT_SECRET — ledger-service only validates tokens. Every one of
       # its endpoints is authenticated (/internal/** is not on jwt.public-paths).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
-      # Reach LocalStack (SNS/SQS — ledger-service uses neither today, kept for parity with the other
-      # services' AwsProperties shape) by service name on the shared network.
+      # Reach LocalStack by service name on the shared network. Since step 43 this is a REAL dependency
+      # of this service and not parity boilerplate: the statement cold-archive job writes S3
+      # pix-statement-archive through this endpoint (SNS/SQS remain unused here).
       AWS_ENDPOINT_URL: http://localstack:4566
       # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
       # see AwsProperties#dynamoDbEndpointUrl.
@@ -116,6 +117,19 @@ services:
       # (bounded by the 5s TTL), never correctness, which is why this is not a hard dependency below.
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # The statement cold archive (step 43). ledger-service owns pix_ledger, so it is the service that
+      # archives it. The window is where the ONLINE statement ends and the cold archive begins; nothing
+      # is ever deleted from the ledger locally (ArchiveOldEntriesUseCase documents the prod difference).
+      #
+      # 0 rather than the 90-day default ON PURPOSE for the sandbox: a freshly seeded stack has no entry
+      # older than 90 days, so the demo job would archive nothing and look broken. With 0 the cutoff is
+      # "now" and every posting is archived on the next run — which is what makes
+      #   aws --endpoint-url=http://localhost:4566 s3 ls s3://pix-statement-archive/ --recursive
+      # show something a minute after a Pix (docs/local-dev.md §7).
+      STATEMENT_ARCHIVE_HOT_WINDOW_DAYS: "0"
+      # Every minute in the sandbox instead of the hourly production default, for the same reason: a demo
+      # should not have to wait an hour to see the job work.
+      STATEMENT_ARCHIVE_DELAY_MS: "60000"
     depends_on:
       localstack:
         condition: service_healthy
@@ -334,7 +348,8 @@ services:
       # ledger-service, called on a definitive outcome (step 33): CLEARING_RELEASE on settlement, the
       # compensating reversal on a permanent refusal. Reached by service name on the shared network.
       LEDGER_BASE_URL: http://ledger-service:8085
-      # Reach LocalStack (SQS) by service name on the shared network.
+      # Reach LocalStack (SQS + S3) by service name on the shared network. S3 joins in step 43: this
+      # service is the platform's audit writer, appending every event as JSON lines to pix-audit-log.
       AWS_ENDPOINT_URL: http://localstack:4566
       # DynamoDB lives in its own standalone container, not LocalStack (docs/load/BOTTLENECK.md) —
       # see AwsProperties#dynamoDbEndpointUrl.

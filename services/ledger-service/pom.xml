@@ -56,6 +56,14 @@
              exactly ONE reason: to DELETE the balance keys a posting made stale (ADR-0008 invalidation
              on write, RedisBalanceCacheInvalidator). It never reads a balance from Redis; the money
              decision is the conditional write in DynamoDB. Confined to infra/, as always. -->
+        <!-- S3 SDK v2: the statement cold archive (step 43). ledger-service owns pix_ledger, so it is
+             the service that archives it — no other service may read the table (ADR-0006). Confined to
+             infra/; the ArchUnit test fails the build if domain/ imports it. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
