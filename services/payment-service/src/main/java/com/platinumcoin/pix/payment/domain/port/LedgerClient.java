@@ -2,7 +2,9 @@ package com.platinumcoin.pix.payment.domain.port;
 
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.payment.domain.model.StatementPage;
 
 /**
  * Outbound port for the ledger seam — ledger-service is the platform's only writer <i>and</i> the only
@@ -85,4 +87,22 @@ public interface LedgerClient {
      *                                    {@code 503}
      */
     long readBalanceCents(String accountId);
+
+    /**
+     * One page of {@code accountId}'s statement, newest first (step 41) — the read half of the seam
+     * this method shares with {@link #readBalanceCents}, against ledger-service's
+     * {@code GET /internal/ledger/accounts/{id}/entries} (step 16). {@code cursor} is the opaque token
+     * from a previous page ({@code null}/blank for the first), and {@code limit} is already the
+     * effective page size the use case decided — this port does no clamping of its own.
+     *
+     * <p>The cursor stays opaque all the way through this call: only ledger-service can decode it (it
+     * is an AWS key), and only ledger-service can enforce that it belongs to {@code accountId} — this
+     * client sends the account the caller actually owns (the JWT's, never a client-supplied one) and
+     * lets the ledger's own check answer for a forged token.
+     *
+     * @throws InvalidStatementCursorException the cursor is malformed or names a different account
+     * @throws LedgerUnavailableException      the ledger was unreachable, timed out, or answered
+     *                                          unexpectedly
+     */
+    StatementPage readStatement(String accountId, String cursor, int limit);
 }

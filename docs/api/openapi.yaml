@@ -530,15 +530,20 @@ components:
     StatementEntry:
       type: object
       properties:
-        entryId: { type: string }
         txId: { type: string }
         direction: { type: string, enum: [DEBIT, CREDIT] }
-        amount: { type: string, example: "-125.50" }
+        amount:
+          type: string
+          example: "-125.50"
+          description: Signed decimal BRL string — negative on a DEBIT, positive on a CREDIT
         counterpart:
           type: string
-          description: Masked counterpart display (never an internal account id)
-          example: "bob@oth***nk.com"
-        description: { type: string }
+          description: >-
+            A partial mask over the counterpart's internal account id (never the id itself, step 41) —
+            a short prefix and suffix around a fixed "***". This is the raw ledger account id, not a
+            Pix key or a display name: resolving the counterpart's Pix key/name is a call to
+            account-service this endpoint does not make.
+          example: "acc***01"
         timestamp: { type: string, format: date-time }
     PixKey:
       type: object

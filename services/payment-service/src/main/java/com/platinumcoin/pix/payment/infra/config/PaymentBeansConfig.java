@@ -12,6 +12,7 @@ import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
 import com.platinumcoin.pix.payment.domain.usecase.GetBalanceUseCase;
+import com.platinumcoin.pix.payment.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
@@ -87,6 +88,12 @@ public class PaymentBeansConfig {
     @Bean
     GetBalanceUseCase getBalanceUseCase(BalanceCache balanceCache, LedgerClient ledger, Clock clock) {
         return new GetBalanceUseCase(balanceCache, ledger, clock);
+    }
+
+    /** The public statement read (step 41), proxying ledger-service's internal seam — no cache here. */
+    @Bean
+    GetStatementUseCase getStatementUseCase(LedgerClient ledger) {
+        return new GetStatementUseCase(ledger);
     }
 
     /**

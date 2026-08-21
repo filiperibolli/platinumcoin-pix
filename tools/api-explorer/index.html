@@ -257,16 +257,57 @@
     .jstep.done .jnum { background: var(--accent-soft); color: var(--ok); border-color: var(--accent-line); }
     .jstep.fail .jnum { background: rgba(226,98,111,.12); color: var(--err); border-color: rgba(226,98,111,.4); }
     .jbody { flex: 1; min-width: 0; }
-    .jhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-    .jtitle { font: 600 13.5px var(--sans); color: var(--text); }
+    /* The whole header toggles the step open/closed, so it has to advertise that it is clickable. */
+    .jhead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer;
+      user-select: none; }
+    .jhead:hover .jtitle { color: var(--accent); }
+    .jtitle { font: 600 13.5px var(--sans); color: var(--text); transition: color .14s; }
     .jcall { font: 500 11.5px var(--mono); color: var(--faint); }
-    .jstate { margin-left: auto; font: 600 11.5px var(--mono); color: var(--muted); }
+    /* "run #3 · 11:42:03" — what makes a re-click of an already-passing step visibly change something. */
+    .jruns { margin-left: auto; font: 500 10.5px var(--mono); color: var(--faint);
+      background: var(--bg-1); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; }
+    .jstate { font: 600 11.5px var(--mono); color: var(--muted); }
     .jstep.done .jstate { color: var(--ok); } .jstep.fail .jstate { color: var(--err); }
+    .jstep.running .jstate { color: var(--blue); }
+    .jhead .chev { align-self: center; transform: rotate(90deg); }
+    .jstep.collapsed .jhead .chev { transform: rotate(0deg); }
+    .jstep.collapsed .jwhy, .jstep.collapsed .jout { display: none; }
+    /* The one place a step is still worth looking at while collapsed: it is working. */
+    .jstep.running { background: var(--surface-2); }
+    .jspin { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+      border: 2px solid var(--line-2); border-top-color: var(--blue); animation: jspin .7s linear infinite;
+      vertical-align: -1px; }
+    @keyframes jspin { to { transform: rotate(360deg); } }
     .jwhy { font-size: 12.5px; color: var(--text-2); line-height: 1.6; margin: 7px 0 0; }
     .jwhy b { color: var(--text); font-weight: 600; }
     .jout { margin-top: 10px; }
     .jout pre { margin: 0; max-height: 220px; font-size: 12px; }
     .jstep button.mini { padding: 5px 11px; font-size: 12px; }
+
+    /* The wire transcript: what a step actually put on the network, request above response. Stacked
+       rather than side-by-side because a journey with the phone docked leaves this column ~540px, and
+       two columns of JSON at that width are unreadable. */
+    .wire { margin-top: 9px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+      background: var(--bg-1); }
+    .wire-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 10px;
+      background: var(--surface-2); border-bottom: 1px solid var(--line); }
+    .wire-n { font: 700 10.5px var(--mono); color: var(--faint); }
+    .wire-head .method { padding: 3px 7px; min-width: 44px; font-size: 10px; }
+    .wire-url { font: 500 11.5px var(--mono); color: var(--text-2); word-break: break-all; flex: 1 1 240px;
+      min-width: 0; }
+    .wire-status { margin-left: auto; font: 700 11.5px var(--mono); }
+    .wire-status.ok { color: var(--ok); } .wire-status.bad { color: var(--err); }
+    .wire-sec { padding: 8px 10px; }
+    .wire-sec + .wire-sec { border-top: 1px dashed var(--line); }
+    .wire-label { font: 700 9.5px var(--sans); letter-spacing: .1em; text-transform: uppercase;
+      color: var(--faint); margin-bottom: 5px; }
+    .wire-label .cid { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--muted);
+      font-family: var(--mono); }
+    .wire pre { margin: 0; max-height: 210px; font-size: 11.5px; }
+    .wire-more { margin-top: 9px; padding: 8px 10px; border: 1px dashed var(--line-2); border-radius: 8px;
+      text-align: center; font: 500 11.5px var(--mono); color: var(--muted); cursor: pointer;
+      background: var(--bg-1); transition: color .14s, border-color .14s; }
+    .wire-more:hover { color: var(--text-2); border-color: var(--muted); }
 
     .footnote { margin-top: 28px; font-size: 12px; color: var(--faint); line-height: 1.6; }
   </style>
@@ -376,6 +417,54 @@
       }
     }
 
+    // ---- The journey wire log -----------------------------------------------------------------
+    // While a journey step is running this holds an array; every call the step makes appends to it, and
+    // the step card renders the pairs. Instrumenting send() rather than asking each step to describe its
+    // own request is what keeps this honest: the transcript is the traffic that actually happened, so a
+    // step cannot show one request and send another, and a step that fires seven sends shows seven
+    // without a line of extra code. Outside a step it is null and recording is a no-op.
+    let wireLog = null;
+
+    function wireRecord(entry) {
+      if (wireLog) wireLog.push(entry);
+    }
+
+    /** A JWT summarised to its claims — the explorer never prints a whole token (ADR-0012). */
+    function summariseJwt(token) {
+      try {
+        const p = JSON.parse(atob(String(token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return `eyJ… (claims: ${p.sub} · account ${p.accountId})`;
+      } catch (_) { return 'eyJ… (unreadable)'; }
+    }
+
+    /**
+     * Credentials never reach the transcript. The bearer token is summarised to its claims and the shared
+     * webhook token is replaced outright — both would otherwise land in screenshots and pasted transcripts,
+     * which is exactly the sandbox-logging line ADR-0012 draws (log the values, never the secrets).
+     */
+    function redactHeaders(h) {
+      const out = {};
+      Object.entries(h || {}).forEach(([k, v]) => {
+        const key = k.toLowerCase();
+        if (key === 'authorization') out[k] = 'Bearer ' + summariseJwt(String(v).replace(/^Bearer\s+/i, ''));
+        else if (key === 'x-webhook-token') out[k] = '«shared webhook token — not printed»';
+        else out[k] = v;
+      });
+      return out;
+    }
+
+    /** The same rule on the way back: a login response carries the token itself. */
+    function redactBodyText(text) {
+      if (!text) return text;
+      try {
+        const o = JSON.parse(text);
+        if (o && typeof o === 'object' && o.accessToken) {
+          return JSON.stringify({ ...o, accessToken: summariseJwt(o.accessToken) }, null, 2);
+        }
+        return JSON.stringify(o, null, 2);
+      } catch (_) { return text; }
+    }
+
     // ---- Core request helper ------------------------------------------------------------------
     async function send({ method, path, headers = {}, body = null, auth = false, base = null, token = null }) {
       const h = { ...headers };
@@ -388,6 +477,10 @@
       try {
         res = await fetch(target, { method, headers: h, body });
       } catch (e) {
+        // Recorded too: a step that failed on CORS or a service that is down must still show WHAT it
+        // tried to send — that request is the whole diagnosis.
+        wireRecord({ method, url: target, headers: redactHeaders(h), body, ok: false, status: 0,
+          statusText: 'network / CORS failure', responseText: e.message, correlationId: null });
         throw new Error('Request failed (network or CORS). Is the service up at ' + (base || authBase())
           + ' and is CORS enabled? Original: ' + e.message);
       }
@@ -398,6 +491,8 @@
       // fetch can read it — surfacing it here is what lets you copy the id and `grep <cid>` the logs of
       // every service the request touched (ADR-0012). On a 4xx it is also in the problem+json body.
       const correlationId = res.headers.get('X-Correlation-Id');
+      wireRecord({ method, url: target, headers: redactHeaders(h), body, ok: res.ok, status: res.status,
+        statusText: res.statusText, responseText: redactBodyText(text), correlationId });
       return { ok: res.ok, status: res.status, statusText: res.statusText, bodyText: text, json, correlationId };
     }
 
@@ -620,6 +715,16 @@
           {
             method: 'GET', path: '/v1/accounts/me/balance', title: 'Balance after a send — invalidated, not stale', auth: true, capturesToken: false,
             desc: 'Invalidation-on-write, seen from the client (step 40). ORDER: press Send here (the number is now cached), then run "Send Pix — alice → bob (202)" above, then press Send here again. The new balance appears IMMEDIATELY — nothing waited for the 5s TTL, because ledger-service deleted balance:&lt;debit&gt; and balance:&lt;credit&gt; in one variadic DEL right AFTER its TransactWriteItems committed, so this read is a fresh miss. WHY AFTER AND NOT BEFORE: evicting first opens a window in which a concurrent reader misses, reads the still-pre-commit balance and repopulates the cache with the OLD number — and nothing invalidates it a second time, so the stale value would survive a whole TTL. WHY THE LEDGER DOES IT AND NOT THIS SERVICE: only the writer knows the instant a cached balance became a lie. WHY IT IS BEST-EFFORT: the money is already durable, so a Redis blip must not turn a committed posting into an error for a caller whose debit landed — the eviction is swallowed with a WARN, and the short TTL is the backstop that bounds how long the wrong number can be shown. To SEE that backstop, stop Redis before the send and start it after: the DEL is lost, this card shows the old balance, and it corrects itself within five seconds.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/accounts/me/statement?limit=5', title: 'Statement — page 1 (newest first, limit 5)', auth: true, capturesToken: false,
+            desc: 'The paginated history behind the balance (step 41), proxying ledger-service\'s internal statement seam (step 16) the same way GET /v1/accounts/me/balance proxies its ledger read. SEND A FEW PIX FIRST (the cards above) so there is history to see. entries ARE NEWEST FIRST and money is a SIGNED DECIMAL STRING at this edge — negative on a DEBIT, positive on a CREDIT — the one place amountCents becomes "-125.50" for a human. counterpart IS MASKED: a short prefix and suffix around a fixed "***" (e.g. "acc***01") over the OTHER LEG\'S INTERNAL ACCOUNT ID — never the raw id itself, which a client could otherwise reuse to probe accounts that are not theirs. That is a partial mask over the ledger\'s own account id, not a Pix-key lookup: resolving the counterpart to a Pix key or display name would be a call to account-service this endpoint deliberately does not make (out of scope for this step; see docs/api/openapi.yaml). nextCursor IS OPAQUE — this card only shows it, never decodes it — and is null exactly on the last page. THE ACCOUNT COMES FROM YOUR TOKEN, same Domain Safety Rule #1 mechanism as the balance: there is no path or query parameter that could name another account. limit is CLAMPED at this edge independently of ledger-service\'s own clamp (default 20, max 100, floored at 1) — payment-service does not trust an internal collaborator to enforce the public contract it promises callers.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/accounts/me/statement?cursor=not-a-valid-cursor', title: 'Statement — tampered cursor (400 INVALID_CURSOR)', auth: true, capturesToken: false,
+            desc: 'cursor IS OPAQUE, by design: it is the base64 of a DynamoDB LastEvaluatedKey that only ledger-service can decode, so payment-service never inspects it — it is bound and forwarded as-is. A string that isn\'t a real cursor (this one) fails ledger-service\'s decode and comes back 400 INVALID_CURSOR, which payment-service passes straight through rather than mapping to a 503 that would invite retrying a request that can never succeed. THE SAME CODE ANSWERS A CURSOR MINTED FOR A DIFFERENT ACCOUNT (step 16): the cursor embeds the account it was issued for, so a token you didn\'t get from your own statement is refused the same way — a forged/reused cursor can never page someone else\'s history, which is this read\'s version of Domain Safety Rule #1.',
             headers: {}, body: null,
           },
           {
@@ -1080,16 +1185,32 @@
     async function phoneConnect(withToken) {
       const streamToken = withToken || accessToken;
       if (!streamToken) { toast('Log in first', 'the stream is authenticated', 'bad'); return; }
+      // The state flips BEFORE the first await, and that ordering is load-bearing. Journey steps start
+      // this without awaiting it and then poll `phone.state !== 'live'`; if the flag were still 'live'
+      // from a PREVIOUS connection while this call sat on the disconnect below, the poll would exit at
+      // once and the step would report success for the old stream — one opened with another user's
+      // token, since a journey routinely reconnects the phone as somebody else.
+      phone.state = 'connecting';
+      phoneRender();
       if (phone.abort) { phone.abort.abort(); await new Promise((r) => setTimeout(r, 120)); }
       const base = baseOf('notification');
       phone.abort = new AbortController();
-      phone.state = 'connecting';
-      phoneRender();
       try {
         // fetch, not EventSource: EventSource cannot set an Authorization header (the very limitation
         // the service's ?access_token= handshake exists for). A real mobile app has no such limit.
         const res = await fetch(base + '/v1/notifications/stream',
           { headers: { 'Authorization': 'Bearer ' + streamToken }, signal: phone.abort.signal });
+        // The one call that does not go through send() (it is a held-open stream, not a request/response),
+        // so it records itself — otherwise the "open the stream" step of three journeys would be the only
+        // one showing no request at all. Recorded BEFORE phone.state flips to 'live', because that flag is
+        // what the journey step is waiting on: after it, the step returns and the log is closed.
+        wireRecord({ method: 'GET', url: base + '/v1/notifications/stream',
+          headers: redactHeaders({ 'Authorization': 'Bearer ' + streamToken, 'Accept': 'text/event-stream' }),
+          body: null, ok: res.ok, status: res.status, statusText: res.statusText,
+          correlationId: res.headers.get('X-Correlation-Id'),
+          responseText: res.ok
+            ? '(the connection stays open — frames are written to it as money moves, and appear on the phone)'
+            : '(refused — no stream)' });
         if (!res.ok) {
           phone.state = 'error'; phone.abort = null; phoneRender();
           toast(`${res.status} ${res.statusText}`, 'GET /v1/notifications/stream', 'bad');
@@ -1399,11 +1520,15 @@
      * summarised, never dumped (it is a long opaque credential that ends up in screenshots and pasted
      * transcripts); a journey step must not be the one place that breaks it. What matters here is that a
      * token was issued and which account it carries — both of which are shown.
+     *
+     * <p>It delegates to {@code redactBodyText}, the same redaction the wire transcript applies, for two
+     * reasons: one rule in one place, and byte-identical output, which is what lets the step card notice
+     * this body merely repeats the response it already rendered and drop the duplicate. It also reads the
+     * claims out of <b>this</b> response's token rather than out of the global session — a journey acting
+     * as two users would otherwise label bob's login with alice's account.
      */
     function redactedLogin(r) {
-      if (!r.json || !r.json.accessToken) return pretty(r);
-      const claims = identity ? `${identity.userId} · account ${identity.accountId}` : 'unreadable';
-      return JSON.stringify({ ...r.json, accessToken: `eyJ… (captured into the session — claims: ${claims})` }, null, 2);
+      return redactBodyText(r.bodyText) || pretty(r);
     }
 
     /** Balance of a ledger account, in integer cents — the number every money assertion is made on. */
@@ -1727,6 +1852,190 @@
 
       // ---------------------------------------------------------------------------------------- //
       {
+        id: 'balance', name: 'Balance & statement', phone: false,
+        title: 'Read the money — a cached balance, then the statement, paged',
+        blurb: 'Sprint 9, the READ side of the platform (steps 40–41). Balance is the highest-volume call the '
+          + 'platform serves (~10 per transaction, every time anyone opens the app) and has a hard 300ms p99 '
+          + 'budget, so it is served cache-aside from Redis; the statement behind it is paged with an opaque '
+          + 'cursor. The journey generates its own history first, so there is something to page through — and '
+          + 'the whole point of the flow is that a cache in front of money is safe precisely because NOTHING '
+          + 'here can authorize a payment: the balance >= amount guard is a condition inside the ledger\'s own '
+          + 'transaction, so a stale cache changes what you SEE, never what the ledger ALLOWS.',
+        steps: [
+          {
+            title: 'bob registers his key (setup)', call: 'POST :8081 login + POST :8082 /v1/pix-keys',
+            why: 'The mass-data step below pays a <b>key</b>, so the key has to exist in our directory first. '
+              + 'A key already registered answers <b>409</b>, which is a fine outcome here.',
+            run: async (ctx) => {
+              const login = await doLogin('bob', 'bob');
+              ctx.bobToken = login.json && login.json.accessToken;
+              const r = await send({ method: 'POST', base: baseOf('account'), token: ctx.bobToken,
+                path: '/v1/pix-keys', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'bob@platinum.com' }) });
+              return { ok: r.ok || r.status === 409,
+                state: r.status === 409 ? '409 already registered' : `${r.status}` };
+            },
+          },
+          {
+            title: 'Log in as alice (whose money we read)', call: 'POST :8081 /v1/auth/login',
+            why: 'Everything below is <code>/me</code>: the account comes from this token\'s <b>accountId</b> '
+              + 'claim. Neither the balance nor the statement has a path or query parameter that could name '
+              + 'another account — "read someone else\'s money" is not a request this API can express, which is '
+              + 'the same mechanism that protects the debited account on a send (Domain Safety Rule #1).',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              ctx.vars.account = identity ? identity.accountId : '';
+              return { ok: r.ok, state: `${r.status} ${r.statusText}` };
+            },
+          },
+          {
+            title: 'Balance, read TWICE — a miss, then a hit', call: 'GET :8084 /v1/accounts/me/balance ×2',
+            why: 'Both calls are in this one step deliberately: they must land inside the same 5s TTL for the '
+              + 'second to be a hit. The proof is <code>asOf</code> — it reports <b>when the ledger was read</b>, '
+              + 'and a cache hit returns the <i>original</i> instant instead of re-stamping itself fresh. Two '
+              + 'identical <code>asOf</code> values in the transcript below mean the second call never reached '
+              + 'ledger-service. That is also the honest staleness contract: a client can subtract it and know '
+              + 'exactly how old the number is.',
+            run: async (ctx) => {
+              const first = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/balance' });
+              const second = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/balance' });
+              if (!first.ok || !second.ok) {
+                return { ok: false, state: `${first.status} / ${second.status}`, body: pretty(second) };
+              }
+              const hit = first.json.asOf === second.json.asOf;
+              ctx.balanceBefore = Math.round(parseFloat(second.json.balance) * 100);
+              ctx.vars.balance = second.json.balance;
+              return { ok: hit, state: hit ? 'same asOf → cache hit ✓' : 'asOf moved → both were misses',
+                body: `call 1 asOf = ${first.json.asOf}\ncall 2 asOf = ${second.json.asOf}\n`
+                  + `balance     = ${second.json.balance} (${ctx.balanceBefore} cents)\n\n`
+                  + (hit ? 'Identical: the second read was served from Redis without touching the ledger.'
+                        : 'They differ — more than the 5s TTL elapsed between the calls, so both went to the ledger.') };
+            },
+          },
+          {
+            title: 'Generate history: 7 Pix of R$ 1,00 to bob', call: 'POST :8084 /v1/payments/pix ×7',
+            why: 'The mass-data step — a statement with three entries cannot demonstrate pagination, so the '
+              + 'journey makes its own. These are <b>real internal Pix</b>, not seeded rows: each one takes the '
+              + 'full path (idempotency claim → daily limit → fraud → atomic double-entry posting), which is why '
+              + 'each entry that shows up in the statement below is a payment that genuinely happened. Every '
+              + 'send carries its own fresh <code>Idempotency-Key</code>, exactly as a real client would mint '
+              + 'one per payment — reusing a single key here would replay the first payment seven times and '
+              + 'produce <i>one</i> debit, which is the whole guarantee of ADR-0002.',
+            run: async (ctx) => {
+              const txIds = [];
+              for (let i = 0; i < 7; i++) {
+                const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                  path: '/v1/payments/pix',
+                  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+                  body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '1.00',
+                    description: `journey mass ${i + 1}/7` }) });
+                if (r.status !== 202) {
+                  return { ok: false, state: `stopped at ${i + 1}/7 · ${r.status}`, body: pretty(r) };
+                }
+                txIds.push(r.json.transactionId);
+              }
+              ctx.massTxIds = txIds;
+              ctx.vars.generated = `${txIds.length} Pix · R$ 7,00`;
+              if (txIds.length) captureTxId(txIds[txIds.length - 1]);
+              return { ok: txIds.length === 7, state: `7 × 202 · R$ 7,00 moved`,
+                body: `7 payments accepted, R$ 1,00 each:\n` + txIds.map((t, i) => `${i + 1}. ${t}`).join('\n') };
+            },
+          },
+          {
+            title: 'Balance again — invalidated, not stale', call: 'GET :8084 /v1/accounts/me/balance',
+            why: 'Exactly R$ 7,00 lighter, and <b>nothing waited for the TTL</b>: ledger-service deleted '
+              + '<code>balance:&lt;accountId&gt;</code> right AFTER each posting committed, so this read is a '
+              + 'fresh miss. Evicting <i>after</i> the commit rather than before is the subtle half — evicting '
+              + 'first opens a window in which a concurrent reader repopulates the cache with the still-'
+              + 'pre-commit number, and nothing invalidates it a second time, so the wrong value would survive '
+              + 'a whole TTL. The eviction is best-effort (a Redis blip must not fail a committed payment); the '
+              + '5s TTL is the backstop that bounds how long a lost eviction can show a stale number.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/balance' });
+              if (!r.ok) return { ok: false, state: `${r.status}`, body: pretty(r) };
+              const now = Math.round(parseFloat(r.json.balance) * 100);
+              const delta = now - ctx.balanceBefore;
+              ctx.vars.balance = r.json.balance;
+              return { ok: delta === -700, state: `${money(delta)}`,
+                body: `before = ${ctx.balanceBefore} cents\nafter  = ${now} cents\n`
+                  + `delta  = ${delta} cents (expected -700)` };
+            },
+          },
+          {
+            title: 'Statement — page 1 (limit 5)', call: 'GET :8084 /v1/accounts/me/statement?limit=5',
+            why: 'The public read model over the ledger. Three things to notice in the response: entries are '
+              + '<b>newest first</b> (free from the key design — the sort key is <code>ENTRY#&lt;timestamp&gt;#'
+              + '&lt;txId&gt;</code>, so a range query read backwards is already reverse-chronological, with no '
+              + 'sort anywhere); <code>amount</code> is a <b>signed decimal string</b> formatted at this edge '
+              + 'and nowhere earlier (money is integer cents everywhere inside); and <code>counterpart</code> is '
+              + '<b>masked</b> — a client never receives the raw internal account id of the other leg.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/statement?limit=5' });
+              if (!r.ok) return { ok: false, state: `${r.status}`, body: pretty(r) };
+              const entries = r.json.entries || [];
+              ctx.page1 = entries.map((e) => e.txId);
+              ctx.cursor = r.json.nextCursor;
+              ctx.vars.nextCursor = ctx.cursor ? ctx.cursor.slice(0, 18) + '…' : '(none)';
+              // Non-increasing rather than strictly decreasing: the sort key has millisecond resolution, so
+              // two entries written inside the same millisecond legitimately tie and are ordered by txId.
+              const ordered = entries.every((e, i) => i === 0 || entries[i - 1].timestamp >= e.timestamp);
+              const decimal = entries.every((e) => /^-?\d+\.\d{2}$/.test(e.amount));
+              const masked = entries.every((e) => String(e.counterpart).includes('***'));
+              const ok = entries.length === 5 && ordered && decimal && masked && !!ctx.cursor;
+              return { ok, state: `${entries.length} entries · nextCursor ${ctx.cursor ? 'present' : 'null'}`,
+                body: `newest first        : ${ordered ? 'yes ✓' : 'NO ✗'}\n`
+                  + `amounts decimal     : ${decimal ? 'yes ✓' : 'NO ✗'}\n`
+                  + `counterpart masked  : ${masked ? 'yes ✓' : 'NO ✗'}  e.g. ${entries[0] ? entries[0].counterpart : '—'}\n`
+                  + `nextCursor          : ${ctx.cursor ? 'present ✓ (there is more history)' : 'null ✗'}` };
+            },
+          },
+          {
+            title: 'Statement — page 2, via the cursor', call: 'GET :8084 /v1/accounts/me/statement?cursor=…',
+            why: 'The cursor is the base64 of DynamoDB\'s own <code>LastEvaluatedKey</code> and is <b>opaque '
+              + 'end to end</b>: payment-service does not decode it, it forwards it — only ledger-service can, '
+              + 'because it is an AWS key. There is no offset in DynamoDB, which is precisely why pagination is '
+              + 'a continuation token and not a page number. This page must not repeat a single txId from page '
+              + '1: no overlap, no gap.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: `/v1/accounts/me/statement?limit=5&cursor=${encodeURIComponent(ctx.cursor || '')}` });
+              if (!r.ok) return { ok: false, state: `${r.status}`, body: pretty(r) };
+              const entries = r.json.entries || [];
+              const overlap = entries.filter((e) => (ctx.page1 || []).includes(e.txId));
+              return { ok: entries.length > 0 && overlap.length === 0,
+                state: `${entries.length} entries · ${overlap.length} overlapping`,
+                body: `page 1 txIds : ${(ctx.page1 || []).length}\npage 2 txIds : ${entries.length}\n`
+                  + `overlapping  : ${overlap.length} (must be 0)\n`
+                  + `nextCursor   : ${r.json.nextCursor ? 'present — still more history' : 'null — last page'}` };
+            },
+          },
+          {
+            title: 'A tampered cursor is refused', call: 'GET :8084 /v1/accounts/me/statement?cursor=…',
+            why: 'The failure branch that matters for a read. A cursor that will not decode — and, identically, '
+              + 'a well-formed one minted for a <b>different account</b> — is <b>400 INVALID_CURSOR</b>. The '
+              + 'cursor embeds the partition it was issued for, so a forged token hands the ledger a key that '
+              + 'does not match the account payment-service asked about, and it is refused rather than silently '
+              + 'paging someone else\'s history. Note it is a <b>400 and not a 503</b>: a bad cursor will never '
+              + 'succeed on retry, so telling the client to try again would be a lie.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/statement?cursor=not-a-valid-cursor' });
+              const code = r.json && r.json.code;
+              return { ok: r.status === 400 && code === 'INVALID_CURSOR',
+                state: `${r.status} · ${code || ''}`,
+                note: r.status === 400 ? 'problem+json, with the correlationId that greps every service log.' : null };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
         id: 'reversal', name: 'Reversal', phone: true,
         title: 'BACEN refuses — the money comes back, by a compensating posting',
         blurb: 'The failure branch, driven on purpose. A permanent refusal cannot "undo" a ledger entry, because '
@@ -1931,10 +2240,12 @@
       const main = $('jrnMain');
       const bar = document.createElement('div');
       bar.className = 'jrn-bar';
+      const allCollapsed = journey.steps.every((_, i) => stepCollapsed.has(`${journey.id}:${i}`));
       bar.innerHTML = `<button id="jrnRun">${ICON.send}Run all ${journey.steps.length} steps</button>`
         + `<button id="jrnReset" class="ghost">Reset</button>`
+        + `<button id="jrnFold" class="ghost">${allCollapsed ? 'Expand all' : 'Collapse all'}</button>`
         + `<span class="muted" style="font-size:12px;">…or run any step on its own — they share the ids the`
-        + ` previous ones captured.</span>`;
+        + ` previous ones captured. Click a step's title to fold it away.</span>`;
       main.appendChild(bar);
 
       const vars = document.createElement('div');
@@ -1951,7 +2262,14 @@
       }
 
       $('jrnRun').onclick = () => runJourney(journey);
-      $('jrnReset').onclick = () => { journeyState[journey.id] = { ctx: { vars: {} }, results: [] }; renderPanel(); };
+      $('jrnReset').onclick = () => { resetJourney(journey); renderPanel(); };
+      $('jrnFold').onclick = () => {
+        journey.steps.forEach((_, i) => {
+          const k = `${journey.id}:${i}`;
+          if (allCollapsed) stepCollapsed.delete(k); else stepCollapsed.add(k);
+        });
+        renderPanel();
+      };
     }
 
     function renderJourneyVars(ctx) {
@@ -1965,24 +2283,41 @@
     function journeyStepCard(journey, step, index) {
       const run = journeyRun(journey);
       const result = run.results[index];
+      const key = `${journey.id}:${index}`;
+      const running = run.runningIndex === index;
+      const collapsed = stepCollapsed.has(key) && !running;
       const card = document.createElement('div');
-      card.className = 'jstep' + (result ? (result.ok ? ' done' : ' fail') : '');
+      card.className = 'jstep'
+        + (running ? ' running' : (result ? (result.ok ? ' done' : ' fail') : ''))
+        + (collapsed ? ' collapsed' : '');
+      const badge = result && result.runNo
+        ? `<span class="jruns">run #${result.runNo} · ${escapeHtml(result.at)}</span>` : '';
       card.innerHTML = `
-        <div class="jnum">${result && result.ok ? '✓' : index + 1}</div>
+        <div class="jnum">${running ? '<span class="jspin"></span>' : (result && result.ok ? '✓' : index + 1)}</div>
         <div class="jbody">
           <div class="jhead">
             <span class="jtitle">${step.title}</span>
             <span class="jcall">${escapeHtml(step.call)}</span>
-            <span class="jstate">${result ? escapeHtml(result.state) : ''}</span>
+            ${badge || '<span class="jruns" style="visibility:hidden"></span>'}
+            <span class="jstate">${running ? 'running…' : (result ? escapeHtml(result.state) : '')}</span>
+            ${ICON.chev}
           </div>
           <p class="jwhy">${step.why}</p>
           <div class="jout"></div>
         </div>`;
 
+      card.querySelector('.jhead').onclick = () => {
+        if (stepCollapsed.has(key)) stepCollapsed.delete(key); else stepCollapsed.add(key);
+        renderPanel();
+      };
+
       const out = card.querySelector('.jout');
       const btn = document.createElement('button');
       btn.className = 'ghost mini';
-      btn.innerHTML = `${ICON.send}Run step ${index + 1}`;
+      btn.disabled = running;
+      btn.innerHTML = running
+        ? `<span class="jspin"></span>&nbsp;Running…`
+        : `${ICON.send}Run step ${index + 1}`;
       btn.onclick = () => runStep(journey, index);
       out.appendChild(btn);
 
@@ -1993,26 +2328,151 @@
           note.textContent = '→ ' + result.note;
           out.appendChild(note);
         }
-        if (result.body) {
+        const wire = result.wire || [];
+        // A step's own `body` is usually just pretty(response) — the transcript now shows that verbatim,
+        // so printing it again would double every card. What survives the comparison is the interesting
+        // kind: the computed assertion (`sum of deltas = 0`, `before → after`), which no response carries.
+        const lastResponse = wire.length ? wire[wire.length - 1].responseText : null;
+        if (result.body && result.body !== lastResponse) {
+          if (wire.length) {
+            const label = document.createElement('div');
+            label.className = 'wire-label';
+            label.style.marginTop = '10px';
+            label.textContent = 'What the step checked';
+            out.appendChild(label);
+          }
           const pre = document.createElement('pre');
           pre.textContent = result.body;
           out.appendChild(pre);
         }
+        renderWire(wire, out, `${journey.id}:${index}`);
       }
       return card;
     }
 
-    async function runStep(journey, index) {
+    /** Steps whose folded middle the reader has expanded, keyed `<journeyId>:<stepIndex>`. */
+    const wireExpanded = new Set();
+
+    /**
+     * Steps the reader has collapsed, keyed `<journeyId>:<stepIndex>`. Collapsed is the exception, not
+     * the default: a journey is meant to be read top to bottom, and the prose under each title is the
+     * part that teaches. Once a step has run, though, its transcript can be a screenful of JSON, so the
+     * header folds the whole card away and leaves the line that still matters — number, title, status.
+     */
+    const stepCollapsed = new Set();
+
+    /**
+     * The request/response transcript of one step.
+     *
+     * <p>Everything is shown for a step that made one or two calls. Beyond three the middle folds into a
+     * single clickable row, because the two calls that carry the meaning are the first and the last: the
+     * mass-data step fires seven sends and the poll step up to twenty-five, and a card that dumps all of
+     * them buries the flow it is supposed to show. The count stays visible, so nothing is hidden — only
+     * collapsed.
+     */
+    function renderWire(wire, out, key) {
+      if (!wire || !wire.length) return;
+      const folded = wire.length > 3 && !wireExpanded.has(key);
+      const lastIndex = wire.length - 1;
+      wire.forEach((call, i) => {
+        if (folded && i > 0 && i < lastIndex) {
+          if (i === 1) {
+            const more = document.createElement('div');
+            more.className = 'wire-more';
+            const hidden = lastIndex - 1;
+            more.textContent = `⋯ ${hidden} more call${hidden === 1 ? '' : 's'} — click to expand ⋯`;
+            more.onclick = () => { wireExpanded.add(key); renderPanel(); };
+            out.appendChild(more);
+          }
+          return;
+        }
+        out.appendChild(wireCard(call, i, wire.length));
+      });
+    }
+
+    /** Request above, response below — one call on the wire. */
+    function wireCard(call, index, total) {
+      const box = document.createElement('div');
+      box.className = 'wire';
+      const status = call.status
+        ? `${call.status} ${call.statusText || ''}`.trim()
+        : (call.statusText || 'no response');
+      box.innerHTML = `<div class="wire-head">`
+        + (total > 1 ? `<span class="wire-n">${index + 1}/${total}</span>` : '')
+        + `<span class="method ${escapeHtml(call.method)}">${escapeHtml(call.method)}</span>`
+        + `<span class="wire-url">${escapeHtml(call.url)}</span>`
+        + `<span class="wire-status ${call.ok ? 'ok' : 'bad'}">${escapeHtml(status)}</span></div>`;
+
+      const headerLines = Object.entries(call.headers || {})
+        .map(([k, v]) => `${k}: ${v}`).join('\n');
+      box.appendChild(wireSection('Request', '',
+        (headerLines || '(no headers)') + (call.body ? '\n\n' + prettyMaybe(call.body) : '')));
+      box.appendChild(wireSection('Response',
+        call.correlationId ? `cid ${call.correlationId}` : '',
+        call.responseText || '(empty body)'));
+      return box;
+    }
+
+    function wireSection(label, meta, text) {
+      const sec = document.createElement('div');
+      sec.className = 'wire-sec';
+      sec.innerHTML = `<div class="wire-label">${escapeHtml(label)}`
+        + (meta ? ` <span class="cid">· ${escapeHtml(meta)}</span>` : '') + `</div>`;
+      const pre = document.createElement('pre');
+      pre.textContent = text;
+      sec.appendChild(pre);
+      return sec;
+    }
+
+    /** Request bodies travel as compact JSON strings; show them the way the response is shown. */
+    const prettyMaybe = (t) => {
+      try { return JSON.stringify(JSON.parse(t), null, 2); } catch (_) { return t; }
+    };
+
+    /**
+     * Run one step, and make the click visible.
+     *
+     * <p>Re-running a step that already passed used to change nothing on screen: the same response
+     * re-rendered identically, so there was no way to tell a click had registered. Three things fix that
+     * — a <b>running</b> state while it is in flight (spinner, disabled button, blue status), a
+     * <b>run counter and timestamp</b> in the header, which move on every run even when the response is
+     * byte-identical, and a <b>toast</b> on completion. During "Run all" the per-step success toast is
+     * suppressed: eight of them plus the summary is noise nobody asked for, and the user did not click
+     * those steps individually.
+     */
+    async function runStep(journey, index, fromRunAll = false) {
       const run = journeyRun(journey);
       const step = journey.steps[index];
+
+      run.runningIndex = index;
+      renderPanel();
+      // Yield a macrotask so the running state actually paints before a fast call resolves — without
+      // this a 30ms request would finish inside the same frame and the feedback would never be seen.
+      await new Promise((r) => setTimeout(r, 16));
+
+      // Open the wire log for the duration of the step: every call send() makes lands in it, including
+      // the ones a failing step made before it threw — that transcript is usually the diagnosis.
+      const log = [];
+      wireLog = log;
+      run.counts = run.counts || [];
+      run.counts[index] = (run.counts[index] || 0) + 1;
+      const stamp = { runNo: run.counts[index], at: new Date().toLocaleTimeString('pt-BR') };
       try {
         const result = await step.run(run.ctx);
+        Object.assign(result, stamp, { wire: log });
         run.results[index] = result;
         if (!result.ok) toast('Step ' + (index + 1) + ' did not pass', result.state || '', 'bad');
+        else if (!fromRunAll) toast('Step ' + (index + 1) + ' passed', result.state || '', 'ok');
       } catch (e) {
-        run.results[index] = { ok: false, state: 'error', body: e.message };
+        run.results[index] = { ok: false, state: 'error', body: e.message, wire: log, ...stamp };
         toast('Step ' + (index + 1) + ' failed', e.message, 'bad');
+      } finally {
+        wireLog = null;
+        run.runningIndex = -1;
       }
+      // A step that did not pass expands itself: its transcript is the reason, and hunting for a
+      // chevron to find out why something broke is exactly the wrong moment to make someone click.
+      if (!run.results[index].ok) stepCollapsed.delete(`${journey.id}:${index}`);
       renderPanel();
       return run.results[index].ok;
     }
@@ -2024,16 +2484,29 @@
      * mock-BACEN reject knob). Skipping cleanup on failure is how one failed run silently poisons every
      * later one — which is precisely what happened while this journey was being built.
      */
+    /**
+     * Forget a journey's results, its captured ids, its run counters, and the per-step view state
+     * (which transcripts were expanded, which cards were collapsed) — Reset means the journey looks
+     * exactly as it did before anyone touched it.
+     */
+    function resetJourney(journey) {
+      journeyState[journey.id] = { ctx: { vars: {} }, results: [], counts: [], runningIndex: -1 };
+      journey.steps.forEach((_, i) => {
+        wireExpanded.delete(`${journey.id}:${i}`);
+        stepCollapsed.delete(`${journey.id}:${i}`);
+      });
+    }
+
     async function runJourney(journey) {
-      journeyState[journey.id] = { ctx: { vars: {} }, results: [] };
+      resetJourney(journey);
       renderPanel();
       let stoppedAt = -1;
       for (let i = 0; i < journey.steps.length; i++) {
         if (stoppedAt >= 0) {
-          if (journey.steps[i].always) await runStep(journey, i);
+          if (journey.steps[i].always) await runStep(journey, i, true);
           continue;
         }
-        const ok = await runStep(journey, i);
+        const ok = await runStep(journey, i, true);
         if (!ok) stoppedAt = i;
       }
       if (stoppedAt >= 0) {

@@ -1020,6 +1020,148 @@
           }
         },
         {
+          "name": "Statement — page 1 (limit 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('entries is an array', () => pm.expect(body.entries).to.be.an('array'));",
+                  "if (body.entries.length > 0) {",
+                  "  const first = body.entries[0];",
+                  "  pm.test('amount is a signed decimal string', () => pm.expect(first.amount).to.match(/^-?\\d+\\.\\d{2}$/));",
+                  "  pm.test('counterpart is masked, never the raw account id', () => pm.expect(first.counterpart).to.include('***'));",
+                  "  pm.test('direction is DEBIT or CREDIT', () => pm.expect(['DEBIT', 'CREDIT']).to.include(first.direction));",
+                  "}",
+                  "pm.collectionVariables.set('statementCursor', body.nextCursor || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement?limit=2",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": "The caller's paginated statement (step 41), proxying ledger-service's internal statement seam (step 16) the same way the balance card proxies its ledger read.\n\n**Run some sends first** (the cards above) so there is history to page through, then run this card.\n\n`entries` are newest-first and money is a **signed decimal string** at this edge (negative on a DEBIT). `counterpart` is a **masked** internal account id — never the raw id a client could reuse — a short prefix/suffix around a fixed `\"***\"`. `nextCursor` is **opaque**: this card only stores it (in `statementCursor`) to hand back verbatim to the next card, never decodes it.\n\n**The account comes from the JWT** — same Domain Safety Rule #1 mechanism as the balance."
+          }
+        },
+        {
+          "name": "Statement — page 2 (cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('entries is an array', () => pm.expect(body.entries).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement?cursor={{statementCursor}}&limit=2",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "{{statementCursor}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            },
+            "description": "**Run \"Statement — page 1\" first** (captures `statementCursor`). The cursor travels straight through payment-service to ledger-service and back — opaque the whole way — so this page picks up exactly where page 1 left off, no overlap and no gap. If `statementCursor` is empty (page 1 was already the last page), this replays page 1.\n\n`nextCursor` is `null` on the last page — that is how a client knows to stop paging."
+          }
+        },
+        {
+          "name": "Statement — tampered cursor (400 INVALID_CURSOR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('code is INVALID_CURSOR', () => pm.expect(pm.response.json().code).to.eql('INVALID_CURSOR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement?cursor=not-a-valid-cursor",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement"
+              ],
+              "query": [
+                {
+                  "key": "cursor",
+                  "value": "not-a-valid-cursor"
+                }
+              ]
+            },
+            "description": "A cursor that isn't the base64 of a real `LastEvaluatedKey` — ledger-service refuses to decode it and answers `400 INVALID_CURSOR`, which payment-service passes through rather than mapping to a `503` that would invite an endless retry of a request that can never succeed (step 41). The same code answers a well-formed cursor that names a *different* account (step 16) — a forged token can never page someone else's history."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",
@@ -2325,6 +2467,10 @@
     },
     {
       "key": "balanceCents",
+      "value": ""
+    },
+    {
+      "key": "statementCursor",
       "value": ""
     }
   ]
