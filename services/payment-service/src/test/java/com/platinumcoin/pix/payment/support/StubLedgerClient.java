@@ -2,7 +2,14 @@ package com.platinumcoin.pix.payment.support;
 
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
+import com.platinumcoin.pix.payment.domain.model.StatementLine;
+import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,6 +42,7 @@ public class StubLedgerClient implements LedgerClient {
     private final Map<String, Long> balances = new ConcurrentHashMap<>();
     private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
     private final Set<String> unknownAccounts = ConcurrentHashMap.newKeySet();
+    private final Map<String, List<StatementLine>> statements = new ConcurrentHashMap<>();
 
     @Override
     public void postInternalTransfer(
@@ -82,6 +90,63 @@ public class StubLedgerClient implements LedgerClient {
     /** Seed an account's opening balance (integer cents) before a test sends. */
     public void setBalance(String accountId, long balanceCents) {
         balances.put(accountId, balanceCents);
+    }
+
+    /**
+     * The read half of the ledger seam (step 41): an in-memory statement, paged the way the real
+     * ledger pages it — an opaque cursor that embeds the account id, so a token forged for a different
+     * account is refused rather than silently paging someone else's history (the property step 16
+     * enforces for real; this stub reproduces just enough of it for {@code StatementApiIT} to exercise
+     * payment-service's re-assertion of Domain Safety Rule #1 without booting ledger-service).
+     */
+    @Override
+    public StatementPage readStatement(String accountId, String cursor, int limit) {
+        List<StatementLine> all = statements.getOrDefault(accountId, List.of());
+        int offset = decodeCursor(cursor, accountId);
+        if (offset >= all.size()) {
+            return new StatementPage(List.of(), null);
+        }
+        int end = Math.min(offset + limit, all.size());
+        List<StatementLine> page = new ArrayList<>(all.subList(offset, end));
+        String nextCursor = end < all.size() ? encodeCursor(accountId, end) : null;
+        return new StatementPage(page, nextCursor);
+    }
+
+    private static int decodeCursor(String cursor, String accountId) {
+        if (cursor == null || cursor.isBlank()) {
+            return 0;
+        }
+        try {
+            String decoded = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+            String[] parts = decoded.split(":", 2);
+            if (parts.length != 2 || !parts[0].equals(accountId)) {
+                throw new InvalidStatementCursorException(
+                        "the pagination cursor does not belong to account " + accountId);
+            }
+            return Integer.parseInt(parts[1]);
+        } catch (IllegalArgumentException e) {
+            throw new InvalidStatementCursorException("the pagination cursor could not be decoded");
+        }
+    }
+
+    private static String encodeCursor(String accountId, int offset) {
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString((accountId + ":" + offset).getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Seed one statement entry for an account, in the order given — callers seed newest-first. */
+    public void seedStatementEntry(String accountId, StatementLine line) {
+        statements.computeIfAbsent(accountId, k -> new ArrayList<>()).add(line);
+    }
+
+    /**
+     * Clear every seeded statement. This bean is {@code @Primary} and therefore a singleton across the
+     * whole cached Spring context — shared by every {@code @Test} method in the class, not recreated per
+     * test — so an {@code @BeforeEach} that re-seeds without first clearing would accumulate entries
+     * across methods instead of giving each test its own fixture.
+     */
+    public void clearStatements() {
+        statements.clear();
     }
 
     /**

@@ -623,6 +623,16 @@
             headers: {}, body: null,
           },
           {
+            method: 'GET', path: '/v1/accounts/me/statement?limit=5', title: 'Statement — page 1 (newest first, limit 5)', auth: true, capturesToken: false,
+            desc: 'The paginated history behind the balance (step 41), proxying ledger-service\'s internal statement seam (step 16) the same way GET /v1/accounts/me/balance proxies its ledger read. SEND A FEW PIX FIRST (the cards above) so there is history to see. entries ARE NEWEST FIRST and money is a SIGNED DECIMAL STRING at this edge — negative on a DEBIT, positive on a CREDIT — the one place amountCents becomes "-125.50" for a human. counterpart IS MASKED: a short prefix and suffix around a fixed "***" (e.g. "acc***01") over the OTHER LEG\'S INTERNAL ACCOUNT ID — never the raw id itself, which a client could otherwise reuse to probe accounts that are not theirs. That is a partial mask over the ledger\'s own account id, not a Pix-key lookup: resolving the counterpart to a Pix key or display name would be a call to account-service this endpoint deliberately does not make (out of scope for this step; see docs/api/openapi.yaml). nextCursor IS OPAQUE — this card only shows it, never decodes it — and is null exactly on the last page. THE ACCOUNT COMES FROM YOUR TOKEN, same Domain Safety Rule #1 mechanism as the balance: there is no path or query parameter that could name another account. limit is CLAMPED at this edge independently of ledger-service\'s own clamp (default 20, max 100, floored at 1) — payment-service does not trust an internal collaborator to enforce the public contract it promises callers.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/accounts/me/statement?cursor=not-a-valid-cursor', title: 'Statement — tampered cursor (400 INVALID_CURSOR)', auth: true, capturesToken: false,
+            desc: 'cursor IS OPAQUE, by design: it is the base64 of a DynamoDB LastEvaluatedKey that only ledger-service can decode, so payment-service never inspects it — it is bound and forwarded as-is. A string that isn\'t a real cursor (this one) fails ledger-service\'s decode and comes back 400 INVALID_CURSOR, which payment-service passes straight through rather than mapping to a 503 that would invite retrying a request that can never succeed. THE SAME CODE ANSWERS A CURSOR MINTED FOR A DIFFERENT ACCOUNT (step 16): the cursor embeds the account it was issued for, so a token you didn\'t get from your own statement is refused the same way — a forged/reused cursor can never page someone else\'s history, which is this read\'s version of Domain Safety Rule #1.',
+            headers: {}, body: null,
+          },
+          {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
             headers: {}, body: null,

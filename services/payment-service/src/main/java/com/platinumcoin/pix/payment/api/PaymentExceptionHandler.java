@@ -8,6 +8,7 @@ import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredExcep
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
@@ -63,6 +64,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>{@code 404 BALANCE_NOT_FOUND} — the ledger holds no balance for the caller's own account
  *       (step 40). Never a {@code 200} with zero: a customer must not be shown R$ 0,00 for an account
  *       that was never opened.</li>
+ *   <li>{@code 400 INVALID_CURSOR} — the statement's pagination cursor is malformed or names a
+ *       different account than the caller's own (step 41). A well-formed refusal, not a server fault:
+ *       never a {@code 503} that would invite the client to retry the same bad cursor forever.</li>
  * </ul>
  *
  * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case/domain; this class logs
@@ -141,6 +145,11 @@ public class PaymentExceptionHandler {
         // zero: "no such account" and "no money" are different facts and a customer must never be shown
         // the second when the first is true.
         return problem(HttpStatus.NOT_FOUND, "BALANCE_NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(InvalidStatementCursorException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidStatementCursor(InvalidStatementCursorException ex) {
+        return problem(HttpStatus.BAD_REQUEST, "INVALID_CURSOR", ex.getMessage());
     }
 
     @ExceptionHandler(AccountLookupException.class)

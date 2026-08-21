@@ -2,9 +2,15 @@ package com.platinumcoin.pix.payment.infra.client;
 
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.payment.domain.model.Direction;
+import com.platinumcoin.pix.payment.domain.model.StatementLine;
+import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -93,6 +99,24 @@ public class HttpLedgerClient implements LedgerClient {
     record BalanceView(long balanceCents) {
     }
 
+    /**
+     * Just enough of ledger-service's {@code StatementResponse} (step 16) to serve this seam: the
+     * decimal {@code amount} and {@code entryType} the ledger also ships are for a human reading the
+     * internal endpoint directly, and this service already has {@code amountCents} to reformat itself
+     * at its own {@code api/} edge — carrying the decimal string too would be a second, redundant
+     * source of the same money value.
+     */
+    record EntriesView(List<EntryView> entries, String nextCursor) {
+    }
+
+    record EntryView(
+            String txId, Direction direction, long amountCents, String counterpartAccountId,
+            String timestamp) {
+        StatementLine toDomain() {
+            return new StatementLine(txId, direction, amountCents, counterpartAccountId, timestamp);
+        }
+    }
+
     public HttpLedgerClient(
             RestClient.Builder builder,
             @Value("${services.ledger-service.base-url}") String baseUrl,
@@ -168,6 +192,64 @@ public class HttpLedgerClient implements LedgerClient {
                     "ledger balance read failed with status " + status, e);
         } catch (ResourceAccessException e) {
             log.warn("Ledger unreachable or timed out on a balance read | accountId={} error={}",
+                    accountId, e.getMessage());
+            throw new LedgerUnavailableException("ledger unreachable or timed out", e);
+        }
+    }
+
+    /**
+     * The other read half of the seam (step 41): {@code GET /internal/ledger/accounts/{id}/entries},
+     * ledger-service's paginated statement (step 16). {@code limit} is already the use case's effective
+     * value — this adapter clamps nothing — and {@code cursor} travels as an opaque query string; this
+     * service never decodes it, because it is an AWS key only the ledger can interpret.
+     *
+     * <p><b>Error mapping is its own, distinct from both the posting's and the balance read's.</b> A
+     * {@code 400 INVALID_CURSOR} is a well-formed refusal of a malformed or cross-account token
+     * (ledger-service's own re-assertion of Domain Safety Rule #1) and becomes
+     * {@link InvalidStatementCursorException} → a {@code 400} to the client, never a {@code 503} that
+     * would invite it to retry the same bad cursor forever. Everything else unexpected is
+     * {@link LedgerUnavailableException}, exactly like a balance-read failure.
+     */
+    @Override
+    public StatementPage readStatement(String accountId, String cursor, int limit) {
+        boolean hasCursor = StringUtils.hasText(cursor);
+        log.debug("GET /internal/ledger/accounts/{}/entries | hasCursor={} limit={}",
+                accountId, hasCursor, limit);
+        try {
+            EntriesView view = restClient.get()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/internal/ledger/accounts/{accountId}/entries")
+                            .queryParamIfPresent("cursor", Optional.ofNullable(cursor)
+                                    .filter(StringUtils::hasText))
+                            .queryParam("limit", limit)
+                            .build(accountId))
+                    .headers(this::forwardAuthorization)
+                    .retrieve()
+                    .body(EntriesView.class);
+            if (view == null) {
+                log.warn("Ledger answered the statement read with an empty body, treating as "
+                        + "unavailable | accountId={}", accountId);
+                throw new LedgerUnavailableException("ledger returned an empty statement body");
+            }
+            List<StatementLine> lines = view.entries().stream().map(EntryView::toDomain).toList();
+            log.info("Ledger answered the statement read | accountId={} entries={} hasNextPage={}",
+                    accountId, lines.size(), view.nextCursor() != null);
+            return new StatementPage(lines, view.nextCursor());
+        } catch (RestClientResponseException e) {
+            int status = e.getStatusCode().value();
+            String code = problemCode(e);
+            if (status == HttpStatus.BAD_REQUEST.value() && "INVALID_CURSOR".equals(code)) {
+                log.warn("Ledger refused the statement cursor, returning 400 | accountId={} code={}",
+                        accountId, code);
+                throw new InvalidStatementCursorException(
+                        "the pagination cursor is invalid or does not belong to account " + accountId);
+            }
+            log.warn("Ledger statement read failed with an unexpected status, treating as unavailable "
+                    + "| accountId={} status={} code={}", accountId, status, code);
+            throw new LedgerUnavailableException(
+                    "ledger statement read failed with status " + status, e);
+        } catch (ResourceAccessException e) {
+            log.warn("Ledger unreachable or timed out on a statement read | accountId={} error={}",
                     accountId, e.getMessage());
             throw new LedgerUnavailableException("ledger unreachable or timed out", e);
         }

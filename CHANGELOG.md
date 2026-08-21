@@ -261,6 +261,51 @@ The platform reached its halfway mark: **the full money path is built, tested an
     sprint's *journey* waits for step 41, which completes the balance-and-statement flow.
   AI: est 2.5h / actual ~4h / ~90% generated / 3 issues caught in human review
 
+- Public statement API through payment-service with opaque cursor pagination and edge money formatting
+  (step 41)
+  **`GET /v1/accounts/me/statement?cursor=&limit=` (payment-service, 8084)** — the paginated history
+  behind the balance, proxying ledger-service's internal statement seam (step 16) exactly the way step
+  40's balance read proxies its ledger read. No cache in front of this one: a statement page is paged
+  history, not a single hot value re-read on every screen. `limit` is clamped **again**, independently,
+  at this public edge (default 20, max 100, floored at 1) — payment-service does not trust an internal
+  collaborator to enforce the contract it promises its own callers; `cursor` stays opaque end to end and
+  is never decoded here, only bound and forwarded.
+  - **Two doc/code mismatches found and fixed in this change, not worked around (CLAUDE.md's no-drift
+    rule).** `docs/api/openapi.yaml`'s `StatementEntry` promised `entryId` and `description` fields that
+    never existed on ledger-service's actual internal response (`LedgerEntry` only ever carried `txId`,
+    `direction`, `amountCents`, `counterpartAccountId`, `timestamp`, `entryType` — `description` is
+    stored on the posting-guard item for idempotency comparison and never read back per entry; `entryId`
+    was never a concept at all). The schema now matches what step 16 actually built and what this step's
+    own task list already asked for (`txId`, `direction`, `amount`, `counterpart`, `timestamp`).
+  - **Masking is a display transformation over the ledger's own account id, not a Pix-key lookup.**
+    `counterpartAccountId` arriving from the ledger is a raw internal id (`acc-001`, or a system account
+    like `SPI_CLEARING`/`SEED`) — resolving it to a Pix key or display name would be a call to
+    account-service this step's prerequisites (step 16, step 18) never asked for. `StatementEntry.mask`
+    (the `api/` edge, alongside the existing cents→decimal formatting) keeps a short prefix and suffix
+    around a fixed `"***"`, falling back to "first character only" when the id is too short to hide
+    anything meaningful between a prefix and a suffix — applied uniformly to real and system accounts,
+    since neither should ever reach the wire whole.
+  - **The cursor's cross-account guard is re-asserted at the edge for free, not re-implemented.**
+    payment-service never decodes the opaque cursor (it is an AWS key only ledger-service can interpret)
+    — it always calls the ledger with the caller's *own* `accountId` from the JWT, exactly like the
+    balance read, so a cursor tampered to name another account can only fail ledger-service's own
+    cross-account check (step 16) and come back `400 INVALID_CURSOR`. `HttpLedgerClient` maps that
+    specific case to a new `InvalidStatementCursorException` rather than folding it into
+    `LedgerUnavailableException`'s `503` — a malformed/foreign cursor is a client error that will never
+    succeed on retry, not a transient one.
+  - `timestamp` is carried as the exact string ledger-service already formatted with fixed-width
+    milliseconds (step 14/16), never re-parsed into an `Instant` and re-rendered — a round trip through
+    `Instant.toString()` would silently reintroduce the trailing-zero bug that motivated the fixed-width
+    format in the first place.
+  - Registered `GetStatementUseCase` in `PaymentBeansConfig` (ADR-0011's composition root) — caught by
+    the module's own `ApplicationContextIT` failing to load with a `NoSuchBeanDefinitionException` before
+    any HTTP test ran, exactly the fast, cheap signal that check exists to give.
+  - Postman (3 requests: two pages plus the tampered-cursor case) and the API explorer (2 cards) grew
+    with the endpoint, per convention; the sprint's *journey* (deferred from step 40) still waits for a
+    later polish step, since a full balance-and-statement journey also wants the receive-Pix flow's
+    history to page through.
+  AI: est 1.5h / actual 1.5h / ~85% generated / 2 issues caught in human review
+
 - Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)
   **Sprint 8 closes: the payload became a contract.** Step 38 proved a frame could reach the right
   customer, but it pushed each producer's event payload *verbatim* — three different shapes on one

@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
+import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -34,6 +35,11 @@ final class FakeLedgerClient implements LedgerClient {
     private final Map<String, Long> balances = new HashMap<>();
     private RuntimeException failure;
     private int balanceReads;
+
+    private String lastStatementAccountId;
+    private String lastStatementCursor;
+    private int lastStatementLimit;
+    private StatementPage nextStatementPage = new StatementPage(List.of(), null);
 
     @Override
     public void postInternalTransfer(
@@ -80,9 +86,35 @@ final class FakeLedgerClient implements LedgerClient {
         return balance;
     }
 
+    /** The read half of the ledger seam (step 41): the statement page {@code GetStatementUseCase} reads. */
+    @Override
+    public StatementPage readStatement(String accountId, String cursor, int limit) {
+        this.lastStatementAccountId = accountId;
+        this.lastStatementCursor = cursor;
+        this.lastStatementLimit = limit;
+        return nextStatementPage;
+    }
+
     /** Make the next (and every) posting throw {@code ex} — used to drive the failure branches. */
     void failWith(RuntimeException ex) {
         this.failure = ex;
+    }
+
+    /** The page {@link #readStatement} will return next; lets a test read back the limit it was passed. */
+    void returnStatementPage(StatementPage page) {
+        this.nextStatementPage = page;
+    }
+
+    String lastStatementAccountId() {
+        return lastStatementAccountId;
+    }
+
+    String lastStatementCursor() {
+        return lastStatementCursor;
+    }
+
+    int lastStatementLimit() {
+        return lastStatementLimit;
     }
 
     /** Give an account a balance the ledger will report on a cache miss. */

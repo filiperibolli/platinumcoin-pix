@@ -102,7 +102,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Infra que sobe:** none new (Redis cache-aside on existing Redis). · **Diagram:** ARCHITECTURE §6.9
 
 - [x] [Step 40](docs/steps/step-40.md) — Redis cache-aside for balance + invalidation on postings + 5s TTL backstop
-- [ ] [Step 41](docs/steps/step-41.md) — statement API through payment-service with opaque cursor pagination
+- [x] [Step 41](docs/steps/step-41.md) — statement API through payment-service with opaque cursor pagination
 
 ## Sprint 10 — Immutable audit trail
 **Flow delivered:** every state transition lands as an immutable S3 record; cold statement archive.
