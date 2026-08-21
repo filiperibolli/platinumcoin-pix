@@ -142,6 +142,15 @@
             <artifactId>sqs</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- S3 SDK, TEST scope only (step 42): S3InitIT asserts the audit buckets the init scripts
+             create and, above all, their immutability posture (versioning + Object Lock compliance
+             + 5y retention). Same posture as SNS/SQS above — settlement-service, which actually
+             WRITES the audit objects (step 43), declares the SDK in its own compile scope. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

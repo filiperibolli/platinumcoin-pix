@@ -168,12 +168,12 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > finish, and nothing noticed until now because every earlier service touches AWS lazily, on the first
 > request. A consumer resolves its queue at **startup**, so settlement-service died on first boot with
 > `QueueDoesNotExist`. The probe now also asserts a resource created by the *last* init script exists —
-> scripts run in lexical order, so that one existing means all of them ran. Since step 36 the last script
-> is `08-messaging-notify.sh`, so the probe checks `notification-queue` (via `aws sqs get-queue-url`
-> against LocalStack's own SQS at `localhost:4566`, since SQS lives there — unlike DynamoDB, which moved
-> to `dynamodb-local`). Compose and the Testcontainers harness now agree on what readiness means
-> (`LocalStackTestBase` waits on that same script's final log line, `[init] notify messaging ready: …`).
-> **If you add an init script that sorts after `08`, move both markers.**
+> scripts run in lexical order, so that one existing means all of them ran. Since step 42 the last script
+> is `09-audit.sh`, so the probe checks the `pix-statement-archive` bucket (via `aws s3api head-bucket`
+> against LocalStack itself at `localhost:4566`, since S3 and SQS live there — unlike DynamoDB, which
+> moved to `dynamodb-local`). Compose and the Testcontainers harness now agree on what readiness means
+> (`LocalStackTestBase` waits on that same script's final log line, `[init] audit storage ready: …`).
+> **If you add an init script that sorts after `09`, move both markers.**
 >
 > Two caveats worth knowing before §5.5's drill: retries, backoff and DLQ handling are **step 32** — today
 > a failed or timed-out settlement simply leaves the message on the queue (which is what makes those
@@ -274,11 +274,11 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **Messaging** — SNS topic `pix-events` + `settlement-queue`(+DLQ) with a filtered subscription (step 26); `notification-queue`(+DLQ, filtered) (step 36); `audit-queue`(+DLQ, unfiltered — all events) (step 42); `statement-export-queue`(+DLQ) (step 53). Filter policies route by `eventType`.
 
-**S3** — buckets `pix-audit-log` (versioning + object-lock config documented) and `pix-statement-archive` (step 42); `pix-statement-exports` (step 53).
+**S3** — buckets `pix-audit-log` (versioning + Object Lock COMPLIANCE, 5-year retention) and `pix-statement-archive` (plain, rewritable) (step 42); `pix-statement-exports` (step 53).
 
 **Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` at 0 — so Σ over every account is **zero** (step 12). Pix keys are registered via the API, not seeded.
 
-The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6, **already flipped** — step 26) → `+s3` (Sprint 10). The list is **enforced**: calling a service that is not on it answers `501 Service 'sqs' is not enabled`, so enabling the service and creating its resources always land in the same change (and so does the matching `withServices(...)` in `LocalStackTestBase`).
+The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6, step 26) → `+s3` (Sprint 10, **already flipped** — step 42). The list is **enforced**: calling a service that is not on it answers `501 Service 'sqs' is not enabled`, so enabling the service and creating its resources always land in the same change (and so does the matching `withServices(...)` in `LocalStackTestBase`).
 
 **Docker-compose only, as of `docs/load/BOTTLENECK.md`:** `dynamodb` has been pulled back out of the compose stack's `SERVICES` list into the standalone `dynamodb-local` container above — a load-test-driven fix for LocalStack's own DynamoDB-proxy throughput ceiling, not an architecture change. `LocalStackTestBase` (Testcontainers, `mvn verify`) is **unaffected**: its LocalStack container still serves `dynamodb` exactly as before, so the sprint-by-sprint `SERVICES` growth described above remains accurate for the IT harness — only the docker-compose stack's DynamoDB moved.
 
@@ -582,6 +582,94 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --wait-time-seconds
       --queue-name notification-queue --query QueueUrl --output text) | jq '.Messages[0].Body'
 # ⇒ the raw event JSON. Re-run with eventType=PixDebited ⇒ notification-queue stays empty.
 ```
+
+#### Audit fan-out + S3 buckets (mirror of `infra/localstack/init/09-audit.sh`, step 42)
+
+The **third** consumer off the same topic, and the only **unfiltered** one. settlement and notification
+each name the event types they act on; audit does not act on events at all — it records that they
+happened — so a filter policy here would be a list somebody has to remember to extend, and the first
+unlisted event type would be missing from the trail silently, forever. The script therefore also
+*removes* a filter policy if one ever drifted in: converging to "none" has to be an action, not an
+omission.
+
+```bash
+# the DLQ first, then the queue (same attributes as the other two consumers — see the blocks above)
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name audit-queue-dlq \
+  --attributes '{"MessageRetentionPeriod":"1209600"}'
+aws --endpoint-url=http://localhost:4566 sqs create-queue --queue-name audit-queue \
+  --attributes '{"RedrivePolicy":"{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:000000000000:audit-queue-dlq\",\"maxReceiveCount\":\"5\"}","VisibilityTimeout":"30","ReceiveMessageWaitTimeSeconds":"20"}'
+# …plus the same queue Policy allowing ONLY pix-events to sqs:SendMessage.
+
+# subscribe — and set NO filter policy (the empty value also repairs drift); still raw delivery, so
+# the archived line is the envelope the publisher wrote, not an SNS wrapper
+aws --endpoint-url=http://localhost:4566 sns subscribe --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --protocol sqs --notification-endpoint arn:aws:sqs:us-east-1:000000000000:audit-queue
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name FilterPolicy --attribute-value ''
+aws --endpoint-url=http://localhost:4566 sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name RawMessageDelivery --attribute-value true
+```
+
+The buckets. `--object-lock-enabled-for-bucket` is **create-time only** in real AWS (there is no API to
+turn Object Lock on afterwards, which is why the script cannot repair a bucket created without it). It
+implies versioning **and freezes it**: a later `put-bucket-versioning --versioning-configuration
+Status=Enabled` is rejected with `InvalidBucketState` even though it asks for the state the bucket
+already has — so on a locked bucket versioning is not configuration you converge, it is a property you
+inherit and can never suspend (which is the point: suspending versioning would be the first move of
+anyone trying to erase the trail). The default retention is **COMPLIANCE / 1825 days** — 5 years, the BACEN window —
+applied at bucket level, so every `PutObject` inherits it and the audit writer (step 43) cannot forget
+to retain a line. COMPLIANCE rather than GOVERNANCE on purpose: GOVERNANCE is bypassable by any
+principal holding `s3:BypassGovernanceRetention`, i.e. exactly the privileged operator an audit trail
+exists to keep honest.
+
+```bash
+aws --endpoint-url=http://localhost:4566 s3api create-bucket --bucket pix-audit-log \
+  --object-lock-enabled-for-bucket        # versioning comes with it — and can never be turned off
+aws --endpoint-url=http://localhost:4566 s3api put-object-lock-configuration --bucket pix-audit-log \
+  --object-lock-configuration '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Days":1825}}}'
+
+# the cold archive is a PLAIN bucket on purpose: derived, rebuildable data (the ledger stays the
+# source of truth) whose monthly account=<id>/yyyy-MM.jsonl object step 43 rewrites as the window rolls
+aws --endpoint-url=http://localhost:4566 s3api create-bucket --bucket pix-statement-archive
+```
+
+Verify what the init script created on `up`:
+
+```bash
+# audit-queue + audit-queue-dlq alongside the settlement/notification pairs
+aws --endpoint-url=http://localhost:4566 sqs list-queues | jq
+# its subscription has NO FilterPolicy key at all — that absence IS the configuration
+ASUB=$(aws --endpoint-url=http://localhost:4566 sns list-subscriptions-by-topic \
+  --topic-arn arn:aws:sns:us-east-1:000000000000:pix-events \
+  --query "Subscriptions[?ends_with(Endpoint, ':audit-queue')].SubscriptionArn | [0]" --output text)
+aws --endpoint-url=http://localhost:4566 sns get-subscription-attributes --subscription-arn $ASUB \
+  | jq '.Attributes | {FilterPolicy, RawMessageDelivery}'   # ⇒ FilterPolicy: null
+
+# both buckets, and the immutability posture on the audit one
+aws --endpoint-url=http://localhost:4566 s3 ls        # pix-audit-log, pix-statement-archive
+aws --endpoint-url=http://localhost:4566 s3api get-bucket-versioning --bucket pix-audit-log
+aws --endpoint-url=http://localhost:4566 s3api get-object-lock-configuration --bucket pix-audit-log
+
+# prove it by hand: write a line, read its retention date, then try to erase that version
+echo '{"eventId":"ev-audit-1","eventType":"PixSettled"}' > /tmp/audit-probe.jsonl
+aws --endpoint-url=http://localhost:4566 s3api put-object --bucket pix-audit-log \
+  --key 2026/01/01/00/manual-probe.jsonl --body /tmp/audit-probe.jsonl
+aws --endpoint-url=http://localhost:4566 s3api get-object-retention --bucket pix-audit-log \
+  --key 2026/01/01/00/manual-probe.jsonl        # ⇒ COMPLIANCE, RetainUntilDate ≈ today + 5y
+VID=$(aws --endpoint-url=http://localhost:4566 s3api list-object-versions --bucket pix-audit-log \
+  --prefix 2026/01/01/00/manual-probe.jsonl --query 'Versions[0].VersionId' --output text)
+aws --endpoint-url=http://localhost:4566 s3api delete-object --bucket pix-audit-log \
+  --key 2026/01/01/00/manual-probe.jsonl --version-id $VID
+# ⇒ An error occurred (AccessDenied) — the retained version cannot be erased.
+```
+
+> **LocalStack vs AWS — the honest caveat.** LocalStack 3 does more than *accept* the Object Lock
+> configuration: it **enforces** it at the API (the delete above really is refused, and `S3InitIT`
+> asserts exactly that). What remains AWS-only is everything *below* the API — WORM at the storage
+> layer, surviving `docker compose down -v` (the emulator's state is ephemeral by design, so the local
+> "5-year retention" lasts precisely as long as the container), cross-region replication of the trail,
+> and IAM actually denying anything (ADR-0013: LocalStack emulates the IAM APIs but enforces nothing).
+> Locally we prove the posture is *configured and refused*; we never prove the bytes are immutable.
 
 #### Consumer dedup table (mirror of `infra/localstack/init/07-processed-events.sh`, step 29)
 

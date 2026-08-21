@@ -699,10 +699,17 @@ Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts
 
 ### 6.10 Flow — Immutable audit trail   · Sprint 10 · infra: **audit-queue + S3**
 
-An `audit-queue` subscribed to *all* events feeds an `AuditWriter` that appends JSON lines to S3,
-partitioned `yyyy/MM/dd/HH/<service>-<uuid>.jsonl`. A `StatementArchiver` copies ledger entries older
-than the hot window to a cold-archive bucket. Immutability posture: **versioning + Object Lock
-(compliance mode) + 5-year retention** (LocalStack accepts the config; the guarantee is real in AWS).
+An `audit-queue` subscribed to *all* events — the one subscription in the platform with **no filter
+policy**, because audit does not act on events, it records that they happened, and a filter is a list
+someone must remember to extend — feeds an `AuditWriter` that appends JSON lines to S3, partitioned
+`yyyy/MM/dd/HH/<service>-<uuid>.jsonl`. A `StatementArchiver` copies ledger entries older than the hot
+window to a cold-archive bucket. Immutability posture on `pix-audit-log`: **Object Lock (compliance
+mode) at bucket creation — which brings versioning with it and freezes it — + 5-year default
+retention**, inherited by every object without the writer opting in. `pix-statement-archive` is
+deliberately a **plain** bucket: derived, rebuildable data (the ledger stays the source of truth) whose
+monthly object the archiver rewrites. LocalStack both accepts *and* enforces the lock at the API (a
+retained version cannot be deleted — asserted by `S3InitIT`); WORM at the storage layer, surviving a
+`down -v`, and IAM enforcement (ADR-0013) remain AWS-side.
 
 ```mermaid
 sequenceDiagram

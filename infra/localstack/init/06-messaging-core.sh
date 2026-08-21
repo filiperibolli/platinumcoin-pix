@@ -15,9 +15,9 @@
 # that differs from a Kafka topic, which IS the log).
 #
 # LocalStack runs this once the emulator is ready (ready.d mount in ../../docker-compose.yml).
-# Numbered 06 so it sorts LAST → its final log line is the readiness marker the Testcontainers
-# harness waits on (LocalStackTestBase). If you ever append a script after this one, MOVE THAT
-# MARKER.
+# Numbered 06 so it sorts after the DynamoDB tables and seeds. It was the readiness marker when it
+# landed (step 26); steps 36 and 42 appended scripts after it, so the marker now lives on the final
+# log line of 09-audit.sh — see LocalStackTestBase and docker-compose.yml.
 #
 # Idempotent: create-if-absent, then always converge the attributes (set-queue-attributes /
 # set-subscription-attributes are idempotent, so a re-run also repairs drift instead of failing).

@@ -487,7 +487,9 @@ services:
     ports:
       - "4566:4566"          # single edge port for every emulated AWS service
     environment:
-      SERVICES: sns,sqs      # the messaging backbone (Sprint 6) — DynamoDB now lives in dynamodb-local
+      # the messaging backbone (Sprint 6) + S3 for the audit trail & cold archive (Sprint 10,
+      # step 42) — DynamoDB now lives in dynamodb-local
+      SERVICES: sns,sqs,s3
       DEBUG: "1"             # verbose logs — this is a dev-only emulator
       # Read by infra/localstack/init/{01,02,03,04,05,07}-*.sh (ready.d scripts run INSIDE this
       # container): points their `aws dynamodb` calls at the standalone dynamodb-local container
@@ -518,21 +520,21 @@ services:
       # and simply died with `QueueDoesNotExist`.
       #
       # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
-      # probe asserts a resource created by the LAST init script (08-messaging-notify.sh, step 36)
-      # exists — scripts run in lexical order (inside THIS container's init runner, regardless of which
-      # endpoint each one targets), so that one existing means all of them ran, including 01-05/07
-      # against dynamodb-local. The last script now creates SQS resources, so the probe checks
-      # notification-queue via `aws sqs get-queue-url` against LocalStack's own SQS at localhost:4566
-      # (SQS lives here, unlike DynamoDB, which moved to dynamodb-local). This mirrors exactly what the
+      # probe asserts the LAST resource created by the LAST init script (09-audit.sh, step 42) exists —
+      # scripts run in lexical order (inside THIS container's init runner, regardless of which endpoint
+      # each one targets), so that one existing means all of them ran, including 01-05/07 against
+      # dynamodb-local. The last script now ends on S3, so the probe checks the pix-statement-archive
+      # bucket via `aws s3api head-bucket` against LocalStack itself at localhost:4566 (S3, like SQS,
+      # lives here — unlike DynamoDB, which moved to dynamodb-local). This mirrors exactly what the
       # Testcontainers harness does (LocalStackTestBase waits on that same script's final log line);
       # compose and the tests agree on what readiness means.
       #
-      # IF YOU ADD A SCRIPT THAT SORTS AFTER 08, MOVE THIS PROBE (and the harness's marker) TO IT.
+      # IF YOU ADD A SCRIPT THAT SORTS AFTER 09, MOVE THIS PROBE (and the harness's marker) TO IT.
       # (tools/k6/seed/ deliberately does NOT live here, even though it seeds DynamoDB too: this
       # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
       # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
       # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name notification-queue >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3api head-bucket --bucket pix-statement-archive >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5

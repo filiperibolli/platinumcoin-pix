@@ -170,6 +170,64 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- LocalStack init: audit-queue (all events) + S3 audit-log/statement-archive buckets with immutability
+  config (step 42)
+  **The third consumer off `pix-events` — and the only unfiltered one.** `09-audit.sh` creates
+  `audit-queue` + `audit-queue-dlq` with the same tuning as the other two branches (redrive after 5
+  receives, visibility 30s, long-poll 20s, DLQ retention 14d, the narrow `sqs:SendMessage` policy) and
+  subscribes it to the topic with **no filter policy at all**. settlement (`PixDebited`) and notification
+  (`PixSettled`/`PixReceived`/`PixReversed`) each name what they act on; audit does not act on events, it
+  records that they happened — and a filter is a list somebody has to remember to extend, so the first
+  unlisted event type would be missing from the trail silently, forever. The script therefore also
+  *removes* a filter policy if one drifted in (empty `--attribute-value`): converging to "none" has to be
+  an action, not an omission.
+  - **S3 comes up now, for the flow that needs it.** `SERVICES` grows to `sns,sqs,s3` in compose and
+    `withServices(…, Service.S3)` in `LocalStackTestBase` — the same change, as the init README requires,
+    since an unlisted service answers `501` and would abort `ready.d` under `set -e` and hang every IT.
+  - **`pix-audit-log` is created with `--object-lock-enabled-for-bucket` + a default retention of
+    COMPLIANCE / 1825 days.** COMPLIANCE rather than GOVERNANCE on purpose: GOVERNANCE is bypassable by
+    any principal holding `s3:BypassGovernanceRetention`, i.e. exactly the privileged operator an audit
+    trail exists to keep honest. The retention is a *bucket default*, so every object inherits it with no
+    caller opt-in — the audit writer of step 43 cannot forget to retain a line.
+  - **A first draft failed and taught the real rule:** an explicit `put-bucket-versioning Status=Enabled`
+    after the lock flag is rejected with `InvalidBucketState — an Object Lock configuration is present on
+    this bucket, so the versioning state cannot be changed`, *even though it asks for the state the bucket
+    is already in*. On a locked bucket, versioning is not configuration you converge; it is a property you
+    inherit at creation and can never suspend — which is the guarantee we want, since suspending
+    versioning would be the first move of anyone erasing a trail. The call is gone and the reason is
+    written in the script.
+  - **`pix-statement-archive` is deliberately a plain bucket** — no versioning, no lock. It holds derived,
+    rebuildable data (the ledger remains the source of truth) whose monthly
+    `account=<id>/yyyy-MM.jsonl` object step 43 rewrites as the window rolls; locking it would pile up
+    undeletable versions of a regenerable file and buy no compliance at all.
+  - **LocalStack turned out to *enforce* the posture, not merely accept it** (the step file assumed the
+    weaker claim): deleting a retained version answers `AccessDenied`, and a new object comes back from
+    `PutObject` already carrying `RetainUntilDate ≈ today + 5y`. `S3InitIT` asserts both, so the audit
+    trail's "an audit line cannot be deleted" is a *tested* behaviour rather than a footnote. What stays
+    AWS-only is everything below the API — WORM at the storage layer, surviving `docker compose down -v`
+    (the emulator's state is ephemeral, so the local 5-year retention lasts exactly as long as the
+    container), replication, and IAM actually denying anything (ADR-0013). Documented in `docs/local-dev.md`,
+    the init README and ARCHITECTURE §6.10.
+  - **Tests:** `MessagingInitIT` grows the third branch (queue + DLQ + redrive, the *absence* of a
+    `FilterPolicy` asserted explicitly, and an end-to-end pass where both `PixDebited` and `PixSettled` —
+    disjoint for the other two consumers — land on audit-queue). New `S3InitIT`: both buckets exist,
+    versioning `Enabled`, lock `COMPLIANCE/1825`, the object retained, the version delete refused, and the
+    archive bucket asserted *plain* so that decision stays deliberate. `mvn verify` green across all modules.
+    - **CI caught a race the local run hid.** The audit test waited for *one* of the two published
+      eventIds and then asserted on *both*: SNS→SQS delivery is neither ordered nor simultaneous, so the
+      helper could return with the second event still in flight and throw it away — green on a developer
+      machine, red on the first CI run. `receiveUntil` now takes the ids as varargs and only returns once
+      **every** one of them has arrived (naming the missing ones when it gives up), which is the honest
+      shape for any assertion about a fan-out.
+  - **Both readiness markers moved to `09-audit.sh`** (it now sorts last): `LocalStackTestBase` waits on
+    `[init] audit storage ready: …` and the compose healthcheck probes the last resource it creates
+    (`s3api head-bucket --bucket pix-statement-archive`). Three older init scripts still claimed to *be*
+    the marker (`06` since step 36, `07`, `08` as of now) — those stale comments were corrected in the
+    same change rather than left as a trap for the next step.
+  - No endpoint is introduced, so the Postman collection and the API explorer are untouched; the audit
+    journey belongs to step 43, when there is something to read back.
+  AI: est 1h / actual 1h / ~90% generated / 0 issues caught in human review
+
 - **API explorer: journey tabs, and a navigation that fits on the page.** Delivered ahead of step 49 (which
   finalizes the explorer) because the step-39 review asked a question the tool could not answer: *how do I
   test receiving a Pix?* The honest answer was "open the mock-bacen-spi tab, but first go to account-service
