@@ -5,6 +5,26 @@ spring:
   application:
     name: payment-service
 
+  # Redis connection (Lettuce, via spring-boot-starter-data-redis). Redis is its own container — the
+  # local stand-in for ElastiCache, which LocalStack does not emulate (ADR-0008). Defaults target a
+  # locally-run Redis; compose overrides REDIS_HOST to the `redis` service name on the shared network.
+  # This service READS and WRITES `balance:<accountId>` (cache-aside, step 40); ledger-service deletes
+  # those keys after each posting. A Redis outage degrades this service to ledger-speed reads, never to
+  # errors — RedisBalanceCache turns every Redis failure into a cache miss.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # HARD TIME BOUND on every Redis command, and the reason it exists: a cache that HANGS is worse
+      # than a cache that fails. Lettuce defaults to a 60s command timeout, so a Redis that is *stopped*
+      # (packets dropped rather than refused) turned a balance read into a ~114s request in the step-40
+      # drill — availability lost, not degraded, which is the exact opposite of what ADR-0008 promises.
+      # 200ms is generous for a LAN Redis (~1ms) and small against the 300ms p99 budget; with Redis
+      # unreachable a read pays this twice (the failed GET and the failed SET) and still answers from
+      # the ledger. Fail fast, then fall through.
+      timeout: ${REDIS_TIMEOUT:200ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:200ms}
+
 # Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can
 # call this service from the browser. Permissive + credential-free by design (the token is a Bearer
 # header, never a cookie); a deployed posture pins these origins (step-45 hardening). The CorsFilter
@@ -33,6 +53,14 @@ pix:
   # not a constant, because step 52 shards it into SPI_CLEARING#00..#15 to spread a hot partition —
   # a change of which id is passed, never of the orchestration or of the ledger contract.
   clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  # Balance cache-aside (step 40, ADR-0008). The TTL is deliberately SHORT and does two jobs: on the
+  # happy path it caps how long a balance may be displayed after an unrelated write elsewhere, and when
+  # ledger-service's post-commit eviction is lost (it is best-effort — a Redis blip, a crash between the
+  # commit and the DEL) it is the backstop that bounds the staleness to this window. Five seconds is
+  # what makes "a missed invalidation is a display problem, never a money problem" a bounded claim;
+  # raising it trades hit rate for how long a customer can see a number that already moved.
+  balance-cache:
+    ttl: ${BALANCE_CACHE_TTL:5s}
   events:
     # The ONE topic every domain event is published to (step 26); consumers fan out by subscribing with
     # a filter policy on the eventType message attribute. The ARN is injected rather than looked up by

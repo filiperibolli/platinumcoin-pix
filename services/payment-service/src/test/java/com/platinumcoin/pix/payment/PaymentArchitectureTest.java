@@ -1,5 +1,7 @@
 package com.platinumcoin.pix.payment;
 
+import com.platinumcoin.pix.payment.domain.port.BalanceCache;
+import com.platinumcoin.pix.payment.domain.usecase.GetBalanceUseCase;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -53,6 +55,30 @@ class PaymentArchitectureTest {
                 .that().resideInAPackage("..api..")
                 .should().dependOnClassesThat(and(INTERFACES, resideInAPackage("..domain..")))
                 .as("api/ must call use cases, never an outbound port (ADR-0011)");
+
+        rule.check(PAYMENT_CLASSES);
+    }
+
+    /**
+     * <b>ADR-0008's correctness rule, enforced by the build</b> (step 40). The balance cache serves
+     * display reads and nothing else: a value from Redis may be up to one TTL old, so the moment any
+     * money-moving code path could read it, "the cache cannot cause an overdraft" stops being a
+     * property of the design and becomes a promise someone has to keep.
+     *
+     * <p>The rule is stated as "in {@code domain/}, only {@link GetBalanceUseCase} may depend on
+     * {@link BalanceCache}" — which is precisely what makes it impossible for {@code SendPixUseCase} to
+     * grow a "check the balance first" shortcut. (It would be a read-then-check race even with a
+     * perfectly fresh cache; the guard belongs inside the ledger's conditional write, Domain Safety
+     * Rule #3.) The port itself is excluded because a type trivially references itself.
+     */
+    @Test
+    void onlyTheBalanceReadDependsOnTheBalanceCache() {
+        ArchRule rule = noClasses()
+                .that().resideInAPackage("..domain..")
+                .and().doNotHaveFullyQualifiedName(GetBalanceUseCase.class.getName())
+                .and().doNotHaveFullyQualifiedName(BalanceCache.class.getName())
+                .should().dependOnClassesThat().haveFullyQualifiedName(BalanceCache.class.getName())
+                .as("only GetBalanceUseCase may read the balance cache — no money decision may (ADR-0008)");
 
         rule.check(PAYMENT_CLASSES);
     }

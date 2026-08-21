@@ -17,4 +17,13 @@ public class LedgerUnavailableException extends RuntimeException {
     public LedgerUnavailableException(String message, Throwable cause) {
         super(message, cause);
     }
+
+    /**
+     * For the failures that have no exception behind them — the ledger answered {@code 200} with a body
+     * we cannot read as a balance (step 40). There is no cause to chain, and inventing one would put a
+     * fake stack trace in the log.
+     */
+    public LedgerUnavailableException(String message) {
+        super(message);
+    }
 }

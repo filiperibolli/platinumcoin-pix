@@ -203,6 +203,64 @@ The platform reached its halfway mark: **the full money path is built, tested an
     under **Fixed** above.
   AI: est 2h / actual ~2.5h / ~90% generated / 0 issues caught in human review
 
+- Redis cache-aside for balance with invalidation on postings and a 5s TTL backstop (step 40)
+  **`GET /v1/accounts/me/balance` (payment-service, 8084)** — the platform's highest-volume read, under a
+  hard 300ms p99 budget. A hit is served from Redis (`balance:<accountId>`, TTL 5s); a miss reads
+  ledger-service's strongly-consistent balance, populates the key and answers. **ledger-service deletes
+  both legs' keys after every committed posting**, so the wire never shows a number the ledger has
+  already moved past. Measured on the compose stack: **p50 3.9ms · p95 5.2ms · p99 9.8ms** over 200
+  serial reads (a sanity check, not a load test — that is step 47).
+  - **The rule that makes a cache legal on a money platform, enforced by the build.** The cache serves
+    *display* reads only: `balanceCents >= :amount` is a condition expression **inside** the ledger's
+    `TransactWriteItems` (step 14, Domain Safety Rule #3), so a stale, corrupt or absent cache changes
+    what a customer *sees* for at most one TTL and can never change what the ledger *allows*. That is
+    now a build failure rather than a review habit — `PaymentArchitectureTest` fails if any domain class
+    other than `GetBalanceUseCase` so much as references the `BalanceCache` port, which is what makes a
+    "check the balance before sending" shortcut in `SendPixUseCase` unmergeable. Proven from the other
+    side too: `BalanceCacheInvalidationIT#aStaleCacheDoesNotAuthorizeAnOverdraft` stuffs Redis with ten
+    times the real balance and still gets `422 INSUFFICIENT_FUNDS`, not a cent moved.
+  - **Two ports, one per side of the seam, and neither can do the other's job.** payment-service's
+    `BalanceCache` can read and write but **not evict**; ledger-service's `BalanceCacheInvalidator` can
+    **only delete** — it cannot read a balance, so it cannot be misused to decide one. Invalidation
+    belongs to the writer because only the writer knows the instant a cached balance became a lie, and
+    it happens *after* the commit: evicting first opens a window where a concurrent reader repopulates
+    the cache with the pre-commit number and nothing invalidates it again. The shared key format is
+    documented as a two-service contract in `docs/data-model.md` §7 (new: the Redis keys).
+  - **`asOf` is part of the contract, not decoration.** It reports *when the ledger was read*, and a
+    cache hit keeps the original instant instead of re-stamping itself fresh — so a client (or a support
+    engineer holding a screenshot) can tell how old the number is. The use case owns that clock.
+  - **A cache that HANGS is worse than a cache that fails — found by the drill, not by reasoning.** The
+    first version wrapped every Redis call in a `try/catch` and called it best-effort. Stopping the Redis
+    container turned a balance read into a **114-second** request and, far worse, made a send answer
+    **`503 LEDGER_UNAVAILABLE` for a debit that had already committed** (the eviction blocked past
+    payment-service's 3s read timeout). Three fixes, in increasing order of importance: bounded
+    `spring.data.redis.timeout`/`connect-timeout`; a **fail-fast Lettuce client** (`RedisFailFastConfig`
+    — `TimeoutOptions.enabled(...)`, because Lettuce *queues* commands while reconnecting and queued
+    commands ignore the command timeout, plus `DisconnectedBehavior.REJECT_COMMANDS`); and finally
+    moving the eviction **off the posting's request thread** onto a bounded, discard-on-saturation
+    executor. After: Redis stopped ⇒ balance reads `200` in ~13ms and sends `202` in ~200ms. Recorded as
+    implementation notes on ADR-0008 (the decision is unchanged; what "best-effort" costs to build is
+    not). Regression-tested by `RedisBalanceCacheIT#aRedisThatAcceptsAndThenNeverAnswersCostsTheTimeout…`
+    (a `ServerSocket` that accepts and never replies) and by a wiring assertion in both services that
+    the configured command timeout stays bounded.
+  - **Failure posture, stated as a hierarchy:** Redis down ⇒ every read is a miss, straight to the
+    ledger (latency, never errors); ledger down ⇒ reads still served for accounts touched in the last 5s;
+    eviction lost ⇒ ≤5s of display staleness, which is exactly the job the short TTL exists to do.
+  - `cache.hit` / `cache.miss` (tagged `cache=balance`) registered eagerly so both series read a real
+    zero from boot. **Note:** `/actuator/prometheus` does not exist yet — the Prometheus registry lands
+    in step 44 — so the runbook, README, Postman and explorer all point at
+    `/actuator/metrics/cache.hit` for now; every doc that promised the Prometheus form was corrected.
+  - **Docs corrected against reality in the same change** (CLAUDE.md's no-drift rule): `docs/api/openapi.yaml`
+    gained the balance endpoint's description, `401`, `404 BALANCE_NOT_FOUND` and `503`; `docs/data-model.md`
+    gained §7 (Redis keys, including fraud-service's, previously undocumented) and a retitled header;
+    ARCHITECTURE §6.9 gained the off-thread eviction; and the step-40 ADR companion's stale-cache drill
+    was rewritten to go at **ledger-service** — through payment-service the R$ 5,000 daily limit refuses
+    such a send first, so as written it would have demonstrated `LIMIT_EXCEEDED` and never reached the
+    guard under test.
+  - Postman (2 requests) and the API explorer (2 cards) grew with the endpoint, per convention; the
+    sprint's *journey* waits for step 41, which completes the balance-and-statement flow.
+  AI: est 2.5h / actual ~4h / ~90% generated / 3 issues caught in human review
+
 - Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)
   **Sprint 8 closes: the payload became a contract.** Step 38 proved a frame could reach the right
   customer, but it pushed each producer's event payload *verbatim* — three different shapes on one

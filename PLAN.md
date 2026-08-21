@@ -101,7 +101,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** balance < 300ms p99 from cache; paginated statement through payment-service.
 **Infra que sobe:** none new (Redis cache-aside on existing Redis). · **Diagram:** ARCHITECTURE §6.9
 
-- [ ] [Step 40](docs/steps/step-40.md) — Redis cache-aside for balance + invalidation on postings + 5s TTL backstop
+- [x] [Step 40](docs/steps/step-40.md) — Redis cache-aside for balance + invalidation on postings + 5s TTL backstop
 - [ ] [Step 41](docs/steps/step-41.md) — statement API through payment-service with opaque cursor pagination
 
 ## Sprint 10 — Immutable audit trail

@@ -45,6 +45,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); an external one debits the payer into `SPI_CLEARING` and persists `DEBITED`, awaiting settlement (step 27). The wire `status` is `PROCESSING` either way — the honest state is served by `GET /payments/{id}` (step 22). |
 | `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
+| `GET` | `/v1/accounts/me/balance` | Bearer | The caller's balance (step 40), **cache-aside on Redis** with a 5s TTL and a ledger fallback: `{accountId, balance:"874.50", currency:"BRL", asOf}`. The account comes from the JWT — no path or query parameter can name another one. `asOf` is *when the ledger was read*, so a client can tell how old the number is; a cached answer keeps the original instant. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 
 | Outcome | Status | `code` |
@@ -187,16 +188,54 @@ Polling, not DynamoDB Streams: against a 10s SPI SLA a 1s poll is invisible, and
 O(in-flight) rather than O(history); Streams remains the documented evolution, and swapping it in
 replaces `OutboxPublisher` + `SnsEventPublisher` and nothing else.
 
+### The balance read — cache-aside, and why a stale cache is harmless (step 40, ADR-0008)
+
+`GET /v1/accounts/me/balance` is the platform's highest-volume operation (~10 reads per transaction,
+every app open) and must hold **p99 < 300ms**. It is served **cache-aside** on Redis:
+
+```
+hit  → return the cached value (the ledger is never called — that silence IS the cache)
+miss → GET /internal/ledger/accounts/{id}/balance (strongly consistent) → SET balance:<id> EX 5 → return
+```
+
+The write side lives in the **other** service: ledger-service `DEL`s `balance:<debit>` and
+`balance:<credit>` **after** its posting commits (`RedisBalanceCacheInvalidator`). Only the writer knows
+the instant a cached balance became wrong, and evicting *before* the commit would open a window where a
+concurrent reader repopulates the cache with the pre-commit number and nothing invalidates it again.
+
+**The 5s TTL does two jobs**: it caps ordinary staleness, and it is the **backstop** for the eviction,
+which is deliberately best-effort — a posting that commits but whose `DEL` is lost (Redis blip, crash in
+between) must never be turned into an error for a caller whose money already moved.
+
+**Why all of this is safe — the rule that makes the cache legal.** No money decision reads it. The
+`balanceCents >= :amount` guard is a condition expression *inside* ledger-service's `TransactWriteItems`
+(Domain Safety Rule #3), so a `balance:` key that is stale, corrupt or absent changes what a customer
+*sees* for at most one TTL and can never change what the ledger *allows*. That is enforced by the build:
+`PaymentArchitectureTest#onlyTheBalanceReadDependsOnTheBalanceCache` fails if any domain class other than
+`GetBalanceUseCase` so much as references the `BalanceCache` port — a "check the balance before sending"
+shortcut in `SendPixUseCase` cannot be merged (and would be a read-then-check race even with a perfectly
+fresh cache).
+
+**Failure posture, measured not assumed**: with Redis stopped, a balance read still answers `200` in
+~13ms (every read a miss, straight to the ledger); with the ledger briefly down, reads are still served
+for accounts touched in the last 5s. Getting there took more than a `try/catch` — a cache that *hangs*
+is worse than one that fails, and the step-40 drill produced a **114-second** balance read before the
+timeouts, the fail-fast client (`RedisFailFastConfig`) and ledger-service's off-thread eviction were
+added. `cache.hit` / `cache.miss` (tagged `cache=balance`) expose the hit rate the 300ms budget rests on;
+measured p99 on a warm cache is **9.8ms** (200 serial reads — the load-test number is step 47's).
+
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
 ```
 api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPixRequest (wire shape
         + bean validation), PaymentAcceptedResponse (internal state → external "PROCESSING"),
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
+        AccountBalanceController (GET /v1/accounts/me/balance) + BalanceResponse (cents → decimal),
         PaymentExceptionHandler (domain exception → problem+json),
         OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `outbox.lag` gauge)
                                                                                    (inbound adapters)
-domain/model/     Transaction (record), PendingOutboxEvent (a stored event awaiting publication),
+domain/model/     Transaction (record), AccountBalance (cents + the instant they were true),
+                  PendingOutboxEvent (a stored event awaiting publication),
                   TransactionStatus (enum: RECEIVED, DEBITED, SENT_TO_SPI, SETTLED, REVERSED),
                   KeyResolution (where a destination key lives: internal | external PSP),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
@@ -204,9 +243,11 @@ domain/model/     Transaction (record), PendingOutboxEvent (a stored event await
                   Money (string → strictly-positive long cents)                       (plain Java)
 domain/port/      TransactionRepository, IdempotencyRepository, PixKeyResolver, LedgerClient,
                   AccountLimitClient, DailyLimitReservation, FraudScorer,
+                  BalanceCache (read/write only — evicting belongs to the ledger),
                   OutboxEventStore (the sparse index), EventPublisher (broker-agnostic by design)
                                                                                 (outbound interfaces)
 domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededException,
+                  BalanceNotFoundException,
                   FraudDeniedException, InsufficientFundsException, LedgerUnavailableException,
                   AccountLookupException, PaymentNotFoundException, IdempotencyKeyRequiredException,
                   IdempotencyKeyReuseException, RequestInProgressException,
@@ -214,10 +255,12 @@ domain/exception/ InvalidAmountException, KeyNotFoundException, LimitExceededExc
 domain/service/   EndToEndIdGenerator (BACEN E2E id minting),
                   PixOutboxEvents (which events an accepted send announces)           (plain Java)
 domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStatusUseCase,
+                  GetBalanceUseCase (cache-aside; the only class allowed to read the cache),
                   PublishOutboxEventsUseCase + PublishOutboxOutcome (publish-then-mark) (plain Java)
 infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
                    DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter),
-                   DynamoOutboxEventStore (Query gsi3 oldest-first, UpdateItem REMOVE gsi3pk)
+                   DynamoOutboxEventStore (Query gsi3 oldest-first, UpdateItem REMOVE gsi3pk),
+                   RedisBalanceCache (GET/SET balance:<id> EX 5, cache.hit/cache.miss, fails to a miss)
 infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
                    HttpLedgerClient (RestClient → ledger-service, timeouts),
                    HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
@@ -232,10 +275,11 @@ infra/config/      DynamoConfig, SnsConfig (client + topic ARN), SchedulingConfi
 `Clock` is injected rather than read as `Instant.now()`: the transaction's instant, and the minute
 baked into its `endToEndId`, are values the service decides — and values a test can pin.
 
-Two ArchUnit rules in `PaymentArchitectureTest` fail the build on a violation: `domain/` imports
-nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson), and `api/` never depends on an
+Three ArchUnit rules in `PaymentArchitectureTest` fail the build on a violation: `domain/` imports
+nothing outward (no Spring / AWS SDK / servlet / JWT / Jackson); `api/` never depends on an
 interface in `domain/` — which is what makes "a controller may not reach the transactions table"
-mechanical rather than a review habit.
+mechanical rather than a review habit; and **only `GetBalanceUseCase` may depend on `BalanceCache`**,
+which is ADR-0008's "the cache never feeds a money decision" turned into a build failure (step 40).
 
 ## Configuration
 
@@ -254,6 +298,8 @@ mechanical rather than a review habit.
 | `SNS_TOPIC_ARN` / `pix.events.topic-arn` | `arn:aws:sns:us-east-1:000000000000:pix-events` | The topic the outbox publisher drains into (step 29). Injected, never looked up by name: a deployed service holds `sns:Publish` on exactly this ARN and may not list topics (ADR-0013). |
 | `OUTBOX_PUBLISHER_DELAY_MS` / `pix.outbox.publisher.fixed-delay-ms` | `1000` | Poll interval of the outbox publisher. `fixedDelay` (not rate), so a slow tick never overlaps the next and cannot publish the same event twice. |
 | `OUTBOX_PUBLISHER_BATCH_SIZE` / `pix.outbox.publisher.batch-size` | `25` | Max events one tick may publish — a backlog drains in bounded chunks, never one unbounded write storm. |
+| `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis for the balance cache (step 40); compose overrides the host to `redis`. A Redis outage degrades balance reads to ledger speed — every read becomes a miss — and never to errors. |
+| `BALANCE_CACHE_TTL` / `pix.balance-cache.ttl` | `5s` | How long a cached balance may be served. It does two jobs: caps ordinary staleness, and — when ledger-service's post-commit eviction is lost (it is best-effort) — is the backstop that bounds how long a wrong number can be displayed. |
 | `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs. Integration tests set it `false` and drive the tick explicitly (Spring caches contexts; a live poller would drain the shared table mid-assertion). |
 
 ## Run
@@ -290,6 +336,14 @@ curl -s localhost:8084/v1/payments/$TX -H "Authorization: Bearer $TOKEN" | jq
 
 # an unknown id — or someone else's transaction — ⇒ 404 PAYMENT_NOT_FOUND (no existence leak)
 curl -s localhost:8084/v1/payments/tx-does-not-exist -H "Authorization: Bearer $TOKEN" | jq
+
+# balance (step 40): first call is a miss that populates Redis, the second is a hit
+curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq
+docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001
+docker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001   # <= 5
+# the hit rate (a Prometheus registry lands in step 44; until then, the Actuator metrics endpoint)
+curl -s localhost:8084/actuator/metrics/cache.hit  | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/metrics/cache.miss | jq '.measurements[0].value'
 
 # "0.00" ⇒ 400 INVALID_AMOUNT (the strictly-positive rule the wire pattern cannot express)
 curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
@@ -372,6 +426,9 @@ curl -s localhost:8084/actuator/metrics/outbox.lag | jq
   limit release, timeout/error ⇒ proceed flagged `fraudSkipped`).
 - [ADR-0007](../../docs/adr/0007-auth-service-jwt-no-mfa.md) — the JWT whose `accountId` claim is the
   debtor, never the payload.
+- [ADR-0008](../../docs/adr/0008-redis-balance-cache.md) — Redis cache-aside for balance reads: 5s TTL,
+  invalidation-on-write by ledger-service, and the correctness rule that the cache serves display reads
+  only; step 40 implements the read half here.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
 - [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited

@@ -8,7 +8,9 @@
 - **Port:** `8085`
 - **Depends on:** `common-lib` (error model, correlation-id log pattern, JWT validation)
 - **Infra:** LocalStack (DynamoDB, table `pix_ledger`) — created by the step-12 init script and seeded
-  with the platform's money supply by `infra/localstack/init/05-seed-ledger.sh`
+  with the platform's money supply by `infra/localstack/init/05-seed-ledger.sh`; **Redis** (step 40) as
+  a *soft* dependency used only to delete the `balance:` keys a posting made stale — postings commit
+  and succeed with Redis down
 
 ## Why it exists
 
@@ -123,6 +125,27 @@ first. The internal seam the public statement API (step 41) will proxy.
 - **Money at the edge.** Each entry ships `amount` (signed decimal string, `"-125.50"` on a DEBIT) and
   `amountCents` (the signed integer), the same one-`long`-formatted-once discipline as the balance.
 
+### Cache invalidation on write (step 40, ADR-0008)
+
+After a posting commits, the ledger **deletes** the cached balances of both legs —
+`DEL balance:<debit> balance:<credit>` in Redis, one variadic round-trip. That is the only thing this
+service does with Redis: it holds a client to *invalidate*, never to read. A balance the ledger itself
+needed would come from the strongly-consistent `GetItem` above; a cached one would be a lie waiting to
+happen.
+
+- **After the commit, not before.** Evicting first opens a window where a concurrent reader misses,
+  reads the still-pre-commit balance and repopulates the cache with the old number — and nothing
+  invalidates it a second time, so the stale value survives a whole TTL.
+- **Best-effort, and that is a decision.** The money is already durable. Turning a Redis outage into a
+  failed posting would trade ≤5s of display staleness for a caller who believes nothing happened when
+  the debit in fact landed. So the failure is swallowed at WARN, and payment-service's short TTL is the
+  backstop. (A replay evicts too — the original commit's `DEL` may have been the one that was lost.)
+- **A refused posting evicts nothing.** No money moved, so no cached balance became stale; evicting
+  anyway would let a client blow the hit rate away with malformed requests.
+- **The cache has no vote on money.** `balanceCents >= :amount` is a condition expression *inside* the
+  `TransactWriteItems`. `BalanceCacheInvalidationIT#aStaleCacheDoesNotAuthorizeAnOverdraft` stuffs Redis
+  with a balance ten times the real one and still gets `422 INSUFFICIENT_FUNDS`.
+
 ### System accounts
 
 `ACCOUNT#SEED` (the funding source, negative by construction) and `ACCOUNT#SPI_CLEARING` (money in
@@ -141,13 +164,15 @@ api/    InternalLedgerController (/internal/ledger/accounts/{id}/balance + /entr
         LedgerExceptionHandler (domain exception → problem+json)                  (inbound adapters)
 domain/model/     Balance, LedgerEntry, StatementPage, PostingCommand, PostingResult (records),
                   Direction (enum)                                                    (plain Java)
-domain/port/      LedgerRepository                                            (outbound interface)
+domain/port/      LedgerRepository, BalanceCacheInvalidator (deletes only — it cannot read a
+                  balance, so it cannot be misused to decide one)             (outbound interfaces)
 domain/exception/ LedgerAccountNotFound / InsufficientFunds / InvalidPosting /
                   PostingConflict / LedgerBusy / InvalidCursor exceptions             (plain Java)
 domain/service/   AccountPolicy (system vs customer account rules)                     (plain Java)
 domain/usecase/   GetBalanceUseCase, PostDoubleEntryUseCase, GetStatementUseCase       (plain Java)
 infra/persistence/ DynamoLedgerRepository (AWS SDK — the transaction, its conditions and the
-                   reading of cancellationReasons live here and nowhere else)
+                   reading of cancellationReasons live here and nowhere else),
+                   RedisBalanceCacheInvalidator (one DEL of the two `balance:` keys, step 40)
 infra/config/      DynamoConfig, LedgerBeansConfig (composition root, incl. the Clock),
                    AwsProperties, CorsConfig                                (outbound adapter + wiring)
 ```
@@ -169,6 +194,7 @@ mechanical rather than a review habit.
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis, used **only** to delete `balance:<accountId>` after a posting (step 40); compose overrides the host to `redis`. A Redis outage costs display freshness (bounded by payment-service's 5s TTL), never a posting. |
 
 ## Run
 
@@ -258,6 +284,8 @@ curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?cursor=not-a-va
   one `TransactWriteItems`, and the guards are conditions inside it.
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition; the ledger
   owns `pix_ledger`, so every other service reads it through this API, never through the table.
+- [ADR-0008](../../docs/adr/0008-redis-balance-cache.md) — the Redis balance cache: this service owns
+  the **invalidation** half (post-commit, best-effort), and is deliberately not allowed to read it.
 - [ADR-0009](../../docs/adr/0009-relational-ledger-counterpart-lab.md) — the PostgreSQL counterpart lab
   that implements the same ledger with pessimistic and optimistic locking, for contrast.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.

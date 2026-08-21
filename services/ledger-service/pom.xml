@@ -52,6 +52,15 @@
             <artifactId>dynamodb</artifactId>
         </dependency>
 
+        <!-- Redis client (Lettuce) via Spring Data Redis — step 40. The ledger holds a Redis client for
+             exactly ONE reason: to DELETE the balance keys a posting made stale (ADR-0008 invalidation
+             on write, RedisBalanceCacheInvalidator). It never reads a balance from Redis; the money
+             decision is the conditional write in DynamoDB. Confined to infra/, as always. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- Context-load + repository + controller ITs (*IT → failsafe, runs on `mvn verify`),
              plus Mockito for the adapter unit test that asserts ConsistentRead=true. -->
         <dependency>

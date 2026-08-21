@@ -1,13 +1,15 @@
 package com.platinumcoin.pix.payment.domain.port;
 
+import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 
 /**
- * Outbound port for commanding the ledger to move money — ledger-service is the platform's only writer
- * of {@code pix_ledger} (ADR-0006), so payment-service never touches balances itself; it asks. The
- * domain declares the shape; {@code infra/} implements it against
- * {@code POST /internal/ledger/postings} (so no HTTP type reaches the use case, ADR-0010).
+ * Outbound port for the ledger seam — ledger-service is the platform's only writer <i>and</i> the only
+ * trustworthy reader of {@code pix_ledger} (ADR-0006), so payment-service never touches balances
+ * itself; it asks. The domain declares the shape; {@code infra/} implements it against
+ * {@code POST /internal/ledger/postings} and {@code GET /internal/ledger/accounts/{id}/balance} (so no
+ * HTTP type reaches the use case, ADR-0010).
  *
  * <p><b>The debit and credit are one atomic ledger transaction</b> (Domain Safety Rule #4): this port
  * hands the ledger both legs and a {@code txId}, and the ledger commits them together or not at all.
@@ -66,4 +68,21 @@ public interface LedgerClient {
             String clearingAccountId,
             long amountCents,
             String description);
+
+    /**
+     * The account's balance in integer cents, straight from the ledger's strongly-consistent read
+     * (step 13) — the source of truth behind the cache (step 40, ADR-0008).
+     *
+     * <p>This is the <b>fallback on a cache miss</b>, and it is a <i>display</i> read: nothing in this
+     * service may turn its answer into permission to move money. The overdraft guard is the condition
+     * expression inside the ledger's own transaction (Domain Safety Rule #3), which is precisely why
+     * a stale cache in front of this method is harmless.
+     *
+     * @throws BalanceNotFoundException   the ledger holds no BALANCE item for that account
+     *                                    ({@code 404}) — not the same fact as a zero balance
+     * @throws LedgerUnavailableException the ledger was unreachable, timed out, or answered
+     *                                    unexpectedly; nothing is cached and the caller gets a
+     *                                    {@code 503}
+     */
+    long readBalanceCents(String accountId);
 }

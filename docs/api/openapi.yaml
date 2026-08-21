@@ -205,6 +205,17 @@ paths:
     get:
       tags: [accounts]
       summary: Current balance (cache-backed, <300ms p99)
+      description: |
+        The caller's balance, derived **only** from the JWT (`accountId` claim) — there is no path or
+        body parameter that could name another account. Served by payment-service (8084), which owns
+        the ledger seam and the cache in front of it.
+
+        **Cache-aside with a 5s TTL** (ADR-0008): a hit is served from Redis; a miss reads
+        ledger-service's strongly-consistent balance and populates the cache. Every ledger posting
+        deletes the affected keys after it commits, so the value can be **at most ~5s stale** — which
+        `asOf` reports explicitly. The staleness is safe by construction: **no money decision reads
+        this value**; the `balance >= amount` guard is a condition expression inside the ledger's
+        atomic write, so a stale cache can never authorize an overdraft.
       responses:
         '200':
           description: Balance
@@ -213,10 +224,31 @@ paths:
               schema:
                 type: object
                 properties:
-                  accountId: { type: string }
+                  accountId: { type: string, example: acc-001 }
                   balance: { type: string, example: "874.50" }
                   currency: { type: string, example: BRL }
-                  asOf: { type: string, format: date-time }
+                  asOf:
+                    type: string
+                    format: date-time
+                    description: >-
+                      When the ledger was read for this value — not the time of the response. A cached
+                      answer keeps the instant it was cached with, so a client can tell how old the
+                      number is.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: >-
+            `BALANCE_NOT_FOUND` — the ledger holds no balance for the caller's account. Deliberately
+            not a 200 with zero: "no such account" and "no money" are different facts.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: >-
+            `LEDGER_UNAVAILABLE` — the balance was not in the cache and ledger-service could not be
+            reached. Carries `Retry-After`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /accounts/me/statement:
     get:

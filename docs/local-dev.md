@@ -55,7 +55,8 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `AWS_REGION` | `us-east-1` | — |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds |
 | `JWT_SECRET` | dev-only value in compose | HS256 signing/validation |
-| `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Balance cache |
+| `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Redis (ElastiCache stand-in, ADR-0008). Read by **fraud-service** (velocity counters, step 24), **payment-service** (balance cache-aside, step 40) and **ledger-service** (which only *deletes* `balance:` keys after a posting — it never reads one) |
+| `BALANCE_CACHE_TTL` | `5s` | How long a cached balance may be served (payment-service). Doubles as the backstop when the ledger's best-effort eviction is lost: it bounds staleness to this window. Raising it trades hit rate for how long a customer can see a number that already moved |
 | `BACEN_BASE_URL` | `http://mock-bacen-spi:9090` | SPI stub. Read by account-service (the DICT lookup for keys not held locally, step 30) and later by settlement-service |
 | `BACEN_CONNECT_TIMEOUT_MS` / `BACEN_READ_TIMEOUT_MS` | `500` / `1500` | account-service's budget for the DICT call — it is on the **synchronous** send path, so a gone SPI must surface as a timeout (→ `503 DIRECTORY_UNAVAILABLE`), never a pinned request thread |
 | `BACEN_LATENCY_MS` | `2000` | Simulated **settlement** latency (0–10000). Not applied to the DICT lookup, on purpose (see `services/mock-bacen-spi/README.md`) |
@@ -1016,6 +1017,77 @@ curl -s "localhost:8084/v1/accounts/me/statement?limit=5" -H "Authorization: Bea
 docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001
 ```
 
+**Seeing cache-aside actually work (step 40, ADR-0008).** Four commands, four properties:
+
+```bash
+RC="docker compose -f infra/docker-compose.yml exec -T redis redis-cli"
+
+# (a) miss → ledger → populate. The key did not exist; now it does, with a TTL.
+$RC DEL balance:acc-001
+curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq
+$RC GET balance:acc-001          # {"balanceCents":1000000,"asOf":"…"}
+$RC TTL  balance:acc-001         # <= 5  → the staleness bound, in seconds
+
+# (b) hit. Same answer, no ledger call — confirm in the logs of BOTH services:
+curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq
+docker compose -f infra/docker-compose.yml logs --tail=20 payment-service | grep -i "served from the cache"
+# ledger-service logs NOTHING for this request: that silence is the point of the cache.
+
+# (c) invalidation on write. Send a Pix, then look: the key is gone, post-commit.
+curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+  -d '{"pixKey":"bob@platinum.com","amount":"7.00"}' >/dev/null
+$RC GET balance:acc-001          # (nil) → evicted by ledger-service
+curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq   # fresh
+
+# (d) hit/miss metrics — the KPI the 300ms budget rests on (graphed in step 44).
+#     NOTE: /actuator/prometheus does not exist yet — the Prometheus registry is wired into every
+#     service in step 44. Until then the same counters are on the Actuator metrics endpoint:
+curl -s localhost:8084/actuator/metrics/cache.hit  | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/metrics/cache.miss | jq '.measurements[0].value'
+```
+
+Measured on this stack (200 serial reads, warm cache): **p50 3.9ms · p95 5.2ms · p99 9.8ms** — against a
+300ms budget. That is a single-client sanity check, not a load test; the real number under 500+ TPS is
+step 47's job.
+
+> **The drill that proves the design, not just the feature — and it found a real bug.** Stop Redis
+> (`docker compose -f infra/docker-compose.yml stop redis`) and watch what does *not* break: a balance
+> read still answers `200` in ~13ms (from the ledger, with a WARN naming the unreachable cache) and a
+> send still answers `202` in ~200ms. `start redis` puts it back, and the client reconnects on its own.
+>
+> **What it looked like before the fix, because this is the lesson:** the first version wrapped every
+> Redis call in a `try/catch` and called that "best-effort". With Redis *stopped* the balance read took
+> **114 seconds** and — far worse — a send returned **`503 LEDGER_UNAVAILABLE` for a debit that had
+> already committed**, because ledger-service's eviction blocked past payment-service's 3s read timeout.
+> A cache that **hangs** is worse than a cache that fails, and catching an exception does nothing about
+> it. Three changes fixed it, in increasing order of importance: bounded Redis timeouts
+> (`spring.data.redis.timeout` / `connect-timeout`), a fail-fast client that rejects commands while
+> disconnected instead of queueing them (`RedisFailFastConfig` — Lettuce queues by default, and queued
+> commands ignore the command timeout), and finally moving the eviction **off the posting's thread**
+> entirely (`RedisBalanceCacheInvalidator`), because an optional side effect must not share the latency
+> of the transaction that triggered it.
+>
+> **And the inverse, which is the actual safety rule:** a *stale* cache cannot authorize an overdraft.
+> Hand-write a fat lie into the cache and then ask the ledger for more than alice really has:
+>
+> ```bash
+> $RC SET balance:acc-001 '{"balanceCents":99999999,"asOf":"2026-01-01T00:00:00Z"}'
+> curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq -r .balance
+> #   999999.99   ← the lie, served to the screen
+> curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+>   -H 'Content-Type: application/json' -d '{"txId":"tx-stale-drill-1","debitAccount":"acc-001",
+>   "creditAccount":"acc-002","amountCents":5000000,"entryType":"PIX_INTERNAL","description":"drill"}' | jq
+> #   422 INSUFFICIENT_FUNDS — "Account acc-001 has 999300 cents, which is short of the 5000000 requested."
+> $RC DEL balance:acc-001
+> ```
+>
+> The guard is the `balanceCents >= :amount` condition **inside** the ledger's `TransactWriteItems`, and
+> it reads DynamoDB — Redis has no vote. Note the drill goes straight at **ledger-service**, not at
+> `POST /v1/payments/pix`: through payment-service the daily limit (R$ 5,000) refuses a send this large
+> first, so it would prove `LIMIT_EXCEEDED` and never reach the guard under test. Same property, asserted
+> in CI by `BalanceCacheInvalidationIT#aStaleCacheDoesNotAuthorizeAnOverdraft`.
+
 ### 5.8 Audit trail in S3
 
 ```bash
@@ -1049,6 +1121,8 @@ mvn -pl services/ledger-service verify   # one module only
 ```
 
 Integration tests do **not** need the compose stack running — Testcontainers manages disposable LocalStack/Redis containers per test run. That separation (compose = manual/E2E playground; Testcontainers = automated tests) keeps tests hermetic and repeatable.
+
+> **Expected noise (step 40): `Cached balances could not be evicted…` in ledger-service's ITs.** Only the ITs that are *about* the cache (`BalanceCacheInvalidationIT`, and payment's `BalanceCacheIT`/`RedisBalanceCacheIT`) start a Redis container; the other posting ITs run without one, so each committed posting logs that WARN and carries on. That is not a broken test — it is ADR-0008's best-effort eviction being exercised on every run, and the assertion that matters (the money moved, atomically) is unaffected. The keys those tests would delete are unique per-run fixture accounts, so a developer with the compose stack up loses nothing either.
 
 > ### Docker Engine API version — pinned in the build, nothing to pass (step 12)
 >

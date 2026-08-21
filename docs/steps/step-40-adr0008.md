@@ -44,7 +44,19 @@ curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" 
 docker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001   # ≤ 5
 ```
 
-**(d) The correctness rule — a stale cache does NOT authorize an overdraft** (the money decision reads the ledger's conditional write, not Redis): drive a debit that exceeds the balance while a stale, larger balance sits in cache → it still gets `422 INSUFFICIENT_FUNDS` (see the [ADR-0001 companion](step-16-adr0001.md) §2b).
+**(d) The correctness rule — a stale cache does NOT authorize an overdraft** (the money decision reads the ledger's conditional write, not Redis). Put a fat lie in the cache, then ask for more than the account really holds:
+
+```bash
+docker compose -f infra/docker-compose.yml exec redis redis-cli \
+  SET balance:acc-001 '{"balanceCents":99999999,"asOf":"2026-01-01T00:00:00Z"}'
+curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq -r .balance  # 999999.99
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"txId":"tx-drill-1","debitAccount":"acc-001",
+  "creditAccount":"acc-002","amountCents":5000000,"entryType":"PIX_INTERNAL","description":"drill"}' | jq
+#   422 INSUFFICIENT_FUNDS, naming the REAL balance in cents
+```
+
+Note it is driven against **ledger-service**, not `POST /v1/payments/pix`: through payment-service the daily limit (R$ 5,000) refuses a send that large first, so it would demonstrate `LIMIT_EXCEEDED` and never reach the guard under test (see the [ADR-0001 companion](step-16-adr0001.md) §2b). Asserted in CI by `BalanceCacheInvalidationIT#aStaleCacheDoesNotAuthorizeAnOverdraft`.
 
 ---
 
@@ -58,7 +70,10 @@ docker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-
 | Availability bonus | ledger down → balance still served from Redis (≤5s stale) | Losing the cache degrades latency, not correctness |
 
 ```bash
-curl -s localhost:8084/actuator/prometheus | grep -E 'cache_hit|cache_miss'
+# /actuator/prometheus arrives with the Prometheus registry in step 44; until then the same counters
+# are on the Actuator metrics endpoint (step 40 exposes cache.hit / cache.miss, tagged cache=balance):
+curl -s localhost:8084/actuator/metrics/cache.hit  | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/metrics/cache.miss | jq '.measurements[0].value'
 ```
 
 ---
@@ -68,9 +83,11 @@ curl -s localhost:8084/actuator/prometheus | grep -E 'cache_hit|cache_miss'
 | Concern | Where it lives (planned layout / conventions) |
 |---|---|
 | Redis container (ElastiCache stand-in) | `infra/docker-compose.yml` (Step 23) |
-| `BalanceCache` (`get`/`put` TTL 5s/`evict`) | `services/payment-service/.../infra/...` (Step 40) |
-| `GET /v1/accounts/me/balance` cache-aside (JWT-scoped) | payment-service (Step 40) |
-| Invalidation on postings (post-commit evict) | ledger-service (Step 40, hooked into Step 14 posting) |
+| `BalanceCache` port (`get`/`put`, TTL 5s) + `RedisBalanceCache` | payment-service `domain/port/` + `infra/persistence/` (Step 40) |
+| `GET /v1/accounts/me/balance` cache-aside (JWT-scoped) | payment-service `api/AccountBalanceController` + `domain/usecase/GetBalanceUseCase` (Step 40) |
+| Invalidation on postings (post-commit evict) | ledger-service `domain/port/BalanceCacheInvalidator` + `infra/persistence/RedisBalanceCacheInvalidator` (Step 40, hooked into Step 14 posting). **Note the split:** the reader's port has no `evict` and the writer's has no `get` — invalidation belongs to whoever knows the balance changed, and neither service can misuse the other's half |
+| Fail-fast Redis client (bounded timeouts, reject-while-disconnected) | `RedisFailFastConfig` in **both** services (Step 40 — see ADR-0008's implementation notes) |
+| "The cache never feeds a money decision", as a build failure | `PaymentArchitectureTest#onlyTheBalanceReadDependsOnTheBalanceCache` (Step 40) |
 | Strongly consistent source read | `DynamoLedgerRepository.getBalance` (Step 13) |
 | `cache.hit` / `cache.miss` metrics | payment-service (Step 40 → dashboards Step 44) |
 | Narrative | [ARCHITECTURE.md §6.9, §7.2](../../ARCHITECTURE.md) |

@@ -57,6 +57,26 @@ public abstract class RedisTestBase {
      */
     @DynamicPropertySource
     static void redisProperties(DynamicPropertyRegistry registry) {
+        registerRedisProperties(registry);
+    }
+
+    /**
+     * The same registration, callable from a test that <b>already extends another base</b> — Java has
+     * single inheritance, and step 40's cache ITs need LocalStack <i>and</i> Redis at once (the ledger
+     * commits a posting in DynamoDB, then evicts a Redis key). Such a test extends
+     * {@link LocalStackTestBase} and adds:
+     *
+     * <pre>{@code
+     * @DynamicPropertySource
+     * static void redis(DynamicPropertyRegistry registry) {
+     *     RedisTestBase.registerRedisProperties(registry);
+     * }
+     * }</pre>
+     *
+     * <p>Referencing this method loads the class and therefore starts the same singleton container the
+     * subclasses share — one Redis per module JVM either way.
+     */
+    public static void registerRedisProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.data.redis.host", REDIS::getHost);
         registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(REDIS_PORT));
     }

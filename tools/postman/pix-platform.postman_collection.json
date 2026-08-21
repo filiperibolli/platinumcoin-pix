@@ -934,6 +934,92 @@
           }
         },
         {
+          "name": "Balance (cache-aside, 5s TTL)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the account is the token\\'s, never a parameter', () => pm.expect(body.accountId).to.be.a('string'));",
+                  "pm.test('money is a decimal string at the edge', () => pm.expect(body.balance).to.match(/^-?\\d+\\.\\d{2}$/));",
+                  "pm.test('currency is BRL', () => pm.expect(body.currency).to.eql('BRL'));",
+                  "// asOf is WHEN THE LEDGER WAS READ, not now: a cached hit keeps the original instant, which is",
+                  "// how a client can tell the number may be up to the 5s TTL old (ADR-0008).",
+                  "pm.test('asOf says how fresh the number is', () => pm.expect(Date.parse(body.asOf)).to.be.a('number'));",
+                  "pm.collectionVariables.set('balanceCents', Math.round(parseFloat(body.balance) * 100));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/balance",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "balance"
+              ]
+            },
+            "description": "The caller's balance (step 40), served **cache-aside** on Redis with a 5s TTL and a ledger fallback.\n\n**Run it twice.** The first call is a *miss*: payment-service reads ledger-service's strongly-consistent balance and writes `balance:<accountId>` with `EX 5`. The second is a *hit* — ledger-service logs nothing at all, and that silence is the whole point. Watch the counters move:\n\n```\ncurl -s localhost:8084/actuator/metrics/cache.hit | jq '.measurements[0].value'   # /actuator/prometheus arrives in step 44\ndocker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001\ndocker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001\n```\n\n**The account comes from the JWT** — there is no path or query parameter that could name another one (Domain Safety Rule #1).\n\n**Why a stale value is harmless:** no money decision reads it. The `balance >= amount` guard is a condition expression *inside* the ledger's atomic write, so the cache can never authorize an overdraft — it can only make a *displayed* number up to 5s old, which `asOf` reports honestly."
+          }
+        },
+        {
+          "name": "Balance — after a send (invalidated, not stale)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "const before = Number(pm.collectionVariables.get('balanceCents'));",
+                  "const now = Math.round(parseFloat(body.balance) * 100);",
+                  "// The posting evicted balance:<accountId> AFTER it committed, so this read is a fresh miss and",
+                  "// shows the money that actually moved — no waiting for the TTL to lapse.",
+                  "pm.test('the send is already reflected', () => pm.expect(now).to.be.below(before));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/balance",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "balance"
+              ]
+            },
+            "description": "Invalidation-on-write, seen from the client (step 40, ADR-0008).\n\n**Order:** run **Balance (cache-aside, 5s TTL)** (captures `balanceCents`), then **Send Pix — alice → bob (202)**, then this card.\n\nThe balance is *already* lower. Nothing here waited for the 5s TTL: ledger-service deleted `balance:<debit>` and `balance:<credit>` in one `DEL` **after** its `TransactWriteItems` committed, so this read is a miss that goes to the ledger.\n\nEviction is deliberately **best-effort** — if the `DEL` were lost (a Redis blip, a crash right after the commit), this card would show the *old* number for up to 5 seconds and then correct itself. That is the TTL doing its second job, and it is why the TTL is short."
+          }
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",
@@ -2235,6 +2321,10 @@
     },
     {
       "key": "inboundEndToEndId",
+      "value": ""
+    },
+    {
+      "key": "balanceCents",
       "value": ""
     }
   ]

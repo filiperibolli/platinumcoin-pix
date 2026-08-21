@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.infra.config;
 
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
+import com.platinumcoin.pix.payment.domain.port.BalanceCache;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
 import com.platinumcoin.pix.payment.domain.port.EventPublisher;
 import com.platinumcoin.pix.payment.domain.port.FraudScorer;
@@ -10,6 +11,7 @@ import com.platinumcoin.pix.payment.domain.port.OutboxEventStore;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
+import com.platinumcoin.pix.payment.domain.usecase.GetBalanceUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
@@ -74,6 +76,17 @@ public class PaymentBeansConfig {
     @Bean
     GetPaymentStatusUseCase getPaymentStatusUseCase(TransactionRepository transactions) {
         return new GetPaymentStatusUseCase(transactions);
+    }
+
+    /**
+     * The cached balance read (step 40, ADR-0008). Note what it is <b>not</b> wired to: nothing that
+     * moves money. The cache-aside policy sits between exactly two ports — the cache and the ledger's
+     * read — and {@code SendPixUseCase} above shares neither, which is the composition-root half of
+     * "the cache never feeds a money decision" (the ArchUnit half is in {@code PaymentArchitectureTest}).
+     */
+    @Bean
+    GetBalanceUseCase getBalanceUseCase(BalanceCache balanceCache, LedgerClient ledger, Clock clock) {
+        return new GetBalanceUseCase(balanceCache, ledger, clock);
     }
 
     /**
