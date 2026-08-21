@@ -113,7 +113,49 @@ pix:
       # fires the in-code SLO alert (step 35) and, from step 44, the Prometheus alert on the same gauge —
       # one number, so the code and the dashboard never disagree on what "late" means.
       slo-breach-seconds: ${RECONCILIATION_SLO_BREACH_SECONDS:300}
-  # Master switch for every background job in this service (today: the queue consumer). True in every
+  # The immutable audit trail (step 43). settlement-service is the platform's audit writer: it consumes
+  # the ONLY unfiltered subscription on pix-events (audit-queue, step 42) and appends every event as a
+  # JSON line to S3. Audit does not act on events, it records that they happened — which is why the
+  # subscription has no filter and why this consumer parses only enough of the envelope (eventId) to
+  # dedupe and log; the line stored is the event verbatim.
+  audit:
+    # The immutable bucket: versioning + Object Lock COMPLIANCE with a 1825-day (5-year, the BACEN
+    # retention) DEFAULT retention, applied by S3 to every object. The writer never asks for retention,
+    # so it can never forget to (infra/localstack/init/09-audit.sh).
+    bucket: ${AUDIT_BUCKET:pix-audit-log}
+    # The <service> segment of the object key yyyy/MM/dd/HH/<service>-<uuid>.jsonl — who wrote the
+    # object. Configuration, not a constant: a second writer (a replica, or another service) drops its
+    # own name into the same partition without ever colliding.
+    writer-name: ${AUDIT_WRITER_NAME:settlement-service}
+    # The unfiltered queue this writer consumes, resolved to its URL at startup: an audit writer that
+    # boots healthy while consuming nothing would leave a compliance obligation silently unmet.
+    queue-name: ${AUDIT_QUEUE_NAME:audit-queue}
+    batch:
+      # The cost/latency dial. ~100 events per object keeps S3 requests (and tiny-object overhead) down
+      # by two orders of magnitude versus one PutObject per event; the price is that an event may sit in
+      # memory — durably held by SQS the whole time — until the batch is due.
+      max-events: ${AUDIT_BATCH_MAX_EVENTS:100}
+      # The ceiling on that wait, measured from the OLDEST buffered event, so a trickle of traffic can
+      # never leave a line unwritten indefinitely. 30s is the promise the consumer's long poll is capped
+      # by (see wait-time-seconds below).
+      max-age-seconds: ${AUDIT_BATCH_MAX_AGE_SECONDS:30}
+    consumer:
+      # Messages per receive (SQS maximum is 10) — they are only buffered here, never worked on, so the
+      # tick is cheap regardless.
+      batch-size: ${AUDIT_BATCH_SIZE:10}
+      # How long a receive may block. Capped at runtime by the time left before the batch's flush
+      # deadline: a static 20s poll against a 30s promise would let a batch age up to 50s.
+      wait-time-seconds: ${AUDIT_WAIT_TIME_SECONDS:20}
+      # How long this process owns a buffered message. MUST exceed max-age-seconds plus the write: the
+      # batch holds messages past the queue's own 30s visibility timeout, so whoever holds a message
+      # extends its lease or SQS hands it to the next receiver and the line is written twice for
+      # nothing. If this process dies mid-batch the lease simply expires and everything is redelivered.
+      lease-seconds: ${AUDIT_LEASE_SECONDS:120}
+      # Gap between polls; the long poll already does the waiting.
+      fixed-delay-ms: ${AUDIT_CONSUMER_DELAY_MS:500}
+
+  # Master switch for every background job in this service (the settlement consumer, the reconciliation
+  # scanner and the audit writer). True in every
   # real run; integration tests set it false and drive one tick explicitly, because Spring caches
   # contexts across test classes and a live consumer would drain the shared queue mid-assertion.
   schedulers:

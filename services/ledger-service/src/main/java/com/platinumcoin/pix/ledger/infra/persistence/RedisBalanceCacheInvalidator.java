@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -54,7 +55,18 @@ public class RedisBalanceCacheInvalidator implements BalanceCacheInvalidator {
     private final StringRedisTemplate redis;
     private final Executor executor;
 
-    public RedisBalanceCacheInvalidator(StringRedisTemplate redis, Executor balanceCacheEvictionExecutor) {
+    /**
+     * The executor is {@link Qualifier qualified} by name rather than resolved by type. It became
+     * necessary in step 43: this service's first scheduled job brought {@code @EnableScheduling}, which
+     * registers Spring's own {@code taskScheduler} — also an {@link Executor} — so a by-type injection
+     * suddenly had two candidates and the context stopped loading. Naming the one intended here is the
+     * right fix rather than marking a {@code @Primary}: eviction must run on the small, bounded,
+     * discard-on-saturation pool built for it, and never on the scheduler's threads, where a slow Redis
+     * would delay unrelated background jobs.
+     */
+    public RedisBalanceCacheInvalidator(
+            StringRedisTemplate redis,
+            @Qualifier("balanceCacheEvictionExecutor") Executor balanceCacheEvictionExecutor) {
         this.redis = redis;
         this.executor = balanceCacheEvictionExecutor;
     }

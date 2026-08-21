@@ -69,6 +69,14 @@
             <artifactId>sqs</artifactId>
         </dependency>
 
+        <!-- S3 SDK v2: the immutable audit trail (step 43). One PutObject per batch of events into
+             pix-audit-log, whose Object Lock (COMPLIANCE, 5y) the bucket applies for us — the writer
+             never opts in to retention, so it can never forget to. Confined to infra/. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
         <!-- Context-load + consumer ITs (*IT → failsafe, runs on `mvn verify`). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

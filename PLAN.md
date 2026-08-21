@@ -109,7 +109,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Infra que sobe:** SQS `audit-queue` + S3 buckets. · **Diagram:** ARCHITECTURE §6.10
 
 - [x] [Step 42](docs/steps/step-42.md) — LocalStack init: `audit-queue` (+DLQ, all-events subscription) + S3 buckets
-- [ ] [Step 43](docs/steps/step-43.md) — immutable audit trail: audit-queue consumer → S3 JSON lines; statement cold-archive job
+- [x] [Step 43](docs/steps/step-43.md) — immutable audit trail: audit-queue consumer → S3 JSON lines; statement cold-archive job
 
 ## Sprint 11 — Observability
 **Flow delivered:** technical + business-funnel dashboards; silence alerts; correlationId path tracing.

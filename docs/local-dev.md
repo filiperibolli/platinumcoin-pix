@@ -50,7 +50,7 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `AWS_ENDPOINT_URL` | `http://localstack:4566` | Point the SDK at LocalStack (SNS/SQS only — see below) |
+| `AWS_ENDPOINT_URL` | `http://localstack:4566` | Point the SDK at LocalStack (SNS/SQS **and S3** — not DynamoDB, see below) |
 | `DYNAMODB_ENDPOINT_URL` | `http://dynamodb-local:8000` | Point the DynamoDB client at the standalone `dynamodb-local` container, not LocalStack (`docs/load/BOTTLENECK.md`). Falls back to `AWS_ENDPOINT_URL` if unset (`aws.dynamodb-endpoint-url: ${DYNAMODB_ENDPOINT_URL:${aws.endpoint-url}}`) — so `LocalStackTestBase` ITs, which only override `aws.endpoint-url`, are unaffected, but a service run **outside compose** (e.g. `spring-boot:run`, §5.x below) must set this explicitly or its DynamoDB calls will hit LocalStack, which no longer serves it (`501 Service 'dynamodb' is not enabled`) |
 | `AWS_REGION` | `us-east-1` | — |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds |
@@ -76,6 +76,16 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `NOTIFICATION_STREAM_TIMEOUT_MS` | `1800000` (30 min) | How long one SSE connection may live before the server closes it. A closing stream is a non-event: `EventSource` reconnects on its own, which is much of why SSE was chosen over WebSocket |
 | `NOTIFICATION_HEARTBEAT_DELAY_MS` | `25000` | Heartbeat sweep interval. Under the ~30s idle timeout common in proxies/load balancers, so a silent stream is never reclaimed underneath us — and it doubles as the registry's garbage collector, since a vanished client is only discovered by a failed write |
 | `NOTIFICATION_TOKEN_PARAM` | `access_token` | Query parameter the SSE handshake accepts a token in, because a browser's `EventSource` cannot set headers. **Blank it to accept only the `Authorization` header.** The route is *not* on the JWT allow-list: the parameter is rewritten into a header before common-lib's filter runs, so there is still exactly one JWT verifier in the platform |
+| `AUDIT_QUEUE_NAME` | `audit-queue` | The **unfiltered** queue settlement-service's audit writer consumes (step 43). Resolved to its URL at startup — an audit writer that boots healthy while consuming nothing leaves a five-year compliance obligation silently unmet |
+| `AUDIT_BUCKET` | `pix-audit-log` | The immutable trail. Object Lock COMPLIANCE + 5-year retention are **bucket defaults**, so the writer never asks for retention and can never forget to |
+| `AUDIT_WRITER_NAME` | `settlement-service` | The `<service>` segment of `yyyy/MM/dd/HH/<service>-<uuid>.jsonl` — who wrote the object |
+| `AUDIT_BATCH_MAX_EVENTS` / `AUDIT_BATCH_MAX_AGE_SECONDS` | `100` / `30` | The cost/latency dial: an object is written when it holds 100 events **or** when its *oldest* buffered event has waited 30s. Raising the count means fewer, larger objects (cheaper, faster to scan) at the price of holding an event in memory longer — durably held by SQS the whole time |
+| `AUDIT_LEASE_SECONDS` | `120` | How long the writer owns a buffered message. **Must exceed** `AUDIT_BATCH_MAX_AGE_SECONDS` plus the write: the batch holds messages past the queue's own 30s visibility timeout, so whoever holds a message extends its lease or SQS hands it to another receiver and the line is written twice for nothing |
+| `AUDIT_BATCH_SIZE` / `AUDIT_WAIT_TIME_SECONDS` / `AUDIT_CONSUMER_DELAY_MS` | `10` / `20` / `500` | audit-queue long-poll tuning. The wait is capped at runtime by the time left before the flush deadline — a static 20s poll against a 30s promise would let a batch age up to 50s |
+| `STATEMENT_ARCHIVE_BUCKET` | `pix-statement-archive` | The cold statement archive (step 43), written by **ledger-service** — the owner of `pix_ledger` (ADR-0006). A deliberately *plain* bucket: derived, rebuildable data whose monthly object each run rewrites whole |
+| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` | `90` (**`0` in compose**) | Where the online statement ends and the archive begins. Compose overrides it to `0` on purpose: a freshly seeded sandbox has no entry older than 90 days, so the demo job would archive nothing and look broken. With `0` the cutoff is "now" and every posting is archived on the next run |
+| `STATEMENT_ARCHIVE_DELAY_MS` | `3600000` (**`60000` in compose**) | How often the archive job runs — hourly in production (batch work over cold data), every minute in the sandbox so a demo does not wait an hour |
+| `STATEMENT_ARCHIVE_MAX_ACCOUNTS` | `500` | Per-run bound on the account **scan**. A larger ledger degrades into more runs rather than one enormous one |
 | `NOTIFICATION_BATCH_SIZE` / `NOTIFICATION_WAIT_TIME_SECONDS` / `NOTIFICATION_CONSUMER_DELAY_MS` | `10` / `20` / `500` | notification-queue long-poll tuning. Batch is larger than settlement's 5 because handling one message is a map lookup and a socket write, not a 12s call to BACEN |
 
 ## 4. Bring it up
@@ -1176,12 +1186,56 @@ step 47's job.
 > first, so it would prove `LIMIT_EXCEEDED` and never reach the guard under test. Same property, asserted
 > in CI by `BalanceCacheInvalidationIT#aStaleCacheDoesNotAuthorizeAnOverdraft`.
 
-### 5.8 Audit trail in S3
+### 5.8 Audit trail in S3, and the cold statement archive (step 43)
+
+Two independent jobs write to S3, and they are worth watching separately.
+
+**(a) The immutable audit trail** — settlement-service consumes `audit-queue` (the one subscription with
+*no* filter policy) and appends every event as a JSON line, batched at ~100 events **or** 30s. So do
+something first — a login and a Pix (§5.3) — then wait up to 30 seconds:
 
 ```bash
+# One object per flush, partitioned by the INGESTION hour, in UTC.
 awsl s3 ls s3://pix-audit-log/ --recursive | tail
-awsl s3 cp s3://pix-audit-log/<key> - | jq
+# 2026/08/21/14/settlement-service-3f2b….jsonl
+
+# The lines: one event envelope per line, verbatim as published.
+awsl s3 cp s3://pix-audit-log/<key> - | jq -c .
+awsl s3 cp s3://pix-audit-log/<key> - | jq -r '.eventType' | sort | uniq -c
+
+# Prove the retention is real: it was stamped by the BUCKET, not asked for by the writer.
+awsl s3api head-object --bucket pix-audit-log --key <key> \
+  --query '[ObjectLockMode,ObjectLockRetainUntilDate]'
+# [ "COMPLIANCE", "2031-08-21T…" ]  ← ~5 years out
+
+# And that it is enforced: this is REFUSED (AccessDenied), even for the account owner.
+VERSION=$(awsl s3api list-object-versions --bucket pix-audit-log --prefix <key> \
+  --query 'Versions[0].VersionId' --output text)
+awsl s3api delete-object --bucket pix-audit-log --key <key> --version-id "$VERSION"
 ```
+
+**(b) The cold statement archive** — ledger-service copies entries older than the hot window to one
+object per account and month. Compose sets the window to **0 days** and the job to run **every minute**
+(§3), precisely so this is demonstrable in a fresh sandbox; with the production default of 90 days a new
+stack would archive nothing:
+
+```bash
+awsl s3 ls s3://pix-statement-archive/ --recursive
+# account=acc-001/2026-08.jsonl
+
+awsl s3 cp s3://pix-statement-archive/account=acc-001/2026-08.jsonl - | jq -c .
+# {"accountId":"acc-001","txId":"tx-…","direction":"DEBIT","amountCents":-12550,…}
+
+# The point of the whole feature: NOTHING left the ledger. The statement still answers in full.
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8084/v1/accounts/me/statement?limit=50" | jq '.entries | length'
+```
+
+> **Money is integer cents in both files.** They are internal artefacts, not API edges — decimal
+> formatting is exactly the lossy convenience a five-year record must not carry.
+
+> **Deleting hot data after archiving is deliberately not implemented** — see `docs/data-model.md` §8.2
+> for what production does instead and why the local platform stops one step short.
 
 ### 5.9 Dashboards, load tests and API tooling (after their steps)
 
@@ -1203,10 +1257,19 @@ open tools/api-explorer/index.html
 ## 6. Running tests
 
 ```bash
-mvn test                       # unit tests, all modules
-mvn verify                     # + integration tests (Testcontainers spins LocalStack/Redis per module)
-mvn -pl services/ledger-service verify   # one module only
+mvn test                          # unit tests, all modules
+mvn verify                        # + integration tests (Testcontainers spins LocalStack/Redis per module)
+mvn -pl services/ledger-service -am verify   # one module only — note the -am
 ```
+
+> **Always pass `-am` when running a single module** (or run `mvn install -DskipTests` once first).
+> The Testcontainers harness — `LocalStackTestBase`, which decides *which* LocalStack services are
+> enabled and *which* init-script log line means "ready" — ships inside **common-lib's test-jar**.
+> Without `-am`, Maven resolves that jar from `~/.m2`, and a stale copy fails in ways that look like
+> anything but a stale jar: an IT hangs on the readiness wait, or the container comes up missing the
+> newest resources — `501 Service 's3' is not enabled`, `QueueDoesNotExist: audit-queue` — because the
+> old harness released the tests while the newest init script was still running. Cost this project real
+> time in step 43. `mvn verify` from the repo root is always safe: it uses the reactor.
 
 Integration tests do **not** need the compose stack running — Testcontainers manages disposable LocalStack/Redis containers per test run. That separation (compose = manual/E2E playground; Testcontainers = automated tests) keeps tests hermetic and repeatable.
 
@@ -1229,6 +1292,7 @@ Integration tests do **not** need the compose stack running — Testcontainers m
 
 | Symptom | Likely cause / fix |
 |---|---|
+| A single-module IT run fails with `501 Service 's3' is not enabled`, `QueueDoesNotExist`, or hangs on the readiness wait | A **stale `common-lib` test-jar** in `~/.m2`: `LocalStackTestBase` came from there instead of the reactor. Re-run with `-am` (or `mvn install -DskipTests` once) — see §6. Never debug the init scripts first; they are mounted from disk and are fine |
 | ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Pinned in the parent POM (`docker.api.version`, default 1.44); on an older engine run `mvn verify -Ddocker.api.version=1.41` — see §6 |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |

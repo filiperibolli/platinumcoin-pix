@@ -170,6 +170,153 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Immutable audit trail to S3 (partitioned JSONL) + statement cold-archive job (step 43)
+  Sprint 10's flow closes: the buckets step 42 created now have writers. **Two jobs, in two services,
+  with deliberately opposite postures** — one appends a record that may never change, the other
+  maintains a projection that is rewritten on every run.
+  - **`AuditWriter` (settlement-service) — the platform's long-term event store.** It consumes
+    `audit-queue`, the only subscription on `pix-events` with **no filter policy**, and appends every
+    event as a JSON line to `s3://pix-audit-log` under `yyyy/MM/dd/HH/<service>-<uuid>.jsonl`, batched
+    at **~100 events or 30s**. This is the SNS/SQS answer to "where is the replayable log?"
+    (`docs/messaging-kafka-appendix.md`).
+    - **The line is the event, verbatim** — the envelope as published, merely compacted to one line
+      because JSONL requires it. Nothing is re-shaped, renamed or enriched: an audit trail records what
+      happened, so a field this platform does not understand today must still be in the file the day
+      someone needs it. The consumer parses only enough (`eventId`) to dedupe and log.
+    - **Batching is a cost decision, and it is safe here precisely because this is not the money path.**
+      One `PutObject` per event would multiply the platform's event rate by a request each and fill the
+      bucket with millions of tiny objects that are slow to list and expensive to keep. The event was
+      already committed by its producer and is held by SQS until the batch lands, so the worst case of a
+      crash mid-batch is a redelivery. The **age threshold is measured from the oldest buffered event**,
+      not the newest — with a trickle of one event per second a last-event timer would never fire and the
+      oldest line would sit unwritten forever.
+    - **Three consequences of holding a message longer than its visibility timeout**, each of which the
+      step had to answer rather than hope about. *(1) The buffer owns the lease*: a buffered message has
+      its visibility extended to `AUDIT_LEASE_SECONDS` (120s) the moment it enters the batch — the queue's
+      own timeout is 30s, so without it SQS would hand a still-buffered message to another receiver and
+      the line would be written twice for nothing. *(2) The long poll is capped by the flush deadline*:
+      a static 20s receive against a 30s promise would let a batch age up to 50s, so when something is
+      buffered the wait is `min(20s, time left)`. *(3) Backpressure*: while the batch sits at its cap
+      (a failing S3), the tick **stops receiving** and only retries the write — the backlog belongs in
+      SQS, which is durable and has a DLQ, not in this JVM's heap, which has neither.
+    - **Write, then acknowledge — never the reverse.** The use case hands back acknowledgement tokens
+      only for lines that are durable, and the adapter does nothing but obey that list; a refused
+      `PutObject` throws with the buffer intact, so nothing is acked and nothing is dropped. This is the
+      audit equivalent of "never ack a payment you did not settle", and it is why
+      `AuditBatch.pending()` is a snapshot rather than a drain — draining first would take the lines with
+      it on a failure.
+    - **Duplicates tolerated, gaps not.** Within a batch the `eventId` collapses a redelivery to one line
+      while **both** receipt handles are still acked (an un-acked duplicate would loop into the DLQ and
+      have someone investigate a non-problem). Across batches a duplicate line is simply possible, and
+      that is deliberate: a durable dedup gate (`pix_processed_events`) would have to be marked *before*
+      the S3 write, so a marked-then-failed write would erase an audit line permanently. Recording a fact
+      twice is a nuisance a reader filters by `eventId`; failing to record it once is the only real error.
+    - **The partition is ingestion time, not event time.** One flush is one object, and an object must
+      never be written into an hour a reader may already have scanned. The price is stated rather than
+      hidden: an event delayed across the boundary lands in the next hour's prefix, so an
+      exact-by-event-time query reads the neighbouring partition and filters on the `occurredAt` inside
+      each line. The `<uuid>` in every key is what makes the write safe — keys are unique, so the trail
+      only grows and a retry never overwrites (on a locked bucket an overwrite would instead pile up
+      undeletable versions of the "same" file). The writer sets **no retention**: COMPLIANCE/1825 days is
+      a *bucket default* S3 stamps on every object, so a writer cannot forget to retain a line.
+  - **`StatementArchiver` (ledger-service) — the cold tier the 5-year requirement needs.** An hourly job
+    copies entries older than `pix.archive.hot-window-days` into `s3://pix-statement-archive` as
+    `account=<id>/yyyy-MM.jsonl` (Hive-style partition, so the archive is queryable as a table with no
+    transformation step). At the planning volume that is ~3.6TB/year of hot data whose oldest 95% is read
+    almost never (ARCHITECTURE §1); step 53's async export reads exactly these objects.
+    - **It lives in ledger-service, and that was the one real design call of the step.** The step file
+      says "a scheduled `StatementArchiver`" without naming a service; putting it in settlement-service
+      (which already had the S3 client) would have meant a second service reading `pix_ledger` — a
+      **third** exception to ADR-0006's "services never share tables", without the atomicity requirement
+      that justifies the existing two. ARCHITECTURE's container diagram gained the `LED --> S3` arrow in
+      the same change.
+    - **Nothing is deleted from the ledger — locally, on purpose, and the reason is worth keeping.**
+      Production finishes the job (a TTL attribute or a bounded delete pass once the object is written
+      *and verified*), and that removal is what actually reclaims the storage the cold tier exists for.
+      Here it is skipped twice over: the emulator's S3 state is ephemeral, so a `down -v` would take the
+      archive with it and deleting would destroy history in exchange for nothing — and *no code path
+      capable of deleting a ledger entry* is a stronger guarantee of append-only history (safety rule 5)
+      than a careful one. Enforced structurally: `LedgerArchiveReader` can only read, `StatementArchive`
+      can only write, and they are separate ports from `LedgerRepository` for exactly that reason.
+    - **Rewriting a month whole is the update primitive**, because the archive is *derived* data (the
+      ledger stays the source of truth). It makes the job idempotent, makes an interrupted run a
+      non-event, and is how the boundary month grows as the window rolls forward. It is also why
+      `pix-statement-archive` is a plain bucket while `pix-audit-log` is locked — on a locked bucket the
+      same behaviour would accumulate undeletable versions of a regenerable file.
+    - **The account list is a `Scan`, the entries are a `Query`** — and the asymmetry is the lesson.
+      `pix_ledger` has no index of accounts (the BALANCE items *are* the list), so enumerating them is a
+      filtered scan charged for the ENTRY items it discards; that is the honest cost of a whole-ledger
+      batch job and why it runs hourly, off the request path. The entries need no scan at all: the sort
+      key is `ENTRY#<isoTimestamp>#<txId>`, so "everything older than T" is the key range
+      `BETWEEN 'ENTRY#' AND 'ENTRY#<T>'` — the same lexicographic-equals-chronological trick the
+      newest-first statement uses, read forwards. The read is paged **to completion** on purpose: a
+      truncated month would be written truncated and later runs would read the same first page again and
+      never repair it.
+    - **The archive line is not `LedgerEntry`.** `ArchivedEntry` carries its own `accountId` (in DynamoDB
+      that is the partition key, but an archive object is read alone, years later, by a process that has
+      only the file) and the `description` (which the statement API composes at its edge — an archive
+      without it is a statement nobody can read back). Money stays **signed integer cents** into the file:
+      an internal artefact is not an API edge, and decimal formatting is exactly the lossy convenience a
+      five-year record must not carry.
+  - **A regression the context test caught, not a review.** ledger-service's first `@EnableScheduling`
+    registers Spring's own `taskScheduler`, which *is* an `Executor` — so step 40's by-type injection of
+    the balance-eviction executor suddenly had two candidates and `ApplicationContextIT` stopped loading.
+    Fixed by qualifying it (`@Qualifier("balanceCacheEvictionExecutor")`) rather than marking a
+    `@Primary`: eviction must run on the small, bounded, discard-on-saturation pool built for it and
+    never on the scheduler's threads, where a slow Redis would delay unrelated background jobs. Worth
+    noting *which* test caught it — every IT extends `LocalStackTestBase`, which disables schedulers, so
+    the whole IT suite was green; only the plain context test boots the service as it actually runs.
+  - **Tests (10 new unit + 7 new IT).** `AuditBatchTest` (9) pins the policy in plain Java: neither
+    threshold met, the count threshold, the age threshold measured from the oldest event, an empty batch
+    never due, a duplicate as one line and two acks, arrival order, the deadline the long poll reads, and
+    the full-batch backpressure signal. `RecordAuditEventsUseCaseTest` (6) pins the contract, including
+    **a failed write acking nothing and keeping every line** for the next attempt. A test written wrong
+    first taught something worth keeping: two duplicates do **not** fill a batch of two — the count
+    threshold counts the lines that would be written, not the messages that arrived, so a redelivery
+    storm of one event can never trigger a flush by volume (its `maxAge` still bounds the wait).
+    `ArchiveOldEntriesUseCaseTest` (6) pins the cutoff, the per-account-and-month grouping, UTC month
+    derivation, "nothing cold ⇒ no object", signed cents, and that running twice produces the same
+    archive *because* the first run took nothing away. `AuditWriterIT` (3) drives the real SNS → SQS → S3
+    path: a full batch as one partitioned JSONL object then acked, a lonely event written on its age
+    alone, and a buffered message invisible to a competing receiver (the lease). `StatementArchiverIT` (4)
+    covers the monthly objects, the second run rewriting rather than duplicating, "nothing cold ⇒ no
+    object", and — the assertion that matters — **hot storage untouched**: all four postings still in the
+    ledger, both balances unchanged.
+    - `AuditWriterIT` deliberately publishes **no `PixDebited`**. The topic fans out to three queues and
+      one of the others lives in this same module: such an event would also land on `settlement-queue`,
+      name a transaction that does not exist, ride five receives into the DLQ and break
+      `SettlementRetryIT`'s exact depth assertion — a failure caused entirely by a neighbouring test. The
+      types it does publish are precisely the ones `settlement-queue`'s filter excludes, which is what
+      makes them proof that the audit subscription filters nothing; that a `PixDebited` *also* arrives is
+      pinned at the infrastructure level by `MessagingInitIT` (step 42), where it belongs.
+  - **A local-build trap, now written down instead of rediscovered.** Two failures in this step looked
+    like broken init scripts (`QueueDoesNotExist: audit-queue`, then `501 Service 's3' is not enabled`)
+    and were the same thing: `mvn -pl <module> verify` **without `-am`** resolves `LocalStackTestBase`
+    from a stale `common-lib` test-jar in `~/.m2`, whose older readiness marker releases the tests while
+    the newest init script is still running. Documented in `docs/local-dev.md` §6 and added to the §7
+    troubleshooting table, per the project's rule that a known environment quirk is fixed (or at least
+    written down) rather than left as a command someone must remember. `mvn verify` from the root is
+    always safe — it uses the reactor.
+  - **Docs updated in the same change**, as the convention requires: ARCHITECTURE §2 (the new `LED --> S3`
+    arrow and labelled audit arrow) and §6.10 (where each job lives and why, the two postures, the
+    batching consequences, the ingestion-time partition, the deliberate non-deletion, plus a second
+    sequence diagram for the archiver); `docs/data-model.md` gained **§8 Object storage (S3)** — the full
+    immutability posture as a table of "why that and not the alternative", and the cold-archive shape
+    (old §8 renumbered to §9); `docs/local-dev.md` §3 (11 new env vars), §5.8 (rewritten: how to see both
+    jobs work, including proving the Object Lock retention is stamped by the bucket and that the delete is
+    refused) and §6/§7 (the `-am` trap); both service READMEs.
+  - **Compose knobs chosen for the sandbox, not copied from production**: ledger-service runs the archive
+    job **every minute with a 0-day hot window**, because a freshly seeded stack has nothing older than
+    the 90-day default and the demo would archive nothing and look broken.
+  - **No endpoint is introduced**, so the Postman collection and the API explorer are untouched. Step 42
+    promised the audit *journey* "when there is something to read back" — the honest answer is that
+    reading it back is an AWS-CLI affair until an endpoint exists: a browser cannot list an S3 bucket
+    without SigV4 signing or CORS the sandbox does not enable, and adding a read endpoint is neither in
+    this step's tasks nor needed before step 53, which introduces exactly that read path. The journey
+    moves there; the manual verification lives in `docs/local-dev.md` §5.8 and both READMEs.
+  AI: est 3h / actual 2.6h / ~92% generated / 0 issues caught in human review (3 caught by the suite: the
+  `Executor` ambiguity, a batch-count assumption in a test, and an IT that asserted on its neighbours)
+
 - LocalStack init: audit-queue (all events) + S3 audit-log/statement-archive buckets with immutability
   config (step 42)
   **The third consumer off `pix-events` — and the only unfiltered one.** `09-audit.sh` creates

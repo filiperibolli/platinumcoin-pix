@@ -39,6 +39,38 @@ jwt:
   public-paths:
     - /actuator/**
 
+# The statement cold archive (step 43, ARCHITECTURE §6.10). ledger-service owns pix_ledger, so it is the
+# service that archives it: no other service may read the table (ADR-0006), and archiving needs no
+# atomicity that would justify one of that ADR's two documented exceptions.
+pix:
+  archive:
+    # Derived, rebuildable data — the ledger stays the source of truth — so this bucket is a PLAIN one:
+    # no versioning, no Object Lock (step 42, infra/localstack/init/09-audit.sh). Each run rewrites a
+    # month's object whole, which on a locked bucket would pile up undeletable versions of a file that
+    # can always be regenerated.
+    bucket: ${STATEMENT_ARCHIVE_BUCKET:pix-statement-archive}
+    # Where the ONLINE statement ends and the archive begins. Entries older than this are COPIED to S3;
+    # nothing is ever deleted from the ledger here (see ArchiveOldEntriesUseCase for the production
+    # difference and why the local platform deliberately stops one step short).
+    #
+    # 90 days is the realistic default; it also means a freshly seeded sandbox archives NOTHING, since
+    # no entry is that old. To watch the job work locally, set the window to 0 — the cutoff becomes
+    # "now" and every posted entry is archived on the next run:
+    #   STATEMENT_ARCHIVE_HOT_WINDOW_DAYS=0 (docs/local-dev.md §7)
+    hot-window-days: ${STATEMENT_ARCHIVE_HOT_WINDOW_DAYS:90}
+    # The per-run bound on the account SCAN. A larger ledger degrades into more runs rather than one
+    # enormous one; locally the seed has a handful of accounts, so it never binds.
+    max-accounts-per-run: ${STATEMENT_ARCHIVE_MAX_ACCOUNTS:500}
+    # How often the job runs. Hourly, because it is a batch job over cold data: nobody is waiting on it,
+    # its input changes by the day, and its expensive part is a table scan. fixedDelay, so a long run
+    # never overlaps the next.
+    fixed-delay-ms: ${STATEMENT_ARCHIVE_DELAY_MS:3600000}
+  # Master switch for every background job in this service (today: the cold-archive job). True in every
+  # real run; integration tests set it false and drive one run explicitly, because Spring caches contexts
+  # across test classes and a live archiver would write into the shared bucket mid-assertion.
+  schedulers:
+    enabled: ${PIX_SCHEDULERS_ENABLED:true}
+
 # AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
 # AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK
 # demands. ITs override these via LocalStackTestBase's @DynamicPropertySource (same aws.* keys).

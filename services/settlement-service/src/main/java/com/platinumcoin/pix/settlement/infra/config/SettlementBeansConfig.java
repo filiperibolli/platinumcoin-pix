@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
+import com.platinumcoin.pix.settlement.domain.port.AuditTrail;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
 import com.platinumcoin.pix.settlement.domain.port.InboundTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
@@ -11,10 +12,12 @@ import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionReconciler;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionStore;
+import com.platinumcoin.pix.settlement.domain.service.AuditBatch;
 import com.platinumcoin.pix.settlement.domain.service.ReconciliationSloAlert;
 import com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer;
 import com.platinumcoin.pix.settlement.domain.service.StuckTransactionResolver;
 import com.platinumcoin.pix.settlement.domain.usecase.ReceiveInboundPixUseCase;
+import com.platinumcoin.pix.settlement.domain.usecase.RecordAuditEventsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixUseCase;
 import java.time.Clock;
@@ -144,5 +147,30 @@ public class SettlementBeansConfig {
             Clock clock) {
         return new ScanStuckTransactionsUseCase(
                 stuckTransactions, reconciler, Duration.ofSeconds(stuckAfterSeconds), maxPerTick, clock);
+    }
+
+    /**
+     * The audit writer's buffer (step 43). Both thresholds are configuration rather than constants
+     * because they <i>are</i> the cost/latency dial of the trail: raising {@code max-events} makes
+     * fewer, larger objects (cheaper to store and faster to scan) at the price of holding an event in
+     * memory longer, and {@code max-age-seconds} is the ceiling on that wait — the promise that a quiet
+     * platform still gets its lone event written.
+     */
+    @Bean
+    AuditBatch auditBatch(
+            @Value("${pix.audit.batch.max-events}") int maxEvents,
+            @Value("${pix.audit.batch.max-age-seconds}") long maxAgeSeconds) {
+        return new AuditBatch(maxEvents, Duration.ofSeconds(maxAgeSeconds));
+    }
+
+    /**
+     * The audit-recording capability (step 43): buffer what the unfiltered queue delivered and write the
+     * batch to the immutable trail when it is due. Same {@link Clock} as everything else here, so the
+     * instant that partitions an audit object is the instant the rest of the service would stamp.
+     */
+    @Bean
+    RecordAuditEventsUseCase recordAuditEventsUseCase(
+            AuditBatch auditBatch, AuditTrail auditTrail, Clock clock) {
+        return new RecordAuditEventsUseCase(auditBatch, auditTrail, clock);
     }
 }

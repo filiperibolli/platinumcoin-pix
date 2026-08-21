@@ -169,7 +169,13 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service's DICT, resolving an inbound key to its payee (compose: `http://account-service:8082`) |
 | `ACCOUNT_READ_TIMEOUT_MS` / `ACCOUNT_CONNECT_TIMEOUT_MS` | `1500` / `500` | Directory budget — the **rail** is waiting on this call, so a hung directory must surface as `503` (re-present), never a pinned thread |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | Must match auth-service's. Verifies inbound tokens and (step 33) **signs** the service token settlement presents to ledger-service |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack defaults | AWS SDK wiring |
+| `AUDIT_QUEUE_NAME` / `pix.audit.queue-name` | `audit-queue` | The **unfiltered** queue the audit writer consumes (step 43) — every event type, since audit records that things happened rather than acting on them. URL resolved at startup |
+| `AUDIT_BUCKET` / `pix.audit.bucket` | `pix-audit-log` | The immutable trail. Object Lock COMPLIANCE + 5-year retention are **bucket defaults**, so this writer never asks for retention and can never forget to |
+| `AUDIT_WRITER_NAME` / `pix.audit.writer-name` | `settlement-service` | The `<service>` segment of `yyyy/MM/dd/HH/<service>-<uuid>.jsonl` |
+| `AUDIT_BATCH_MAX_EVENTS` / `AUDIT_BATCH_MAX_AGE_SECONDS` | `100` / `30` | Flush when the batch holds 100 events **or** its *oldest* one has waited 30s. The cost/latency dial of the trail |
+| `AUDIT_LEASE_SECONDS` | `120` | Visibility this writer extends buffered messages to. **Must exceed** the max age plus the write — the batch outlives the queue's 30s visibility timeout, and whoever holds a message owns its lease |
+| `AUDIT_BATCH_SIZE` / `AUDIT_WAIT_TIME_SECONDS` / `AUDIT_CONSUMER_DELAY_MS` | `10` / `20` / `500` | audit-queue long-poll tuning; the wait is capped at runtime by the time left before the flush deadline |
+| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack defaults | AWS SDK wiring (SQS **and**, since step 43, S3) |
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 
@@ -179,33 +185,37 @@ api/               InboundPixController (POST /v1/inbound/pix, step 37) + Inboun
                    SettlementQueueConsumer (@Scheduled long poll + query-before-retry + backoff),
                    SettlementDlqDepthGauge (@Scheduled DLQ depth probe),
                    StuckTransactionScanner (@Scheduled 60s reconciliation scan + oldest-age gauge, step 34),
+                   AuditQueueConsumer (@Scheduled long poll + batch lease + delete-after-write, step 43 —
+                   binds the envelope as a JsonNode, so an unknown field still reaches the trail),
                    SettlementMessage (inbound adapter)
 domain/model/      SpiSettlement, SettlementConfirmation, TransactionStatus, StuckTransaction,
                    SpiReconciliation, ReconcilableTransaction (step 35),
-                   InboundTransaction (step 37)                                               (plain Java)
+                   InboundTransaction (step 37), AuditEvent (step 43)                          (plain Java)
 domain/port/       ProcessedEvents, SpiSettlementClient, SettlementTransactionStore,
                    LedgerClient, DailyLimitRelease, StuckTransactionStore,
                    StuckTransactionReconciler, ReconciliationTransactionStore,
                    ReconciliationMetrics (step 35), PixKeyResolver,
-                   InboundTransactionStore (step 37)                                 (outbound interfaces)
+                   InboundTransactionStore (step 37), AuditTrail (step 43)           (outbound interfaces)
 domain/exception/  TransitionNotAllowedException, SpiCallFailedException,
                    SpiSettlementRejectedException, LedgerUnavailableException,
                    InvalidWebhookTokenException, InboundKeyNotFoundException,
                    DirectoryUnavailableException, InboundAlreadyRecordedException (step 37)   (plain Java)
 domain/service/    SettlementOutboxEvents (mints PixSettled / PixReversed / PixReceived),
                    SettlementFinalizer (shared finalize/reverse), StuckTransactionResolver,
-                   ReconciliationSloAlert (step 35)                                          (plain Java)
+                   ReconciliationSloAlert (step 35), AuditBatch (buffer + flush policy, step 43) (plain Java)
 domain/usecase/    SettlePixUseCase + SettlePixCommand + SettleOutcome,
                    ScanStuckTransactionsUseCase + ScanOutcome (step 34),
                    ReceiveInboundPixUseCase + ReceiveInboundPixCommand +
-                   ReceiveInboundOutcome (step 37)                                           (plain Java)
+                   ReceiveInboundOutcome (step 37),
+                   RecordAuditEventsUseCase + AuditFlushOutcome (step 43)                     (plain Java)
 infra/client/      HttpSpiSettlementClient (12s read timeout, 3-way reconcile), HttpSettlementLedgerClient,
                    HttpPixKeyResolver (the DICT hop of the inbound flow, step 37)
 infra/persistence/ DynamoSettlementTransactionStore (the guarded transitions), DynamoDailyLimitRelease,
                    DynamoProcessedEvents, DynamoStuckTransactionStore (GSI2 scan, step 34),
                    DynamoReconciliationTransactionStore (point read),
                    MicrometerReconciliationMetrics (step 35),
-                   DynamoInboundTransactionStore (the conditional create, step 37)
+                   DynamoInboundTransactionStore (the conditional create, step 37),
+                   S3AuditTrail (the partitioned JSONL append, step 43)
 infra/security/    ServiceTokenIssuer (mints the HS256 service token for the ledger/DICT calls)
 infra/config/      AwsClientsConfig, AwsProperties, SettlementBeansConfig, SchedulingConfig,
                    CorsConfig (local dev, ordered ahead of the JWT filter, step 37)
@@ -226,6 +236,17 @@ named, guarded transitions plus one conditional **create** for an inbound transa
 free-form update. The two rights live behind separate ports (`SettlementTransactionStore` may only move an
 existing outbound transaction between named states; `InboundTransactionStore` may only create an inbound
 one), so neither can do the other's job.
+
+**The audit writer, and the one rule it obeys (step 43).** settlement-service doubles as the platform's
+audit writer: it consumes the only *unfiltered* subscription on `pix-events` and appends every event to
+S3 `pix-audit-log` as time-partitioned JSON Lines, batched at ~100 events or 30s. The rule that shapes
+the whole adapter is **write, then acknowledge** — the use case hands back acknowledgement tokens only
+for lines that are durable, so a delete can never outrun a write. Two consequences follow: buffered
+messages have their **visibility extended** (the batch outlives the queue's 30s timeout, so whoever holds
+a message owns its lease), and when the batch is at its cap the consumer **stops receiving**, leaving the
+backlog in SQS — which is durable and has a DLQ — instead of growing this JVM's heap. Duplicates are
+tolerated rather than prevented: a durable dedup gate would have to be marked *before* the write, and a
+marked-then-failed write would erase an audit line for good.
 
 **Who publishes `PixSettled` / `PixReceived`.** This service *writes* the event; it does not deliver it. The sparse
 `gsi3` index is a property of the table, and payment-service's polling publisher already drains all of
@@ -274,6 +295,24 @@ curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: applicatio
   -d '{"pixKey":"bob@platinum.com","amount":"300.00","payerName":"External Payer"}' | jq
 # → {"endToEndId":"E99999999…","outcome":"CREDITED","participantTxId":"in-E99999999…"}
 # re-POST the same endToEndId straight at :8086/v1/inbound/pix ⇒ ALREADY_PROCESSED, balance unchanged
+```
+
+### The audit trail by hand (step 43)
+
+```bash
+alias awsl='aws --endpoint-url=http://localhost:4566'
+
+# Do something first (a login and a Pix), then wait up to 30s for the batch to flush.
+awsl s3 ls s3://pix-audit-log/ --recursive | tail
+# 2026/08/21/14/settlement-service-3f2b….jsonl   ← the INGESTION hour, UTC
+
+awsl s3 cp s3://pix-audit-log/<key> - | jq -r '.eventType' | sort | uniq -c
+#  ↑ every event type is here: audit-queue is the one subscription with no filter policy
+
+# The retention was stamped by the BUCKET, not requested by this writer:
+awsl s3api head-object --bucket pix-audit-log --key <key> \
+  --query '[ObjectLockMode,ObjectLockRetainUntilDate]'
+# [ "COMPLIANCE", "2031-…" ]
 ```
 
 ## Related decisions
