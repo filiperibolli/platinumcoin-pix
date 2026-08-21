@@ -261,6 +261,48 @@ The platform reached its halfway mark: **the full money path is built, tested an
     sprint's *journey* waits for step 41, which completes the balance-and-statement flow.
   AI: est 2.5h / actual ~4h / ~90% generated / 3 issues caught in human review
 
+- **API explorer: the Balance & statement journey, and every journey step now shows its wire traffic.**
+  Completes Sprint 9's flow in the tool (the journey step 40 deferred), and closes a gap the whole
+  journey feature had since it landed: a step announced *what* it proved and printed a response body,
+  but never showed the **request** that produced it — so the one artifact a reader needs to reproduce a
+  call by hand was the one thing missing.
+  - **Every step now renders REQUEST above RESPONSE**, for all 6 journeys and all 44 steps. It is
+    captured by instrumenting the shared `send()` helper rather than by asking each step to describe its
+    own call, which is what keeps it honest: the transcript is *the traffic that actually happened*, so a
+    step cannot document one request and send another, and a step that fires seven sends shows seven
+    without a line of extra code. Stacked, not side-by-side — a journey with the phone docked leaves that
+    column ~540px, and two columns of JSON at that width are unreadable.
+  - **Multi-call steps fold.** Beyond three calls the middle collapses into one clickable
+    `⋯ N more calls ⋯` row, keeping the first and the last: the new mass-data step fires 7 and the
+    settlement poll up to 25, and a card that dumps all of them buries the flow it exists to show. The
+    count stays visible — collapsed, never hidden.
+  - **Credentials still never print.** The bearer token is summarised to its claims
+    (`Bearer eyJ… (claims: u-alice · account acc-001)`) and the shared webhook token is replaced
+    outright, in both directions of the transcript — the sandbox-logging line ADR-0012 draws. The
+    pre-existing `redactedLogin` now delegates to that one redaction rule, which also fixes a latent
+    mislabel: it read the claims from the *global session* instead of from the response's own token, so a
+    two-user journey labelled bob's login with alice's account.
+  - **New journey · Balance & statement** (8 steps): read the balance twice inside one step and prove
+    the second was a **cache hit by asserting the two `asOf` values are identical** — `asOf` reports when
+    the *ledger* was read, so a hit returns the original instant instead of re-stamping itself fresh;
+    **generate history** with 7 real internal Pix of R$ 1,00 (the mass-data step — three entries cannot
+    demonstrate pagination, and each is a genuine payment through idempotency → limit → fraud → atomic
+    posting, each with its own fresh `Idempotency-Key`); assert the balance fell by **exactly 700 cents**
+    (invalidation, not TTL expiry); then page the statement with `limit=5`, assert newest-first, decimal
+    amounts and a masked counterpart, follow the opaque cursor to page 2 and assert **zero overlapping
+    txIds**, and finish on a tampered cursor → `400 INVALID_CURSOR`.
+  - **A real bug found by the verification, not by reading:** `phoneConnect` flipped `phone.state` to
+    `connecting` *after* an `await`, while journey steps start it without awaiting and then poll
+    `state !== 'live'`. With a connection already open the flag was still `live` from the previous one,
+    so the poll exited immediately and the step reported success for the **old stream — opened with
+    another user's token**, since a journey routinely reconnects the phone as somebody else. The state
+    now flips before the first await; that ordering is load-bearing and says so in a comment.
+  - **Verified in a headless browser against the live compose stack: 44/44 steps across all six
+    journeys**, no page errors, no whole-JWT anywhere in the rendered panel, and no horizontal page
+    overflow. The stream steps of three journeys went from *no* transcript to one — they were the
+    steps hiding the bug above.
+  AI: est 1.5h / actual 1.5h / ~90% generated / 0 issues caught in human review
+
 - Public statement API through payment-service with opaque cursor pagination and edge money formatting
   (step 41)
   **`GET /v1/accounts/me/statement?cursor=&limit=` (payment-service, 8084)** — the paginated history
@@ -301,9 +343,8 @@ The platform reached its halfway mark: **the full money path is built, tested an
     the module's own `ApplicationContextIT` failing to load with a `NoSuchBeanDefinitionException` before
     any HTTP test ran, exactly the fast, cheap signal that check exists to give.
   - Postman (3 requests: two pages plus the tampered-cursor case) and the API explorer (2 cards) grew
-    with the endpoint, per convention; the sprint's *journey* (deferred from step 40) still waits for a
-    later polish step, since a full balance-and-statement journey also wants the receive-Pix flow's
-    history to page through.
+    with the endpoint, per convention, and the sprint's **journey** — deferred by step 40 because a
+    balance card alone is not a flow — ships with it: see the entry below.
   AI: est 1.5h / actual 1.5h / ~85% generated / 2 issues caught in human review
 
 - Real-time pushes wired end to end: PixSettled/PixReversed to sender, PixReceived to receiver (step 39)
