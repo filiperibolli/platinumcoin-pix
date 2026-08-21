@@ -110,10 +110,21 @@ services:
       AWS_REGION: us-east-1
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # Redis, for ONE operation (step 40): deleting the `balance:<accountId>` keys a committed posting
+      # just made stale (ADR-0008 invalidation-on-write). The ledger never READS a balance from Redis —
+      # the money decision is the conditional write in DynamoDB. Losing Redis costs display freshness
+      # (bounded by the 5s TTL), never correctness, which is why this is not a hard dependency below.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     depends_on:
       localstack:
         condition: service_healthy
       dynamodb-local:
+        condition: service_healthy
+      # A SOFT dependency: postings commit and succeed with Redis down (the eviction fails open with a
+      # WARN). Gating startup on it is local-dev tidiness — so the very first posting can invalidate —
+      # not a correctness requirement.
+      redis:
         condition: service_healthy
     networks:
       - pix-net
@@ -166,10 +177,19 @@ services:
       # name: a deployed service is granted sns:Publish on exactly this ARN and may not list topics
       # (ADR-0013). This is the ARN 06-messaging-core.sh's `create-topic` returns in LocalStack.
       SNS_TOPIC_ARN: arn:aws:sns:us-east-1:000000000000:pix-events
+      # Redis — the balance cache-aside read path (step 40, ADR-0008): GET/SET `balance:<accountId>`
+      # with a 5s TTL, invalidated by ledger-service after every posting. A Redis outage degrades this
+      # service to ledger-speed balance reads (every read is a miss), never to errors.
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     depends_on:
       localstack:
         condition: service_healthy
       dynamodb-local:
+        condition: service_healthy
+      # SOFT, like fraud-service below: balance reads work with Redis down, they just fall through to
+      # the ledger every time. Gated here so the happy path is cached from the first request.
+      redis:
         condition: service_healthy
       # The daily-limit check + key resolution call account-service; gate startup on it being
       # healthy so the first send doesn't race a not-yet-ready dependency.
@@ -402,7 +422,8 @@ services:
 
   # Redis — its own container (ADR-0008), the local stand-in for ElastiCache for Redis, which LocalStack
   # does NOT emulate. Comes up in Sprint 5 because fraud is the first flow that needs it (velocity
-  # counters); Sprint 9's balance cache reuses this same container. Data is ephemeral (a cache): no named
+  # counters); since step 40 it also holds the balance cache — payment-service reads and writes
+  # `balance:<accountId>` (TTL 5s) and ledger-service deletes those keys after each posting. Data is ephemeral (a cache): no named
   # volume, and `down -v` starts it clean. Version pinned (not `latest`) for reproducible local runs.
   redis:
     image: redis:7-alpine
@@ -412,8 +433,8 @@ services:
     networks:
       - pix-net
     healthcheck:
-      # The image ships redis-cli; `PING` returns PONG once the server accepts commands. Gates
-      # fraud-service's `depends_on: { redis: { condition: service_healthy } }`.
+      # The image ships redis-cli; `PING` returns PONG once the server accepts commands. Gates the
+      # `depends_on: { redis: { condition: service_healthy } }` of fraud-, payment- and ledger-service.
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s

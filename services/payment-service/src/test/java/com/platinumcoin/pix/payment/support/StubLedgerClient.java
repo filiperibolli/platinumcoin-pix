@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.support;
 
+import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.Map;
@@ -33,6 +34,7 @@ public class StubLedgerClient implements LedgerClient {
 
     private final Map<String, Long> balances = new ConcurrentHashMap<>();
     private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
+    private final Set<String> unknownAccounts = ConcurrentHashMap.newKeySet();
 
     @Override
     public void postInternalTransfer(
@@ -64,9 +66,31 @@ public class StubLedgerClient implements LedgerClient {
         postedTxIds.add(txId);
     }
 
+    /**
+     * The read half of the seam (step 40): what the balance cache falls back to on a miss. It reports
+     * the same in-memory ledger the postings move, so an IT can send money and then assert that the
+     * next balance read reflects it — the property invalidation-on-write exists to preserve.
+     */
+    @Override
+    public long readBalanceCents(String accountId) {
+        if (unknownAccounts.contains(accountId)) {
+            throw new BalanceNotFoundException("no ledger account found for id " + accountId);
+        }
+        return balances.getOrDefault(accountId, DEFAULT_BALANCE_CENTS);
+    }
+
     /** Seed an account's opening balance (integer cents) before a test sends. */
     public void setBalance(String accountId, long balanceCents) {
         balances.put(accountId, balanceCents);
+    }
+
+    /**
+     * Make an account not exist in the ledger, as an account with no BALANCE item does. Explicit
+     * because the stub is permissive by default (an unseeded account is amply funded), and the 404
+     * path has to be reachable on purpose rather than by omission.
+     */
+    public void markUnknown(String accountId) {
+        unknownAccounts.add(accountId);
     }
 
     /** The account's current balance in the in-memory ledger (cents). */

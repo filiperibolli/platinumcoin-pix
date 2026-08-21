@@ -2,6 +2,7 @@ package com.platinumcoin.pix.payment.api;
 
 import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import com.platinumcoin.pix.payment.domain.exception.AccountLookupException;
+import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
@@ -59,6 +60,9 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *   <li>{@code 404 PAYMENT_NOT_FOUND} — the queried transaction does not exist <i>or</i> belongs to
  *       another account (step 22). The two cases are deliberately indistinguishable: a {@code 403}
  *       would confirm a foreign transaction id is real, so both answer {@code 404} and leak nothing.</li>
+ *   <li>{@code 404 BALANCE_NOT_FOUND} — the ledger holds no balance for the caller's own account
+ *       (step 40). Never a {@code 200} with zero: a customer must not be shown R$ 0,00 for an account
+ *       that was never opened.</li>
  * </ul>
  *
  * <p><b>Logging (ADR-0012).</b> The <i>reason</i> is logged by the use case/domain; this class logs
@@ -129,6 +133,14 @@ public class PaymentExceptionHandler {
     @ExceptionHandler(PaymentNotFoundException.class)
     public ResponseEntity<ProblemDetail> handlePaymentNotFound(PaymentNotFoundException ex) {
         return problem(HttpStatus.NOT_FOUND, "PAYMENT_NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(BalanceNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleBalanceNotFound(BalanceNotFoundException ex) {
+        // The ledger holds no BALANCE item for the caller's own account. Deliberately not a 200 with
+        // zero: "no such account" and "no money" are different facts and a customer must never be shown
+        // the second when the first is true.
+        return problem(HttpStatus.NOT_FOUND, "BALANCE_NOT_FOUND", ex.getMessage());
     }
 
     @ExceptionHandler(AccountLookupException.class)

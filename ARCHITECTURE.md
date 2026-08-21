@@ -685,6 +685,13 @@ sequenceDiagram
     Note over LED,REDIS: on every posting → DEL balance:<affected accounts>
 ```
 
+The eviction runs **off the posting's request thread** (step 40): the transaction is already durable
+when it fires, nothing in the response depends on it, and a drill proved the alternative — a Redis that
+*hangs* rather than fails held a committed posting's response open until payment-service timed out and
+told its caller `503` about a debit that had landed. An optional side effect must not share the latency
+of the transaction that triggered it; the 5s TTL covers the eviction that is consequently allowed to be
+late or lost. See ADR-0008's implementation notes.
+
 Statement pagination reuses the ledger's timestamp-prefixed sort keys (`ENTRY#ts#txId`,
 `ScanIndexForward=false`); the API cursor is the base64 of `LastEvaluatedKey`.
 

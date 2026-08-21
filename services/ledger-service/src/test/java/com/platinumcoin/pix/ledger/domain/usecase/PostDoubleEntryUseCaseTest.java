@@ -26,8 +26,9 @@ class PostDoubleEntryUseCaseTest {
     private static final Instant NOW = Instant.parse("2026-08-03T10:15:30.123456789Z");
 
     private final FakeLedgerRepository ledger = new FakeLedgerRepository();
+    private final FakeBalanceCacheInvalidator balanceCache = new FakeBalanceCacheInvalidator();
     private final PostDoubleEntryUseCase postDoubleEntry =
-            new PostDoubleEntryUseCase(ledger, Clock.fixed(NOW, ZoneOffset.UTC));
+            new PostDoubleEntryUseCase(ledger, balanceCache, Clock.fixed(NOW, ZoneOffset.UTC));
 
     @Test
     void postsTheCommandToTheLedgerAtTheInjectedClocksInstant() {
@@ -107,5 +108,69 @@ class PostDoubleEntryUseCaseTest {
                 new PostingCommand("tx-7", "acc-001", "acc-002", 12_550L, "PIX_INTERNAL", "rent"));
 
         assertThat(result.replayed()).isTrue();
+    }
+
+    // --- Balance-cache invalidation (step 40, ADR-0008) ------------------------------------------
+
+    /**
+     * Both legs moved, so both cached balances are stale — the ledger evicts them in one call
+     * <b>after</b> the commit. Order matters and is the whole of the correctness argument: evicting
+     * before the write would open a window in which a concurrent read repopulates the cache with the
+     * pre-commit value and then nothing invalidates it again, leaving a stale entry for a full TTL.
+     */
+    @Test
+    void evictsBothLegsFromTheBalanceCacheAfterCommitting() {
+        postDoubleEntry.execute(
+                new PostingCommand("tx-8", "acc-001", "acc-002", 12_550L, "PIX_INTERNAL", "rent"));
+
+        assertThat(balanceCache.evictions()).hasSize(1);
+        assertThat(balanceCache.lastEviction()).containsExactlyInAnyOrder("acc-001", "acc-002");
+    }
+
+    /**
+     * A refused posting moved no money, so no cached balance became stale — evicting anyway would be
+     * a self-inflicted cache miss on every malformed request, and would let a client blow the hit
+     * rate away with garbage it never had permission to post.
+     */
+    @Test
+    void evictsNothingWhenThePostingIsRefused() {
+        assertThatThrownBy(() -> postDoubleEntry.execute(
+                new PostingCommand("tx-9", "acc-001", "acc-002", 0L, "PIX_INTERNAL", "zero")))
+                .isInstanceOf(InvalidPostingException.class);
+
+        assertThat(balanceCache.evictions()).isEmpty();
+    }
+
+    /**
+     * <b>The money survives a broken cache.</b> Eviction is best-effort (ADR-0008): the commit already
+     * happened and is durable, so a Redis outage may cost a reader up to 5s of staleness (the TTL
+     * backstop) but may never turn a committed posting into an error the caller would retry — a retry
+     * is safe by {@code txId}, but a 500 after a successful debit is a lie about what happened.
+     */
+    @Test
+    void aFailedEvictionDoesNotFailThePostingThatAlreadyCommitted() {
+        balanceCache.failEveryEviction();
+
+        PostingResult result = postDoubleEntry.execute(
+                new PostingCommand("tx-10", "acc-001", "acc-002", 500L, "PIX_INTERNAL", "rent"));
+
+        assertThat(result.replayed()).isFalse();
+        assertThat(ledger.postCount()).isEqualTo(1);
+        assertThat(balanceCache.evictions()).hasSize(1);
+    }
+
+    /**
+     * A replay evicts too. Nothing moved <i>this time</i>, but the original commit's eviction is
+     * best-effort and may have been the one that failed — a retry is the cheapest second chance to
+     * drop a key that a customer is otherwise reading stale.
+     */
+    @Test
+    void evictsOnAnIdempotentReplayToo() {
+        ledger.replayNextPost();
+
+        postDoubleEntry.execute(
+                new PostingCommand("tx-11", "acc-001", "acc-002", 500L, "PIX_INTERNAL", "rent"));
+
+        assertThat(balanceCache.lastEviction()).containsExactlyInAnyOrder("acc-001", "acc-002");
     }
 }

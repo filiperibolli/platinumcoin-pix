@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.infra.client;
 
+import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
@@ -83,6 +84,15 @@ public class HttpLedgerClient implements LedgerClient {
     record ProblemView(String code) {
     }
 
+    /**
+     * Just the integer-cents field of ledger-service's balance response. The ledger ships the amount
+     * twice — a decimal string for humans and {@code balanceCents} for services doing arithmetic — and
+     * a service that parsed the string back into cents would be re-deriving what it was already given
+     * (and inventing a rounding decision on the way).
+     */
+    record BalanceView(long balanceCents) {
+    }
+
     public HttpLedgerClient(
             RestClient.Builder builder,
             @Value("${services.ledger-service.base-url}") String baseUrl,
@@ -115,6 +125,52 @@ public class HttpLedgerClient implements LedgerClient {
         // the entryType differ. The clearing id arrives as an argument (step 52 shards it), never as a
         // constant of this adapter.
         post(txId, debtorAccountId, clearingAccountId, amountCents, ENTRY_TYPE_PIX_OUT, description);
+    }
+
+    /**
+     * The read half of the seam (step 40): {@code GET /internal/ledger/accounts/{id}/balance}, the
+     * strongly-consistent source the balance cache falls back to on a miss.
+     *
+     * <p><b>Its error mapping is not the posting's.</b> A {@code 404} here is an ordinary business
+     * answer — that account has no ledger balance — and becomes {@link BalanceNotFoundException} → a
+     * {@code 404} to the client, never a {@code 503} that would invite an endless retry of a question
+     * whose answer will not change. Everything else (timeout, unreachable, unexpected status) is
+     * {@link LedgerUnavailableException}: the number is unknown, so the service says so rather than
+     * serving a zero it made up.
+     */
+    @Override
+    public long readBalanceCents(String accountId) {
+        log.debug("GET /internal/ledger/accounts/{}/balance", accountId);
+        try {
+            BalanceView balance = restClient.get()
+                    .uri("/internal/ledger/accounts/{accountId}/balance", accountId)
+                    .headers(this::forwardAuthorization)
+                    .retrieve()
+                    .body(BalanceView.class);
+            if (balance == null) {
+                log.warn("Ledger answered the balance read with an empty body, treating as unavailable "
+                        + "| accountId={}", accountId);
+                throw new LedgerUnavailableException("ledger returned an empty balance body");
+            }
+            log.info("Ledger answered the balance read | accountId={} balanceCents={}",
+                    accountId, balance.balanceCents());
+            return balance.balanceCents();
+        } catch (RestClientResponseException e) {
+            int status = e.getStatusCode().value();
+            if (status == HttpStatus.NOT_FOUND.value()) {
+                log.warn("Ledger holds no balance for this account, returning 404 | accountId={} code={}",
+                        accountId, problemCode(e));
+                throw new BalanceNotFoundException("no ledger account found for id " + accountId);
+            }
+            log.warn("Ledger balance read failed with an unexpected status, treating as unavailable | "
+                    + "accountId={} status={} code={}", accountId, status, problemCode(e));
+            throw new LedgerUnavailableException(
+                    "ledger balance read failed with status " + status, e);
+        } catch (ResourceAccessException e) {
+            log.warn("Ledger unreachable or timed out on a balance read | accountId={} error={}",
+                    accountId, e.getMessage());
+            throw new LedgerUnavailableException("ledger unreachable or timed out", e);
+        }
     }
 
     /**

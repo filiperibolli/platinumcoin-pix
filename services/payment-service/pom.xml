@@ -46,6 +46,15 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- Redis client (Lettuce) via Spring Data Redis — step 40. The balance cache-aside read path
+             (RedisBalanceCache): GET balance:<accountId>, SET … EX 5. Redis is its own container, the
+             ElastiCache stand-in of ADR-0008. Confined to infra/: the ArchUnit test fails the build if
+             a domain type imports a Spring package, so the cache reaches the domain only as a port. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
         <!-- DynamoDB SDK v2. Confined to infra/ (DynamoTransactionRepository, DynamoConfig); the
              ArchUnit test fails the build if a domain type imports software.amazon.awssdk.*. -->
         <dependency>

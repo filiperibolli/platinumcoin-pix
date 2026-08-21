@@ -5,6 +5,23 @@ spring:
   application:
     name: ledger-service
 
+  # Redis connection (Lettuce, via spring-boot-starter-data-redis). Redis is its own container — the
+  # local stand-in for ElastiCache, which LocalStack does not emulate (ADR-0008). Defaults target a
+  # locally-run Redis; compose overrides REDIS_HOST to the `redis` service name on the shared network.
+  # ledger-service uses it for ONE thing (step 40): deleting the `balance:<accountId>` keys a posting
+  # just made stale. It never reads a balance from Redis — that would put a cache on the money path.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # HARD TIME BOUND, and here it protects the MONEY PATH. The eviction runs after the posting has
+      # committed, so a Redis that hangs would hold the HTTP response open past payment-service's 3s
+      # read timeout — the caller would get 503 LEDGER_UNAVAILABLE for a debit that in fact landed.
+      # That is the failure the step-40 drill actually produced with Lettuce's 60s default. 200ms keeps
+      # a dead cache invisible to the posting's latency and to its caller.
+      timeout: ${REDIS_TIMEOUT:200ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:200ms}
+
 # Local-dev CORS so the open-from-disk API explorer (tools/api-explorer/index.html, Origin: null) can
 # call this service from the browser. Permissive + credential-free by design (the token is a Bearer
 # header, never a cookie); a deployed posture pins these origins (step-45 hardening). The CorsFilter

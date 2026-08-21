@@ -1,8 +1,11 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
+import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * In-memory {@link LedgerClient} for the plain-Java use-case tests: it records every posting the use
@@ -28,7 +31,9 @@ final class FakeLedgerClient implements LedgerClient {
     static final String PIX_OUT = "PIX_OUT";
 
     private final List<Posting> postings = new ArrayList<>();
+    private final Map<String, Long> balances = new HashMap<>();
     private RuntimeException failure;
+    private int balanceReads;
 
     @Override
     public void postInternalTransfer(
@@ -57,9 +62,37 @@ final class FakeLedgerClient implements LedgerClient {
         }
     }
 
+    /**
+     * The read half of the ledger seam (step 40): the balance the cache falls back to on a miss. An
+     * account nobody seeded does not exist, exactly like a ledger with no BALANCE item — "no such
+     * account" and "no money" must stay distinguishable, so the miss is an exception, not a zero.
+     */
+    @Override
+    public long readBalanceCents(String accountId) {
+        balanceReads++;
+        if (failure != null) {
+            throw failure;
+        }
+        Long balance = balances.get(accountId);
+        if (balance == null) {
+            throw new BalanceNotFoundException("no ledger account " + accountId);
+        }
+        return balance;
+    }
+
     /** Make the next (and every) posting throw {@code ex} — used to drive the failure branches. */
     void failWith(RuntimeException ex) {
         this.failure = ex;
+    }
+
+    /** Give an account a balance the ledger will report on a cache miss. */
+    void setBalance(String accountId, long balanceCents) {
+        balances.put(accountId, balanceCents);
+    }
+
+    /** How many times the ledger was asked for a balance — zero is what a cache hit must cost. */
+    int balanceReads() {
+        return balanceReads;
     }
 
     List<Posting> postings() {

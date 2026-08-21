@@ -1,6 +1,6 @@
-# Data Model — DynamoDB tables
+# Data Model — DynamoDB tables (and the Redis keys)
 
-All tables run on LocalStack DynamoDB, created by `infra/localstack/init` scripts. Naming: `pix_<table>`. Amounts are stored as **integer cents** (`amountCents: Number`) — never floats — to avoid rounding bugs; the API exposes decimal strings.
+All tables run on LocalStack DynamoDB, created by `infra/localstack/init` scripts. Naming: `pix_<table>`. Amounts are stored as **integer cents** (`amountCents: Number`) — never floats — to avoid rounding bugs; the API exposes decimal strings. §7 covers the **Redis** keys — cached, derived state, never a source of truth.
 
 > **Learning note — how to model in DynamoDB:** unlike relational design (normalize, then query anything), DynamoDB design starts from the **access patterns** and shapes keys around them. Each table below lists its access patterns first; the key schema is the answer to those patterns.
 
@@ -458,7 +458,24 @@ The consumer name is part of the **key**, not an attribute: settlement, notifica
 
 ---
 
-## 7. Capacity & local settings
+## 7. Redis keys (owner: shared — the one store two services touch)
+
+Redis is not a table, but it is state with a schema, and — uniquely in this platform — **two services touch the same key**, so the format belongs here rather than in either service's code alone. It is the local stand-in for ElastiCache (ADR-0008); LocalStack does not emulate ElastiCache, so it runs as its own container.
+
+| Key | Written by | Deleted by | Value | TTL | Purpose |
+|---|---|---|---|---|---|
+| `balance:<accountId>` | payment-service (`RedisBalanceCache`) | **ledger-service** (`RedisBalanceCacheInvalidator`), after every committed posting | `{"balanceCents":874500,"asOf":"2026-08-21T12:00:00.123Z"}` | **5s** | Cache-aside for `GET /v1/accounts/me/balance` (step 40) |
+| `fraud:vel:count:<accountId>` | fraud-service | — | integer (`INCR`) | velocity window | Sends per account in the window (step 24) |
+| `fraud:vel:sum:<accountId>` | fraud-service | — | integer cents (`INCRBY`) | velocity window | Amount sent per account in the window (step 24) |
+| `fraud:payees:<accountId>` | fraud-service | — | set of Pix keys (`SADD`) | none | Payee novelty — "has this account ever paid this key?" (step 24) |
+
+**`balance:<accountId>` is a two-service contract.** The reader and the invalidator are deliberately in different services because only the **writer of the ledger** knows the instant a cached balance became wrong; changing the key format is therefore a change to both `RedisBalanceCache` and `RedisBalanceCacheInvalidator` in the same commit. `asOf` is stored (not recomputed on read) because it means *when the ledger was read* — a hit must report the age of the number it serves.
+
+**The invariant that lets any of this be safe:** nothing in Redis is ever an input to a money decision. `balanceCents >= :amount` is a condition expression **inside** the `TransactWriteItems` of §3 (Domain Safety Rule #3), so a `balance:` key that is stale, corrupt, or missing changes what a customer *sees* for at most one TTL and can never change what the ledger *allows*. Invalidation is best-effort for the same reason: a posting that commits but whose `DEL` is lost costs ≤5s of display staleness, never a wrong balance — which is precisely why the TTL is short.
+
+---
+
+## 8. Capacity & local settings
 
 - All tables **on-demand** (PAY_PER_REQUEST) — no capacity planning locally, matches the auto-scaling NFR in prod.
 - No DynamoDB Streams used (polling outbox — ADR-0004); GSI3 on `pix_transactions` is sparse.

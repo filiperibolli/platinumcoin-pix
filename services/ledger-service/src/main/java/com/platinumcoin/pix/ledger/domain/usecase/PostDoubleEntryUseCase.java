@@ -3,10 +3,12 @@ package com.platinumcoin.pix.ledger.domain.usecase;
 import com.platinumcoin.pix.ledger.domain.exception.InvalidPostingException;
 import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
 import com.platinumcoin.pix.ledger.domain.model.PostingResult;
+import com.platinumcoin.pix.ledger.domain.port.BalanceCacheInvalidator;
 import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +31,9 @@ import org.slf4j.LoggerFactory;
  *       evaluated <i>inside</i> the transaction. Checking them here first would be a read-then-check
  *       race: the answer could be stale by the time the write lands, which is exactly the bug the
  *       conditional write exists to make impossible (domain safety rule 3).</li>
+ *   <li><b>It owns the cache invalidation</b> (step 40, ADR-0008), because it owns the only moment at
+ *       which a cached balance becomes a lie. See {@link #invalidateCachedBalances} for why it happens
+ *       after the commit and why its failure is not the posting's failure.</li>
  * </ul>
  */
 public class PostDoubleEntryUseCase {
@@ -36,10 +41,13 @@ public class PostDoubleEntryUseCase {
     private static final Logger log = LoggerFactory.getLogger(PostDoubleEntryUseCase.class);
 
     private final LedgerRepository ledger;
+    private final BalanceCacheInvalidator balanceCache;
     private final Clock clock;
 
-    public PostDoubleEntryUseCase(LedgerRepository ledger, Clock clock) {
+    public PostDoubleEntryUseCase(
+            LedgerRepository ledger, BalanceCacheInvalidator balanceCache, Clock clock) {
         this.ledger = ledger;
+        this.balanceCache = balanceCache;
         this.clock = clock;
     }
 
@@ -71,7 +79,44 @@ public class PostDoubleEntryUseCase {
                     result.txId(), result.command().debitAccount(), result.command().creditAccount(),
                     result.command().amountCents(), result.postedAt());
         }
+
+        invalidateCachedBalances(command);
         return result;
+    }
+
+    /**
+     * Drop the cached balances of both legs — <b>after</b> the commit, and <b>never</b> at the cost of
+     * the commit (step 40, ADR-0008).
+     *
+     * <p><b>Why after.</b> Evicting before the write opens a window: a concurrent reader misses, reads
+     * the still-pre-commit balance from DynamoDB and repopulates the cache with the old number — and
+     * nothing invalidates it a second time, so the stale value survives a full TTL. Evicting after the
+     * write leaves only the reverse, harmless race (a reader that populated a hair before the commit
+     * has its entry deleted a hair after it).
+     *
+     * <p><b>Why best-effort.</b> The money is already committed and durable. Turning a Redis outage
+     * into a failed posting would trade a bounded, ≤TTL display staleness for a caller that believes
+     * nothing happened when the debit in fact landed — the worse of the two failures by a wide margin.
+     * So the exception is swallowed at WARN and the short TTL becomes the backstop. This is also why a
+     * replay evicts: the original commit's eviction may have been the one that was lost.
+     *
+     * <p>Note what is <i>not</i> here: nothing reads the cache, and nothing here can affect whether the
+     * posting was allowed. The {@code balanceCents >= :amount} guard already ran inside the transaction
+     * (Domain Safety Rule #3), so a cache that is stale, empty or entirely down cannot authorize an
+     * overdraft.
+     */
+    private void invalidateCachedBalances(PostingCommand command) {
+        var accounts = List.of(command.debitAccount(), command.creditAccount());
+        try {
+            balanceCache.evict(accounts);
+            log.debug("Cached balances evicted after the posting committed | txId={} accounts={}",
+                    command.txId(), accounts);
+        } catch (RuntimeException e) {
+            log.warn("Cached balances could not be evicted after the posting committed; the money is "
+                            + "safe and the entries expire on their own TTL, so readers may see a stale "
+                            + "balance briefly | txId={} accounts={} error={}",
+                    command.txId(), accounts, e.toString());
+        }
     }
 
     /**
