@@ -9,7 +9,7 @@ import java.time.Instant;
  * the scan hands to the reconciliation path (the step-35 resolver).
  *
  * <p><b>Deliberately minimal</b> ({@code txId}, {@code status}, {@code updatedAt}). This step only needs to
- * <i>find</i> a stuck transaction, age it for the {@code reconciliation.oldest.seconds} metric, and hand it
+ * <i>find</i> a stuck transaction, age it for the {@code pix.reconciliation.oldest.seconds} metric, and hand it
  * off; it does not resolve it. Step 35's resolver reads the fields it needs to finalize or reverse
  * ({@code endToEndId}, {@code amountCents}, …) with a point read per stuck transaction
  * ({@link com.platinumcoin.pix.settlement.domain.model.ReconcilableTransaction}) rather than widening every

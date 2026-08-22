@@ -1,0 +1,27 @@
+# Grafana dashboard provider, provisioned as code (step 44).
+#
+# Points Grafana at a directory of dashboard JSON files that are committed to this repository. The
+# dashboards are therefore reviewable in a pull request, diffable, and identical on every machine — the
+# same standard the application code is held to, applied to the thing everyone actually looks at.
+#
+# `allowUiUpdates: false` is the deliberate part: an operator can explore and even save a private copy,
+# but the provisioned dashboard cannot be edited into a state the repo does not know about. The alternative
+# — "the real dashboard is whatever the last person clicked" — is how a monitoring setup becomes
+# unreproducible without anyone deciding that it should.
+
+apiVersion: 1
+
+providers:
+  - name: platinumcoin
+    orgId: 1
+    folder: PlatinumCoin Pix
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    # Re-read the folder this often, so editing a JSON file on the host shows up without a restart —
+    # which is what makes iterating on a panel bearable.
+    updateIntervalSeconds: 10
+    options:
+      path: /var/lib/grafana/dashboards
+      # Keeps the two dashboards side by side in one folder rather than nesting them by directory.
+      foldersFromFilesStructure: false

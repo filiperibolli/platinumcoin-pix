@@ -47,6 +47,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/v1/accounts/me/balance` | Bearer | The caller's balance (step 40), **cache-aside on Redis** with a 5s TTL and a ledger fallback: `{accountId, balance:"874.50", currency:"BRL", asOf}`. The account comes from the JWT — no path or query parameter can name another one. `asOf` is *when the ledger was read*, so a client can tell how old the number is; a cached answer keeps the original instant. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 | Outcome | Status | `code` |
 | ------- | ------ | ------ |
@@ -183,7 +184,7 @@ publish costs a *duplicate* (every consumer dedupes by `eventId` via `common-lib
 parked in clearing with nothing to settle it. So delivery is deliberately **at-least-once**. A failed
 publish leaves its event in the index for the next tick and does not stop the batch (no ordering is
 promised across redeliveries; blocking would only add head-of-line blocking), and the
-`outbox.lag` gauge — the age of the oldest waiting event — is what exposes one that is stuck.
+`pix.outbox.lag` gauge — the age of the oldest waiting event — is what exposes one that is stuck.
 Polling, not DynamoDB Streams: against a 10s SPI SLA a 1s poll is invisible, and a sparse index makes it
 O(in-flight) rather than O(history); Streams remains the documented evolution, and swapping it in
 replaces `OutboxPublisher` + `SnsEventPublisher` and nothing else.
@@ -221,7 +222,7 @@ fresh cache).
 for accounts touched in the last 5s. Getting there took more than a `try/catch` — a cache that *hangs*
 is worse than one that fails, and the step-40 drill produced a **114-second** balance read before the
 timeouts, the fail-fast client (`RedisFailFastConfig`) and ledger-service's off-thread eviction were
-added. `cache.hit` / `cache.miss` (tagged `cache=balance`) expose the hit rate the 300ms budget rests on;
+added. `pix.cache.hit` / `pix.cache.miss` (tagged `cache=balance`) expose the hit rate the 300ms budget rests on;
 measured p99 on a warm cache is **9.8ms** (200 serial reads — the load-test number is step 47's).
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
@@ -232,7 +233,7 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
         AccountBalanceController (GET /v1/accounts/me/balance) + BalanceResponse (cents → decimal),
         PaymentExceptionHandler (domain exception → problem+json),
-        OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `outbox.lag` gauge)
+        OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `pix.outbox.lag` gauge)
                                                                                    (inbound adapters)
 domain/model/     Transaction (record), AccountBalance (cents + the instant they were true),
                   PendingOutboxEvent (a stored event awaiting publication),
@@ -260,7 +261,7 @@ domain/usecase/   SendPixUseCase, SendPixCommand, SendPixOutcome, GetPaymentStat
 infra/persistence/ DynamoTransactionRepository (the only place a transaction is written),
                    DynamoIdempotencyRepository, DynamoDailyLimitReservation (the LIMIT#/DAY# counter),
                    DynamoOutboxEventStore (Query gsi3 oldest-first, UpdateItem REMOVE gsi3pk),
-                   RedisBalanceCache (GET/SET balance:<id> EX 5, cache.hit/cache.miss, fails to a miss)
+                   RedisBalanceCache (GET/SET balance:<id> EX 5, pix.cache.hit/pix.cache.miss, fails to a miss)
 infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
                    HttpLedgerClient (RestClient → ledger-service, timeouts),
                    HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
@@ -342,8 +343,8 @@ curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" 
 docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001
 docker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001   # <= 5
 # the hit rate (a Prometheus registry lands in step 44; until then, the Actuator metrics endpoint)
-curl -s localhost:8084/actuator/metrics/cache.hit  | jq '.measurements[0].value'
-curl -s localhost:8084/actuator/metrics/cache.miss | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/metrics/pix.cache.hit  | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/metrics/pix.cache.miss | jq '.measurements[0].value'
 
 # "0.00" ⇒ 400 INVALID_AMOUNT (the strictly-positive rule the wire pattern cannot express)
 curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
@@ -402,7 +403,7 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
   $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue \
       --query QueueUrl --output text) | jq '.Messages[0] | {body: .Body, attrs: .MessageAttributes}'
 # publisher liveness: seconds the oldest unpublished event has waited (0.0 on a drained outbox)
-curl -s localhost:8084/actuator/metrics/outbox.lag | jq
+curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the

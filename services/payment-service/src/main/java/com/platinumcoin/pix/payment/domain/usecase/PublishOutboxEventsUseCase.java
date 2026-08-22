@@ -39,7 +39,7 @@ import org.slf4j.LoggerFactory;
  * across redeliveries is not guaranteed and that consumers rely on guarded status transitions instead —
  * while costing head-of-line blocking: one event the broker keeps rejecting would hold back every
  * payment behind it. A stuck event stays visible through {@link PublishOutboxOutcome#failed()} and, as
- * it ages, through the {@code outbox.lag} gauge.
+ * it ages, through the {@code pix.outbox.lag} gauge.
  *
  * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): the scheduling that calls this lives in
  * {@code api/}, the index and the broker behind the two ports.

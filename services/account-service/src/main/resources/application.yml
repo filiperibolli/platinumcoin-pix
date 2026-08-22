@@ -52,7 +52,11 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        # `prometheus` is the scrape surface (step 44): Prometheus polls it every 10s and Grafana reads
+        # everything from there. Exposed on the same unauthenticated actuator path as health — a local
+        # sandbox decision; in production the metrics port is bound to an internal interface and never
+        # routed publicly (the metric values themselves are business data).
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # Enables the liveness/readiness health groups the compose healthcheck probes.

@@ -139,14 +139,14 @@ class BalanceCacheIT extends LocalStackTestBase {
     /** The KPI behind the 300ms budget: one miss then one hit, counted (step 44 graphs these). */
     @Test
     void hitAndMissAreCounted() throws Exception {
-        double missesBefore = counter("cache.miss");
-        double hitsBefore = counter("cache.hit");
+        double missesBefore = counter("pix.cache.miss");
+        double hitsBefore = counter("pix.cache.hit");
 
         mvc.perform(get("/v1/accounts/me/balance").header("Authorization", "Bearer " + token));
         mvc.perform(get("/v1/accounts/me/balance").header("Authorization", "Bearer " + token));
 
-        assertThat(counter("cache.miss")).isEqualTo(missesBefore + 1);
-        assertThat(counter("cache.hit")).isEqualTo(hitsBefore + 1);
+        assertThat(counter("pix.cache.miss")).isEqualTo(missesBefore + 1);
+        assertThat(counter("pix.cache.hit")).isEqualTo(hitsBefore + 1);
     }
 
     /**

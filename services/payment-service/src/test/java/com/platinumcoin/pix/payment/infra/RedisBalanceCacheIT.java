@@ -91,16 +91,16 @@ class RedisBalanceCacheIT extends RedisTestBase {
         // asOf survives the round-trip unchanged: a hit must report the age of the number it serves,
         // and a cache that re-stamped it would make every stale answer look fresh.
         assertThat(read).contains(new AccountBalance(ACCOUNT, 87_450L, AS_OF));
-        assertThat(counter("cache.hit")).isEqualTo(1d);
-        assertThat(counter("cache.miss")).isZero();
+        assertThat(counter("pix.cache.hit")).isEqualTo(1d);
+        assertThat(counter("pix.cache.miss")).isZero();
     }
 
     @Test
     void anAbsentKeyIsAMissAndIsCounted() {
         assertThat(cache.get(ACCOUNT)).isEmpty();
 
-        assertThat(counter("cache.miss")).isEqualTo(1d);
-        assertThat(counter("cache.hit")).isZero();
+        assertThat(counter("pix.cache.miss")).isEqualTo(1d);
+        assertThat(counter("pix.cache.hit")).isZero();
     }
 
     /** The value is written with an expiry, not forever — the TTL is the whole staleness bound. */
@@ -139,7 +139,7 @@ class RedisBalanceCacheIT extends RedisTestBase {
         template.opsForValue().set("balance:" + ACCOUNT, "not-json-at-all");
 
         assertThat(cache.get(ACCOUNT)).isEmpty();
-        assertThat(counter("cache.miss")).isEqualTo(1d);
+        assertThat(counter("pix.cache.miss")).isEqualTo(1d);
     }
 
     /**
@@ -157,7 +157,7 @@ class RedisBalanceCacheIT extends RedisTestBase {
         assertThat(broken.get(ACCOUNT)).isEmpty();
         broken.put(new AccountBalance(ACCOUNT, 5_000L, AS_OF));
 
-        assertThat(counter("cache.miss")).isEqualTo(1d);
+        assertThat(counter("pix.cache.miss")).isEqualTo(1d);
     }
 
     /**

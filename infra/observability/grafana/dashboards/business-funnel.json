@@ -1,0 +1,872 @@
+{
+  "uid": "pix-business-funnel",
+  "title": "PlatinumCoin Pix \u2014 Business Funnel",
+  "description": "Where payments go and where they die: stage-by-stage conversion, the REJECTED and REVERSED branches, the fraud mix and the money settled. The board a product owner reads \u2014 built from the same Micrometer counters that feed the technical dashboard. Provisioned from infra/observability/ (step 44).",
+  "tags": [
+    "platinumcoin",
+    "business",
+    "funnel"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "bargauge",
+      "title": "The funnel, right now",
+      "description": "Payments that reached each stage since boot. Read top to bottom: each bar is necessarily shorter than the one above it, and the size of a step DOWN is where payments are dying. SENT_TO_SPI is naturally much shorter than DEBITED \u2014 internal Pix settles instantly and never touches the rail.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"RECEIVED\",outcome=\"ok\"})",
+          "legendFormat": "1 \u00b7 RECEIVED",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"FRAUD_CHECKED\",outcome=\"ok\"})",
+          "legendFormat": "2 \u00b7 FRAUD_CHECKED",
+          "range": false,
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"DEBITED\",outcome=\"ok\"})",
+          "legendFormat": "3 \u00b7 DEBITED",
+          "range": false,
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"SENT_TO_SPI\",outcome=\"ok\"})",
+          "legendFormat": "4 \u00b7 SENT_TO_SPI",
+          "range": false,
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"SETTLED\",outcome=\"ok\"})",
+          "legendFormat": "5 \u00b7 SETTLED",
+          "range": false,
+          "instant": true,
+          "refId": "E"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "R$ settled",
+      "description": "Money that actually reached a payee. Stored as integer cents end to end (Domain Safety Rule #6) \u2014 the division by 100 happens HERE, at the display edge, and nowhere in the platform.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "currencyBRL",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_settled_amount_cents_total) / 100",
+          "legendFormat": "settled",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Duplicates absorbed (KR1.1)",
+      "description": "Requests answered from a memoized response instead of moving money twice (ADR-0002). This number going UP is the system working: each one is a retry that did not become a second debit. The proof is the pairing \u2014 replays climb while DEBITED does not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_idempotency_replayed_total)",
+          "legendFormat": "replays",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "piechart",
+      "title": "Fraud decision mix",
+      "description": "The in-path verdict mix as the SEND FLOW saw it \u2014 which is why it includes SKIPPED, the fail-open that only the caller can observe (ADR-0005).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right",
+          "showLegend": true
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (decision) (pix_fraud_decision_total)",
+          "legendFormat": "{{decision}}",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Fail-open rate vs 5% ceiling",
+      "description": "How often the 200ms fraud budget was blown and the send proceeded UNSCORED. Fail-open is a deliberate design (availability of payments over completeness of scoring); this number is what keeps it a documented exception rather than the norm.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3,
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(pix_fraud_decision_total{decision=\"SKIPPED\"}[10m])) / sum(rate(pix_fraud_decision_total[10m]))",
+          "legendFormat": "skipped share",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Payments per stage over time",
+      "description": "The same funnel as a rate (payments/min). Healthy traffic keeps the lines roughly parallel; a line that flattens while the ones above it keep climbing is the shape of a stage that has stopped \u2014 which is exactly what the settlement-silence alert watches for automatically.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage) (rate(pix_payments_stage_total{outcome=\"ok\"}[1m])) * 60",
+          "legendFormat": "{{stage}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Conversion RECEIVED \u2192 FRAUD_CHECKED",
+      "description": "Payments that survived intake \u2014 limits, unknown keys, malformed requests all die before here.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"FRAUD_CHECKED\",outcome=\"ok\"}) / sum(pix_payments_stage_total{stage=\"RECEIVED\",outcome=\"ok\"})",
+          "legendFormat": "conversion",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Conversion FRAUD_CHECKED \u2192 DEBITED",
+      "description": "Payments that passed fraud AND had the funds. A drop here is either risk policy or empty accounts \u2014 the rejection panel below says which.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"DEBITED\",outcome=\"ok\"}) / sum(pix_payments_stage_total{stage=\"FRAUD_CHECKED\",outcome=\"ok\"})",
+          "legendFormat": "conversion",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Conversion DEBITED \u2192 SETTLED",
+      "description": "The asynchronous half. Below 1 means money is currently in flight \u2014 normal in small amounts, an incident when it persists. Compare with the reversal panel: settled + reversed should converge on debited once the rail answers.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percentunit",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"SETTLED\",outcome=\"ok\"}) / sum(pix_payments_stage_total{stage=\"DEBITED\",outcome=\"ok\"})",
+          "legendFormat": "conversion",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Reversals (compensating)",
+      "description": "Payments the rail definitively refused, whose parked money was returned to the payer by a COMPENSATING posting (step 33). The ledger is append-only: a reversal is a new entry, never an edit of the original.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNonNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(pix_payments_stage_total{stage=\"REVERSED\",outcome=\"ok\"})",
+          "legendFormat": "reversed",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Where payments die (REJECTED branch)",
+      "description": "Rejections per minute, by the stage that refused them. This is the product question the technical board cannot answer: RECEIVED means limits and unknown keys, FRAUD_CHECKED means risk policy, DEBITED means insufficient funds. Retryable failures (a ledger outage) are deliberately NOT counted here \u2014 they decide nothing and the retry resurrects the payment.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 1,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": "",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (stage) (rate(pix_payments_stage_total{outcome=\"rejected\"}[5m])) * 60",
+          "legendFormat": "{{stage}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Reconciliation actions",
+      "description": "Stuck transactions the reconciliation loop forced to a terminal state (step 35), by which way they went. This is how much of settlement's volume is being RESCUED rather than completing on the happy path \u2014 a number that should stay small and non-zero.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 2,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (action) (increase(pix_reconciliation_resolved_total[5m]))",
+          "legendFormat": "{{action}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": []
+  }
+}

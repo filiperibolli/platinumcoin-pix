@@ -4,7 +4,7 @@ import java.time.Duration;
 
 /**
  * What one publisher tick did (step 29). Returned to the scheduling adapter, which turns
- * {@link #oldestUnpublishedAge()} into the {@code outbox.lag} gauge.
+ * {@link #oldestUnpublishedAge()} into the {@code pix.outbox.lag} gauge.
  *
  * @param found                 how many waiting events the tick claimed (bounded by the batch size)
  * @param published             how many reached the broker <b>and</b> were marked published

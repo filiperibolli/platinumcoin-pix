@@ -170,6 +170,133 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Prometheus + Grafana (technical + business-funnel dashboards as code), silence alerts and correlationId
+  path tracing (step 44)
+  Sprint 11's flow: **see the whole system**. Three layers — logs (what happened to *this* request),
+  metrics (how the *system* behaves), dashboards (who needs to see it) — plus the layer that matters most
+  in an asynchronous platform: **alerts on the absence of events**.
+  - **The business funnel is the point of the sprint.** One counter, `pix.payments.stage{stage,outcome}`,
+    written by **two services** — payment-service owns `RECEIVED → FRAUD_CHECKED → DEBITED` (and `SETTLED`
+    for an internal send, whose ledger posting *is* its settlement); settlement-service owns
+    `SENT_TO_SPI → SETTLED` and the `REVERSED` branch. The same metric family from both sides of the
+    asynchronous seam is what lets one Grafana panel draw one funnel across a process boundary, and it
+    holds only because the tag vocabulary is a **shared enum** (`PixMetrics` in common-lib): Prometheus
+    would happily store `stage="SENT_TO_SPI"` and `stage="sent_to_spi"` as two unrelated series and the
+    funnel would split in half with nothing failing anywhere.
+  - **Four counting rules make the funnel mean something**, and each is pinned by a test: `RECEIVED/ok`
+    fires on a *won idempotency claim* (exactly once per payment, never once per HTTP request);
+    **retryable failures are not rejections** (an unreachable ledger decides nothing — counting it would
+    report a death the retry then resurrects); a payment is counted at the stage that *actually* refused
+    it (limits at `RECEIVED`, a `DENY` at `FRAUD_CHECKED`, insufficient funds at `DEBITED`); and a payment
+    is counted **once per stage, never once per attempt**.
+  - Alongside it: `pix.fraud.decision{decision}` (owned by payment-service because only the *caller* can
+    observe `SKIPPED`, the fail-open of ADR-0005 — that share *is* the fail-open rate),
+    `pix.settled.amount` in **integer cents** (the division by 100 happens on the dashboard, never in the
+    platform), `pix.idempotency.replayed` (KR1.1's live evidence: replays climb while `DEBITED` does not)
+    and `pix.reconciliation.resolved{action}`.
+  - **Every earlier operational metric renamed to the `pix.*` prefix** (`cache.hit`, `cache.miss`,
+    `outbox.lag`, `settlement.dlq.depth`, `reconciliation.oldest.seconds`, `reconciliation.resolved`,
+    `fraud.score`). One convention beats a catalog that needs a legend. Historical step files and
+    CHANGELOG entries keep the names they were written with — they are a record, not a live contract.
+  - **`PrometheusMetricNamesTest` pins the exact scrape output**, in payment-service and
+    settlement-service, and it exists because of a trap found while writing this step: the Micrometer name
+    is *not* the Prometheus name. The convention appends `_total` to every counter **and** the meter's
+    `baseUnit` when one is set, so a well-meant `.baseUnit("payments")` silently turns
+    `pix.payments.stage` into `pix_payments_stage_payments_total` — at which point every dashboard panel,
+    every PromQL rule and the catalog are querying a series that no longer exists and **nothing fails**.
+    The graph simply goes empty, which is the most expensive failure mode observability has. `baseUnit` is
+    now used only where it improves the name (`pix_settled_amount_cents_total` — for money the unit is
+    worth a word).
+  - **Latency is exported as a percentile histogram**, configured once in common-lib
+    (`CommonMetricsAutoConfiguration`, the metrics counterpart of the shared logback config), with
+    **explicit buckets on the two SLO boundaries** (300ms, 2s). A quantile computed inside each JVM
+    exports as a plain gauge and quantiles do not aggregate — the average of two instances' p99s is not a
+    percentile of anything — so only buckets can honestly answer an SLO stated *for the platform*; and a
+    bucket sitting exactly on the budget turns "what fraction met the SLO?" into a division of two
+    counters instead of an interpolation.
+  - **Prometheus (host 9091) + Grafana (3000) in compose, always on, not an optional profile** — a
+    dashboard you have to remember to start is down exactly when something breaks. Grafana is
+    **provisioned as code** from `infra/observability/`: datasource, dashboard provider and both
+    dashboards are committed, `allowUiUpdates: false`, anonymous `Viewer` so a reader hits no login.
+    Two dashboards, 12 panels each — **Technical** (p50/p99 vs SLO lines, % inside SLO, throughput, 5xx
+    rate, DLQ depth, outbox lag, reconciliation age, cache hit rate, JVM, scrape targets) and **Business
+    Funnel** (the funnel, R$ settled, duplicates absorbed, fraud mix, fail-open rate, stage throughput,
+    three conversion ratios, reversals, *where payments die*, reconciliation actions).
+    **4xx is deliberately excluded from the error-rate panel**: a `422 LIMIT_EXCEEDED` is the platform
+    working correctly, and folding refusals into an error rate is how a dashboard learns to cry wolf —
+    they live in the funnel's `REJECTED` branch, as a product signal rather than a fault.
+  - **`AlertEvaluator` (settlement-service): six rules in three shapes** — threshold (DLQ depth `> 0`,
+    reconciliation age `> 300s`, outbox lag `> 60s`), ratio (fail-open ceiling 5%, cache-hit floor 70%)
+    and **silence** (debits flowing while `SETTLED` stands still for 120s). Silence is the shape that
+    matters: a synchronous system fails as an *error*, an asynchronous one fails as **nothing at all**,
+    and every error rate on the dashboard stays a healthy zero while money accumulates in the clearing
+    account. Both halves of the condition are load-bearing — without the input check it fires every quiet
+    night; without the duration check it fires between any two settlements. Its input is **`DEBITED`**,
+    the stage the *other* service owns, because if settlement-service is what is wedged then
+    `SENT_TO_SPI` stops advancing too and a rule comparing two stalled counters sees a perfectly quiet
+    system.
+  - Three behaviours make it a signal instead of noise: it **announces transitions, not conditions** (a
+    rule firing for an hour is still firing); it **refuses to guess** — a missing sample or a ratio with
+    too little traffic yields `SKIPPED` and leaves the remembered state untouched, so a monitoring outage
+    can neither invent an incident nor silently close one (`0/0` has no safe convention: call it 0 and the
+    cache floor fires every quiet night, call it 1 and the fail-open ceiling can never fire); and it
+    **logs in ADR-0012's contract**, with `rule=`, `observed=`, `state=` and a `runbook=` on every line.
+  - **The watchdog reads Prometheus, not its own registry** (`MetricSource` port → `PrometheusMetricSource`),
+    because three of the six rules watch metrics *other* services own — and the failure it exists to catch
+    is precisely a statement about two services at once. The dependency is **soft by construction** and
+    compose deliberately gives settlement-service **no `depends_on: prometheus`**: gating a service that
+    moves money on the monitoring stack being up would invert exactly the wrong priority. In production
+    these become an Alertmanager rules file next to the same Prometheus; they are in code here so the
+    platform can say something is wrong under plain `docker compose up`, and so each rule has a unit test
+    proving it fires.
+  - **`scripts/trace.sh <correlationId|txId>`** collates and time-orders every service's logs for one
+    request or one payment. It is fifty lines of `grep` and not a tracing backend *precisely because* the
+    id is in the log **pattern** (ADR-0012): no service has to remember to print it, framework lines carry
+    it too, and the path is already written down in order. **Verified live: one external send is 48 lines
+    across 7 services**, spanning the synchronous request and the whole asynchronous settlement
+    (payment → account → DICT → fraud → ledger → outbox publisher → settlement → SPI → ledger →
+    notification). It accepts a `txId` too, because work no request started honestly has no correlation
+    id — a documented gap, since `correlationId` lives on the outbox items and not on the transaction.
+  - **Path audit (task 5) found and fixed a real gap**: the reconciliation loop logged `txId=` as a pair
+    but left the MDC's `tx=` slot at `n/a` for the whole resolution, so `grep tx=<id>` — and every
+    framework line emitted while rescuing that payment — missed it. `ScanStuckTransactionsUseCase` now
+    adopts the id onto the MDC around each resolve, the same treatment the outbox publisher already had.
+  - Docs: **`docs/observability.md` (new)** — metric catalog, the funnel's counting rules, the alert table,
+    the drill and the path audit. `ARCHITECTURE.md` §7.7 updated (the evaluator's Prometheus vantage
+    point, the histogram reasoning, `trace.sh`); `docs/local-dev.md` §5.9 is now an observability runbook
+    (the stale "`/actuator/prometheus` does not exist yet" note is gone); every service README documents
+    the scrape endpoint; settlement-service's documents all nine alert knobs. Postman gains an
+    **observability** folder (5 requests) and the API explorer an **observability** section (6 PromQL
+    cards) plus a runnable **Observability journey** that reads the funnel, sends a Pix, reads it again
+    and prints the deltas — then hands you the `trace.sh` command for that exact payment.
+  - **Three defects reached a working dashboard and were caught by the drill, not by the suite** — each a
+    category, all three written up in `docs/observability.md` §6:
+    1. **A `@Scheduled` placeholder no test could resolve.** `fixedDelayString` accepts milliseconds or
+       ISO-8601 — *not* the `30s` form that `@ConfigurationProperties` `Duration` binding accepts happily.
+       Both halves looked right; the context died at startup. **No IT could have caught it**: every IT
+       sets `pix.schedulers.enabled=false`, so the bean is never created and the annotation never
+       processed. Now guarded by **`ScheduledPlaceholdersTest`**, which checks the *static* relationship
+       between the annotation and `application.yml` with no Spring context — and which was verified to go
+       red on the original bug.
+    2. **PromQL is written in exactly the characters a URL treats as structure.** `{stage="DEBITED"}` is
+       URI-template syntax to Spring's `RestClient`, and `+` is legal unencoded in a query string but
+       decodes to a **space** in Go's form parser, so `sum(a) + sum(b)` became a syntax error — and only
+       for the rules that add two series. Both surfaced as an unhelpful `400 bad_data`. Fixed by
+       submitting the expression as a form body (what Grafana's own datasource does). *The design held
+       under this*: every failure degraded to `SKIPPED` and not one false alert was raised.
+    3. **The funnel counted attempts, not payments.** With the rail failing, the dashboard showed **31**
+       payments at `SENT_TO_SPI` against **13** ever `DEBITED` — a conversion panel reading above 100%.
+       Correct behaviour meeting a careless counter: the transition's guard deliberately accepts a
+       transaction that is *already* `SENT_TO_SPI` so a redelivery can re-stamp `updatedAt` (step 32).
+       `markSentToSpi` now returns whether it actually moved the payment (`ReturnValue.ALL_OLD`, no extra
+       read), and the stage is counted only on the first claim. Proven live afterwards: **4 attempts at
+       the rail, `SENT_TO_SPI = 1`**.
+  - **Drill run, and the alert lifecycle observed end to end** (`failureRate=1.0`, debits kept flowing):
+    `RESOLVED` (baseline, 55s) → **`FIRING`** (326s stalled) → `RESOLVED` (0s, caught up) — one line per
+    transition, not one per 30s tick. Prometheus scrapes **9/9 targets up**; both dashboards render live
+    data through the provisioned datasource.
+  AI: est 6h / actual 7.5h / ~90% generated / 3 issues caught in live verification (see above)
+
 - Immutable audit trail to S3 (partitioned JSONL) + statement cold-archive job (step 43)
   Sprint 10's flow closes: the buckets step 42 created now have writers. **Two jobs, in two services,
   with deliberately opposite postures** — one appends a record that may never change, the other

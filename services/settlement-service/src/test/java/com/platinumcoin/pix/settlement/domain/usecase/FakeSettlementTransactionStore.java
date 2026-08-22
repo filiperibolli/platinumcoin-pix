@@ -34,13 +34,22 @@ final class FakeSettlementTransactionStore implements SettlementTransactionStore
         this.trace = trace;
     }
 
+    /**
+     * Mirrors the real guard's two outcomes (step 44): the FIRST claim moves DEBITED -> SENT_TO_SPI and
+     * reports {@code true}; a re-claim by a redelivery finds it already SENT_TO_SPI, succeeds (the guard
+     * accepts it, so a retry can re-stamp updatedAt) and reports {@code false}. The caller counts a funnel
+     * stage only on the first — which is why the fake has to model the distinction rather than always
+     * returning true.
+     */
     @Override
-    public void markSentToSpi(String txId, Instant at) {
+    public boolean markSentToSpi(String txId, Instant at) {
         trace.add("markSentToSpi");
         if (refuseSentToSpi) {
             throw new TransitionNotAllowedException(txId, "DEBITED or SENT_TO_SPI", "SENT_TO_SPI");
         }
+        boolean firstClaim = !sentToSpi.contains(txId);
         sentToSpi.add(txId);
+        return firstClaim;
     }
 
     @Override

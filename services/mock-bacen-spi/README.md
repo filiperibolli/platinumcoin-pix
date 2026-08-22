@@ -40,6 +40,7 @@ tested against a dependency that lies in exactly this way.
 | `GET` | `/spi/dict/{key}` | none | Which participant holds a Pix key → `{key, keyType, ispb, participant}`; unknown ⇒ `404 DICT_KEY_NOT_FOUND`. |
 | `POST` | `/simulate/inbound-pix` | none | **The trigger that makes money arrive** (step 37). Body `{pixKey, amount, payerName?, payerIspb?}`. Mints an `endToEndId` and presents the payment to settlement-service's webhook with the shared `X-Webhook-Token`, retrying like a real rail. |
 | `GET` | `/actuator/health` | none | Liveness/readiness for the compose healthcheck. |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 **Request** (`POST /spi/settlements`) — money is integer cents, never a decimal string:
 

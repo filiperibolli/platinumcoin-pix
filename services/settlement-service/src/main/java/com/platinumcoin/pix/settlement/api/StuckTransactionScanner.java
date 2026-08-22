@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * The reconciliation scanner's inbound adapter (step 34): a 60s schedule that drives one
- * {@link ScanStuckTransactionsUseCase} and republishes its result as the {@code reconciliation.oldest.seconds}
+ * {@link ScanStuckTransactionsUseCase} and republishes its result as the {@code pix.reconciliation.oldest.seconds}
  * gauge.
  *
  * <h2>Why this is {@code api/} and calls exactly one use case</h2>
@@ -30,7 +30,7 @@ import org.springframework.stereotype.Component;
  * {@link SettlementDlqDepthGauge} uses. The tick obeys {@code pix.schedulers.enabled} (off in ITs, which
  * call {@link #scanOnce()} explicitly), since a live scanner against the shared table would fight the tests.
  *
- * <p>{@code reconciliation.oldest.seconds} is the <b>leading</b> indicator of the &lt;5-min reconciliation
+ * <p>{@code pix.reconciliation.oldest.seconds} is the <b>leading</b> indicator of the &lt;5-min reconciliation
  * SLO (ADR-0003): it rises the moment a settlement stalls, well before anything reaches the DLQ, which is
  * why step 44 alerts on it climbing rather than only on a non-zero DLQ depth.
  */
@@ -49,14 +49,14 @@ public class StuckTransactionScanner {
             ReconciliationSloAlert sloAlert, MeterRegistry meterRegistry) {
         this.scanStuckTransactions = scanStuckTransactions;
         this.sloAlert = sloAlert;
-        Gauge.builder("reconciliation.oldest.seconds", oldestAgeSeconds, AtomicLong::doubleValue)
+        Gauge.builder("pix.reconciliation.oldest.seconds", oldestAgeSeconds, AtomicLong::doubleValue)
                 .description("Age of the oldest DEBITED/SENT_TO_SPI transaction — the leading indicator of "
                         + "the <5-min reconciliation SLO (step 34, ADR-0003)")
                 .baseUnit("seconds")
                 .register(meterRegistry);
         log.info("Stuck-transaction scanner ready, it will scan the reconciliation index on a schedule, "
                 + "resolve each stuck transaction and report the oldest stuck age as "
-                + "reconciliation.oldest.seconds while evaluating the <5-min SLO alert");
+                + "pix.reconciliation.oldest.seconds while evaluating the <5-min SLO alert");
     }
 
     /**

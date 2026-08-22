@@ -1,28 +1,37 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
+import com.platinumcoin.pix.common.metrics.PixMetrics;
+import com.platinumcoin.pix.settlement.domain.model.AlertRule;
+import com.platinumcoin.pix.settlement.domain.model.AlertRule.Comparison;
 import com.platinumcoin.pix.settlement.domain.port.AuditTrail;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
 import com.platinumcoin.pix.settlement.domain.port.InboundTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
+import com.platinumcoin.pix.settlement.domain.port.MetricSource;
 import com.platinumcoin.pix.settlement.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationMetrics;
+import com.platinumcoin.pix.settlement.domain.port.SettlementFunnelMetrics;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionReconciler;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionStore;
+import com.platinumcoin.pix.settlement.domain.service.AlertEvaluator;
 import com.platinumcoin.pix.settlement.domain.service.AuditBatch;
 import com.platinumcoin.pix.settlement.domain.service.ReconciliationSloAlert;
 import com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer;
 import com.platinumcoin.pix.settlement.domain.service.StuckTransactionResolver;
+import com.platinumcoin.pix.settlement.domain.usecase.EvaluateAlertsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.ReceiveInboundPixUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.RecordAuditEventsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCase;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixUseCase;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -34,6 +43,7 @@ import org.springframework.context.annotation.Configuration;
  * framework home.
  */
 @Configuration
+@EnableConfigurationProperties(AlertProperties.class)
 public class SettlementBeansConfig {
 
     /**
@@ -54,8 +64,9 @@ public class SettlementBeansConfig {
     SettlementFinalizer settlementFinalizer(
             SettlementTransactionStore transactions,
             LedgerClient ledger,
-            DailyLimitRelease dailyLimits) {
-        return new SettlementFinalizer(transactions, ledger, dailyLimits);
+            DailyLimitRelease dailyLimits,
+            SettlementFunnelMetrics funnel) {
+        return new SettlementFinalizer(transactions, ledger, dailyLimits, funnel);
     }
 
     /**
@@ -93,10 +104,11 @@ public class SettlementBeansConfig {
             SpiSettlementClient spi,
             SettlementTransactionStore transactions,
             SettlementFinalizer finalizer,
+            SettlementFunnelMetrics funnel,
             @Value("${pix.ispb}") String ispb,
             Clock clock) {
         return new SettlePixUseCase(
-                processedEvents, spi, transactions, finalizer, ispb, clock);
+                processedEvents, spi, transactions, finalizer, funnel, ispb, clock);
     }
 
     /**
@@ -121,7 +133,7 @@ public class SettlementBeansConfig {
     }
 
     /**
-     * The &lt;5-min reconciliation SLO alert (step 35): evaluates {@code reconciliation.oldest.seconds}
+     * The &lt;5-min reconciliation SLO alert (step 35): evaluates {@code pix.reconciliation.oldest.seconds}
      * against its breach threshold every scan and fires/resolves on the transition. In-code here; step 44
      * wires the same threshold into Prometheus so the graph and the code agree on one number.
      */
@@ -172,5 +184,112 @@ public class SettlementBeansConfig {
     RecordAuditEventsUseCase recordAuditEventsUseCase(
             AuditBatch auditBatch, AuditTrail auditTrail, Clock clock) {
         return new RecordAuditEventsUseCase(auditBatch, auditTrail, clock);
+    }
+
+    /**
+     * <b>The platform's alert rules</b> (step 44, task 4) — the watchdog's entire surface, in one
+     * readable list, with every PromQL expression next to the reason it is the right question.
+     *
+     * <p>They live in the composition root rather than in the domain because <i>which</i> rules a
+     * deployment runs is a wiring decision (this same evaluator would carry a different list in a
+     * different environment), while <i>how</i> a rule is evaluated is domain logic and lives in
+     * {@link AlertEvaluator}. The thresholds come from {@link AlertProperties} so a drill can tighten a
+     * window from the environment.
+     *
+     * <p>Note what the queries do <b>not</b> use: {@code rate()} on the two counters the silence rule
+     * watches. The evaluator tracks their movement between ticks itself, and a raw monotonic counter is
+     * the honest input for that — a per-second rate over a 5-minute window would smear the exact moment
+     * settlement stopped across the whole window, which is the one moment this rule exists to find.
+     */
+    @Bean
+    List<AlertRule> platformAlertRules(AlertProperties alerts) {
+        String window = alerts.ratioWindow();
+        String debited = promCounter(PixMetrics.Stage.DEBITED);
+        String settled = promCounter(PixMetrics.Stage.SETTLED);
+
+        return List.of(
+                // THE rule of an asynchronous money platform. Input is DEBITED (payment-service's side)
+                // rather than SENT_TO_SPI, on purpose: if settlement-service is the thing that is wedged,
+                // SENT_TO_SPI stops advancing too, and a rule comparing two stalled counters would see a
+                // perfectly quiet system. Comparing against the stage the OTHER service owns is what makes
+                // "the pipeline stopped" visible from inside the pipeline that stopped.
+                new AlertRule.Silence(
+                        "settlement_silence",
+                        "payments are being debited but nothing has settled — money is accumulating in "
+                                + "the clearing account",
+                        "docs/local-dev.md §5.5 (settlement failure & reconciliation drill)",
+                        debited, settled, alerts.settlementSilence()),
+
+                new AlertRule.Threshold(
+                        "settlement_dlq_depth",
+                        "settlements have landed in the dead-letter queue — money is parked in clearing "
+                                + "with no automatic path releasing it",
+                        "docs/local-dev.md §5.5 (settlement failure & reconciliation drill)",
+                        "sum(pix_settlement_dlq_depth_messages)",
+                        alerts.dlqDepthBound(), Comparison.ABOVE, "messages"),
+
+                new AlertRule.Threshold(
+                        "reconciliation_backlog_age",
+                        "a transaction has been unresolved past the <5-min reconciliation SLO — "
+                                + "settlement is not converging",
+                        "docs/local-dev.md §5.5 (settlement failure & reconciliation drill)",
+                        "max(pix_reconciliation_oldest_seconds)",
+                        alerts.reconciliationAge().getSeconds(), Comparison.ABOVE, "seconds"),
+
+                new AlertRule.Threshold(
+                        "outbox_publisher_lag",
+                        "the outbox publisher is falling behind — events that trigger settlement are "
+                                + "committed but unpublished",
+                        "docs/local-dev.md §5.4 (outbox & publisher)",
+                        "max(pix_outbox_lag_seconds)",
+                        alerts.outboxLag().getSeconds(), Comparison.ABOVE, "seconds"),
+
+                // A ceiling, not a floor: fail-open is a deliberate design (ADR-0005), so the alert is not
+                // "it happened" but "it is now the norm" — at which point sends are routinely unscored and
+                // the 200ms budget needs looking at rather than tolerating.
+                new AlertRule.Ratio(
+                        "fraud_fail_open_rate",
+                        "too large a share of payments is bypassing fraud scoring — the 200ms budget is "
+                                + "being blown routinely, not exceptionally",
+                        "docs/observability.md §4 (alert rules)",
+                        "sum(increase(pix_fraud_decision_total{decision=\"SKIPPED\"}[" + window + "]))",
+                        "sum(increase(pix_fraud_decision_total[" + window + "]))",
+                        alerts.fraudSkippedCeiling(), Comparison.ABOVE, alerts.ratioMinimumSamples()),
+
+                new AlertRule.Ratio(
+                        "balance_cache_hit_rate",
+                        "the balance cache is missing far more than it should — the 300ms read budget is "
+                                + "resting on the ledger instead of on Redis",
+                        "docs/local-dev.md §5.7 (balance cache)",
+                        "sum(increase(pix_cache_hit_total[" + window + "]))",
+                        "sum(increase(pix_cache_hit_total[" + window + "])) + "
+                                + "sum(increase(pix_cache_miss_total[" + window + "]))",
+                        alerts.cacheHitFloor(), Comparison.BELOW, alerts.ratioMinimumSamples()));
+    }
+
+    /**
+     * The Prometheus series for one funnel stage's happy path. Built from the shared {@link PixMetrics}
+     * enum rather than typed out, so a renamed stage breaks the build here instead of silently producing
+     * an alert rule that matches nothing — the exact failure {@code PrometheusMetricNamesTest} guards on
+     * the publishing side.
+     */
+    private static String promCounter(PixMetrics.Stage stage) {
+        return "sum(pix_payments_stage_total{stage=\"%s\",outcome=\"ok\"})".formatted(stage.name());
+    }
+
+    /**
+     * The watchdog's rule engine, holding the per-rule remembered state that makes a silence window
+     * measurable and keeps a firing alert from re-announcing itself every tick.
+     */
+    @Bean
+    AlertEvaluator alertEvaluator(List<AlertRule> platformAlertRules) {
+        return new AlertEvaluator(platformAlertRules);
+    }
+
+    /** One watchdog round: sample every rule's queries, fold them in, report what changed. */
+    @Bean
+    EvaluateAlertsUseCase evaluateAlertsUseCase(
+            AlertEvaluator alertEvaluator, MetricSource metrics, Clock clock) {
+        return new EvaluateAlertsUseCase(alertEvaluator, metrics, clock);
     }
 }

@@ -37,6 +37,7 @@ adapter.
 | ------ | ---- | ---- | ----------- |
 | `GET` | `/v1/notifications/stream` | Bearer | Opens the caller's SSE stream (`text/event-stream`). Frames carry `event:` = the event type and `id:` = the `eventId`; `data:` is a **`Notification`** (below). Heartbeat comments (`:ping`) every 25s |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/notifications/stream`.
 

@@ -31,6 +31,7 @@ table proves the model against real items while nothing is at stake, so step 14'
 | `POST` | `/internal/ledger/postings` | Bearer | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
 | `GET` | `/internal/ledger/accounts/{accountId}/entries?cursor=&limit=` | Bearer | Statement page, newest first → `{entries:[...], nextCursor}`. Opaque base64 `LastEvaluatedKey` cursor; `limit` clamped (default 20, max 100). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 | Outcome | Status | `code` |
 | ------- | ------ | ------ |

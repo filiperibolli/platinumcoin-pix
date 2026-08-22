@@ -115,7 +115,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 **Flow delivered:** technical + business-funnel dashboards; silence alerts; correlationId path tracing.
 **Infra que sobe:** Prometheus + Grafana. · **Diagram:** ARCHITECTURE §6.11
 
-- [ ] [Step 44](docs/steps/step-44.md) — Prometheus + Grafana dashboards (technical + business funnel) + silence alerts (settlement watchdog, DLQ depth, reconciliation age)
+- [x] [Step 44](docs/steps/step-44.md) — Prometheus + Grafana dashboards (technical + business funnel) + silence alerts (settlement watchdog, DLQ depth, reconciliation age)
 
 ## Sprint 12 — Hardening, E2E & load
 **Flow delivered:** the full journey proven under an automated E2E + failure drill + SLO load tests.

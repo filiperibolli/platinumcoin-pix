@@ -28,7 +28,7 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  * The scanner half of reconciliation (step 34): with real DynamoDB, seed transactions in
  * {@code DEBITED}/{@code SENT_TO_SPI} — some stale, some fresh — and prove the 60s scan picks exactly the
  * stale ones via GSI2, hands them to the reconciliation path, and reports the oldest age on the
- * {@code reconciliation.oldest.seconds} gauge.
+ * {@code pix.reconciliation.oldest.seconds} gauge.
  *
  * <p>The reconciler is a <b>capturing</b> {@code @Primary} stub, so the test asserts on <i>which</i>
  * transactions were handed off — the observable boundary a logging placeholder could not provide (tests
@@ -137,7 +137,7 @@ class StuckScannerIT extends LocalStackTestBase {
     }
 
     private double gaugeValue() {
-        return meterRegistry.get("reconciliation.oldest.seconds").gauge().value();
+        return meterRegistry.get("pix.reconciliation.oldest.seconds").gauge().value();
     }
 
     @TestConfiguration

@@ -31,7 +31,7 @@ PixDebited ─▶ claim eventId (dedup) ─▶ [redelivery? GET /spi/settlements
            ─▶ tx: SENT_TO_SPI → SETTLED + PixSettled outbox event  (guarded, ONE atomic write)
 
 on SPI timeout/5xx: don't delete ─▶ ChangeMessageVisibility(backoff) ─▶ SQS redelivers
-                    ─▶ after 5 receives ─▶ settlement-queue-dlq  (settlement.dlq.depth gauge)
+                    ─▶ after 5 receives ─▶ settlement-queue-dlq  (pix.settlement.dlq.depth gauge)
 
 on SETTLED (step 33): ledger CLEARING_RELEASE  (debit clearing / credit SPI_SETTLED, txId=<orig>-rel)
                                         ─▶ then tx → SETTLED  (idempotent by that txId)
@@ -61,7 +61,7 @@ Three properties carry the whole design:
    what lets a settled-but-unanswered Pix close even when the rail keeps refusing fresh `POST`s as
    unavailable. Retries are spaced by resetting the message's visibility to an exponential backoff (5, 10,
    20, 40, 60s); after five undeleted receives SQS redrives it to `settlement-queue-dlq`, whose depth is
-   the `settlement.dlq.depth` gauge — a stuck settlement is *flagged*, never lost (ADR-0003).
+   the `pix.settlement.dlq.depth` gauge — a stuck settlement is *flagged*, never lost (ADR-0003).
 
 **Money moves again on a definitive outcome (step 33).** Until the answer is final, settlement only records
 what BACEN did with money debited into the clearing account at acceptance time (step 27). On a **settlement**
@@ -78,7 +78,7 @@ call — a sandbox stand-in for a real service credential (ADR-0013; step-45 har
 failing, but a transaction can go stuck without a live message behind it — a consumer that crashed after
 `markSentToSpi`, an SPI answer that never arrived. A `@Scheduled` scan (`StuckTransactionScanner`, every
 60s) queries GSI2 (`STATUS#DEBITED`/`STATUS#SENT_TO_SPI`, `updatedAt < now-2min`) for exactly those, hands
-each to the reconciliation path, and publishes the age of the oldest as the `reconciliation.oldest.seconds`
+each to the reconciliation path, and publishes the age of the oldest as the `pix.reconciliation.oldest.seconds`
 gauge — the **leading** indicator of the <5-min SLO (ADR-0003), rising before anything reaches the DLQ. The
 scan is bounded per tick (`max-per-tick`) so a backlog drains over ticks; at very large scale the status GSI
 would be sharded (`STATUS#DEBITED#<0-15>`), N=1 locally.
@@ -92,8 +92,8 @@ it: `SETTLED` ⇒ finalize; `FAILED` ⇒ reverse now; `UNKNOWN` ⇒ reverse **on
 race a still-in-flight POST into double-moving money (the `-rev`/`-rel` postings have different `txId`s), and
 waiting it out closes that window while the guarded transition is the backstop. Idempotent by construction —
 it claims and dedupes on nothing — so it races a late redelivery or DLQ redrive harmlessly. Terminal outcomes
-increment `reconciliation.resolved{action}` (settled|reversed), and `ReconciliationSloAlert` fires
-`reconciliation.oldest.seconds > slo-breach-seconds` (step 44 points Prometheus at the same gauge/threshold).
+increment `pix.reconciliation.resolved{action}` (settled|reversed), and `ReconciliationSloAlert` fires
+`pix.reconciliation.oldest.seconds > slo-breach-seconds` (step 44 points Prometheus at the same gauge/threshold).
 
 ## Endpoints
 
@@ -101,6 +101,7 @@ increment `reconciliation.resolved{action}` (settled|reversed), and `Reconciliat
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/inbound/pix` | `X-Webhook-Token` | The webhook BACEN calls to deliver a Pix to one of our customers (step 37). Idempotent by `endToEndId` |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 ### `POST /v1/inbound/pix` — receiving is the mirror of sending
 
@@ -149,13 +150,22 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | `SETTLEMENT_CONSUMER_DELAY_MS` | `500` | Gap between polls (`fixedDelay`, so a slow batch never overlaps the next tick) |
 | `SETTLEMENT_RETRY_BACKOFF_BASE_SECONDS` | `5` | Retry backoff base — visibility reset to `base·2^(receiveCount-1)` on a rail failure (step 32); ITs set `0` for immediate redelivery |
 | `SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS` | `60` | Upper bound on the retry backoff window |
-| `SETTLEMENT_DLQ_NAME` / `pix.settlement.dlq.queue-name` | `settlement-queue-dlq` | DLQ measured by the `settlement.dlq.depth` gauge (never consumed) |
+| `SETTLEMENT_DLQ_NAME` / `pix.settlement.dlq.queue-name` | `settlement-queue-dlq` | DLQ measured by the `pix.settlement.dlq.depth` gauge (never consumed) |
 | `SETTLEMENT_DLQ_REFRESH_MS` | `15000` | How often the DLQ depth gauge is refreshed via `GetQueueAttributes` |
 | `RECONCILIATION_SCAN_DELAY_MS` / `pix.settlement.reconciliation.scan-fixed-delay-ms` | `60000` | How often the stuck-transaction scan runs (step 34); `fixedDelay`, so a slow scan never overlaps the next |
 | `RECONCILIATION_STUCK_AFTER_SECONDS` / `…stuck-after-seconds` | `120` | How long a transaction may sit in `DEBITED`/`SENT_TO_SPI` before the scan treats it as stuck |
 | `RECONCILIATION_MAX_PER_TICK` / `…max-per-tick` | `200` | Per-tick bound (per status) on the GSI2 scan, so a backlog drains over ticks instead of blowing up one |
 | `RECONCILIATION_REVERSE_SAFETY_WINDOW_SECONDS` / `…reverse-safety-window-seconds` | `240` | How old an `UNKNOWN`-at-the-rail transaction must be before the resolver reverses it (step 35); past the retry/DLQ horizon, inside the SLO — `FAILED` reverses immediately |
-| `RECONCILIATION_SLO_BREACH_SECONDS` / `…slo-breach-seconds` | `300` | The <5-min SLO breach threshold; `reconciliation.oldest.seconds` above it fires the in-code alert and (step 44) the Prometheus alert on the same gauge |
+| `RECONCILIATION_SLO_BREACH_SECONDS` / `…slo-breach-seconds` | `300` | The <5-min SLO breach threshold; `pix.reconciliation.oldest.seconds` above it fires the in-code alert and (step 44) the Prometheus alert on the same gauge |
+| `PROMETHEUS_URL` / `pix.settlement.alerts.prometheus-url` | `http://localhost:9091` | Where the **alert watchdog** (step 44) reads platform-wide metrics from. Three of its six rules watch metrics *other* services own, so it queries Prometheus rather than its own registry. **Soft dependency**: unreachable ⇒ rules report `SKIPPED`, never a false alarm — and compose deliberately gives this service no `depends_on: prometheus` |
+| `ALERTS_FIXED_DELAY_MS` | `30000` | How often a watchdog round runs |
+| `ALERTS_SETTLEMENT_SILENCE` | `120s` | How long `SETTLED` may stand still **while debits flow** before that is an incident (ADR-0003 puts a normal settlement at ≤10s) |
+| `ALERTS_DLQ_DEPTH_BOUND` | `0` | The **first** DLQ message is the alert — a dead-lettered settlement is money parked in clearing |
+| `ALERTS_RECONCILIATION_AGE` | `300s` | Same <5-min SLO number as above, watched from the platform's vantage point |
+| `ALERTS_OUTBOX_LAG` | `60s` | Oldest unpublished outbox event (ADR-0004) — settlement not *failing* but not being *asked* |
+| `ALERTS_FRAUD_SKIPPED_CEILING` | `0.05` | Fail-open **ceiling**: above this, sends are routinely unscored (ADR-0005) |
+| `ALERTS_CACHE_HIT_FLOOR` | `0.70` | Balance-cache hit-rate **floor** — a latency risk, never a correctness one (ADR-0008) |
+| `ALERTS_RATIO_WINDOW` / `ALERTS_RATIO_MINIMUM_SAMPLES` | `10m` / `20` | Lookback for the two ratio rules, and the traffic they need before a proportion means anything (`0/0` has no safe convention) |
 | `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs (queue consumer + DLQ gauge + reconciliation scanner); ITs set it `false` and drive a tick explicitly |
 | `BACEN_BASE_URL` | `http://localhost:9090` | mock-bacen-spi (compose: `http://mock-bacen-spi:9090`) |
 | `BACEN_READ_TIMEOUT_MS` | `12000` | ADR-0003's budget: above BACEN's 10s, below the queue's 30s visibility timeout |

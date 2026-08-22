@@ -12,7 +12,7 @@ import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 
 /**
- * Publishes {@code settlement.dlq.depth} — how many messages are sitting in {@code settlement-queue-dlq}
+ * Publishes {@code pix.settlement.dlq.depth} — how many messages are sitting in {@code settlement-queue-dlq}
  * right now (step 32, task 4).
  *
  * <h2>Why a DLQ depth is a first-class signal</h2>
@@ -28,7 +28,7 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
  * queue consumer. Micrometer gauges are pulled at scrape time, so binding the gauge straight to a
  * {@code GetQueueAttributes} call would put an SQS round-trip on every Prometheus scrape. Instead a cheap
  * scheduled tick refreshes an {@code AtomicLong} the gauge reads — the same shape payment-service's
- * {@code outbox.lag} uses. The tick obeys {@code pix.schedulers.enabled} (off in ITs, which call {@link
+ * {@code pix.outbox.lag} uses. The tick obeys {@code pix.schedulers.enabled} (off in ITs, which call {@link
  * #refresh()} explicitly), since a live poller against the shared queue would fight the tests for it.
  *
  * <p>{@code ApproximateNumberOfMessages} is approximate by name: SQS is distributed and the count can lag
@@ -52,7 +52,7 @@ public class SettlementDlqDepthGauge {
             @Value("${pix.settlement.dlq.queue-name}") String dlqName) {
         this.sqs = sqs;
         this.dlqUrl = sqs.getQueueUrl(request -> request.queueName(dlqName)).queueUrl();
-        Gauge.builder("settlement.dlq.depth", depth, AtomicLong::doubleValue)
+        Gauge.builder("pix.settlement.dlq.depth", depth, AtomicLong::doubleValue)
                 .description("Messages in settlement-queue-dlq — settlements that could not be completed "
                         + "(step 32, ADR-0003)")
                 .baseUnit("messages")

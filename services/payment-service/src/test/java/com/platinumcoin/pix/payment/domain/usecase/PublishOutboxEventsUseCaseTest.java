@@ -88,7 +88,7 @@ class PublishOutboxEventsUseCaseTest {
      * One poison event must not block the queue behind it. ADR-0004 guarantees no ordering across
      * redeliveries anyway (consumers rely on guarded status transitions, not event order), so stopping
      * the batch would buy nothing and cost head-of-line blocking: every later payment's event stuck
-     * behind one that cannot be published. The stuck event is what {@code outbox.lag} exists to expose.
+     * behind one that cannot be published. The stuck event is what {@code pix.outbox.lag} exists to expose.
      */
     @Test
     void aPoisonEventDoesNotBlockTheEventsBehindIt() {

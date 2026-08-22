@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * The &lt;5-min reconciliation SLO alert (step 35, ADR-0003): the rule that watches
- * {@code reconciliation.oldest.seconds} and declares a breach when the oldest stuck transaction has sat
+ * {@code pix.reconciliation.oldest.seconds} and declares a breach when the oldest stuck transaction has sat
  * longer than the SLO allows.
  *
  * <h2>Why the alert rule lives in code, when Prometheus alerts on the same metric in step 44</h2>
@@ -14,7 +14,7 @@ import org.slf4j.LoggerFactory;
  * runs. Encoding the threshold here gives the rule a home that a plain-Java test can pin and that logs a
  * human-readable {@code ALERT ... FIRING} / {@code ALERT ... RESOLVED} line one {@code grep} finds — the
  * leading edge of the reconciliation KPI. Step 44 then points a Prometheus alert at the very same
- * {@code reconciliation.oldest.seconds} gauge and the very same threshold, so the graph and the code
+ * {@code pix.reconciliation.oldest.seconds} gauge and the very same threshold, so the graph and the code
  * agree on one number rather than drifting into two definitions of "breached".
  *
  * <h2>Fires and resolves on the transition, not every scan</h2>

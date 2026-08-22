@@ -51,7 +51,7 @@ class SendPixUseCaseTest {
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, CLEARING, clock);
+            endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -396,7 +396,7 @@ class SendPixUseCaseTest {
         // orchestration does not name the account and needs no edit.
         SendPixUseCase sharded = new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, "SPI_CLEARING#07", clock);
+                endToEndIds, new RecordingPaymentFunnelMetrics(), "SPI_CLEARING#07", clock);
         pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
 
         sharded.execute(command("bob@otherbank.com", "10.00", "x", KEY));
@@ -526,7 +526,8 @@ class SendPixUseCaseTest {
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
         new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
                 new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeFraudScorer(),
-                new FakeLedgerClient(), endToEndIds, CLEARING, clock)
+                new FakeLedgerClient(), endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
+                clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
     }

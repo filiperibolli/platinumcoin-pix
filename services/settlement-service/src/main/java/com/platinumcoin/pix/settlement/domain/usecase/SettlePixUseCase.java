@@ -1,10 +1,13 @@
 package com.platinumcoin.pix.settlement.domain.usecase;
 
+import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
+import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
+import com.platinumcoin.pix.settlement.domain.port.SettlementFunnelMetrics;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer;
@@ -71,16 +74,18 @@ public class SettlePixUseCase {
     private final SpiSettlementClient spi;
     private final SettlementTransactionStore transactions;
     private final SettlementFinalizer finalizer;
+    private final SettlementFunnelMetrics funnel;
     private final String debtorIspb;
     private final Clock clock;
 
     public SettlePixUseCase(ProcessedEvents processedEvents, SpiSettlementClient spi,
             SettlementTransactionStore transactions, SettlementFinalizer finalizer,
-            String debtorIspb, Clock clock) {
+            SettlementFunnelMetrics funnel, String debtorIspb, Clock clock) {
         this.processedEvents = processedEvents;
         this.spi = spi;
         this.transactions = transactions;
         this.finalizer = finalizer;
+        this.funnel = funnel;
         this.debtorIspb = debtorIspb;
         this.clock = clock;
     }
@@ -147,14 +152,30 @@ public class SettlePixUseCase {
     private SettleOutcome settle(SettlePixCommand command) {
         Instant now = clock.instant();
 
+        boolean firstClaim;
         try {
-            transactions.markSentToSpi(command.txId(), now);
+            firstClaim = transactions.markSentToSpi(command.txId(), now);
         } catch (TransitionNotAllowedException e) {
             log.warn("Refusing to settle, the transaction is not in a state this consumer may move, "
                             + "acking the message because a retry would refuse identically | txId={} "
                             + "endToEndId={} expectedStatus={} targetStatus={}",
                     e.txId(), command.endToEndId(), e.expectedStatus(), e.targetStatus());
             return SettleOutcome.NOT_ELIGIBLE;
+        }
+
+        // The funnel's SENT_TO_SPI increment belongs HERE — after the guarded transition committed, before
+        // the rail is called. That is the moment the transaction durably says "BACEN was asked", the same
+        // fact query-before-retry (step 32) and reconciliation (step 35) key off. A refused transition is
+        // deliberately not counted: the payment already moved on under us, it did not die here.
+        //
+        // ONLY ON THE FIRST CLAIM, though. The transition's guard deliberately accepts a transaction that
+        // is already SENT_TO_SPI so a redelivery can re-stamp updatedAt — which means this line runs once
+        // per ATTEMPT, and a rail outage produces many attempts per payment. Counting each one made the
+        // funnel report 31 payments at the rail against 13 ever debited during the step-44 drill, turning
+        // the DEBITED->SETTLED conversion panel into a number above 100%. The funnel counts payments; the
+        // retry count is a different question, and http.server.requests already answers it.
+        if (firstClaim) {
+            funnel.stageReached(Stage.SENT_TO_SPI, Outcome.OK);
         }
 
         SpiSettlement settlement;
