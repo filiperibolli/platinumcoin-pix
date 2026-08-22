@@ -9,6 +9,13 @@
 > steps 48-63. Do not start this step under the normal "first unchecked step" workflow without an
 > explicit go-ahead; it exists to record the gap it fixes and a ready-to-review design for closing it.
 
+> **Its value rose (2026-08-22).** [Step 70](step-70.md) splits fraud failures into transient and
+> non-transient classes ([ADR-0018](../adr/0018-fraud-failure-classification.md), from the external
+> review in [PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)). This dial is what lets
+> a human drill **both** classes against a running stack instead of only inside a test process — a
+> latency knob exercises `SKIPPED`, a `401`/malformed-response knob exercises `FRAUD_ERROR`. Step 70
+> does not require step 64; step 64 is how step 70's behaviour gets demonstrated rather than asserted.
+
 ## Objective
 Give `fraud-service` the same runtime-armable behavior dial `mock-bacen-spi` already has
 (`AdminConfigController`, step 30): a way to inject artificial latency and/or a failure rate into

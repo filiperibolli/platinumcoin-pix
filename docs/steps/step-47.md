@@ -31,11 +31,40 @@ An out-of-band load-measurement deliverable already exists under [`docs/load/`](
   `p(99)<2000` threshold will fail the run on that infrastructure — expected, and to be read against the
   environment caveat, not treated as an application regression.
 
+## What the external review added (scope widened 2026-08-22, no new step)
+The independent review by **Geison Flores** (Mercado Livre) — `docs/solucao-e-sugestoes.html`,
+[PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58) — raises **P1 · capacidade**:
+*"Teste em infraestrutura representativa, orçamento de WCU/RCU e custo, p99 por dependência e cenário
+de degradação."* That is a widening of **this** step, not a new one: the three named profiles and the
+run-failing thresholds already here are the bulk of the work, and duplicating them in Sprint 11.5
+would leave two owners of the same numbers. The four additions become tasks 5-8 below.
+
+**Two dependencies this creates:**
+- Run **after** [step 71](docs/steps/step-71.md) (outbox lanes + parallel settlement consumer), or the
+  measurement is of a ~25 events/s drain that `docs/load/RESULTS.md` Context 2 already characterised —
+  a known bottleneck, re-measured.
+- Per-dependency p99 comes from [step 72](docs/steps/step-72.md)'s tracing. Without it, a p99 breach
+  can be reported but not attributed, which is the difference between a number and a finding.
+
 ## Tasks
 1. `load/k6/lib.js` — login, ensure keys, scenario mix, per-endpoint tags.
 2. `low.js`, `standard.js`, `black-friday.js` with the profiles above and SLO thresholds that fail the run.
 3. `load/RESULTS.md` — capture p50/p99 per endpoint, error rate and notes per profile.
 4. Document running k6 via Docker (no local install) in `docs/local-dev.md`.
+5. **Representative infrastructure, or the deviation written down.** State plainly what the target run
+   requires (a host without the confirmed WSL2 stall, DynamoDB sized for the write rate) and, where the
+   run happens on this host anyway, record the deviation against `docs/load/BOTTLENECK.md` RUNG 4 rather
+   than quietly reporting a number that the environment produced.
+6. **WCU/RCU and cost budget.** Per table and per GSI, derived from the profiles: writes per send
+   (transaction + outbox items + ledger entries + balance updates), reads per balance/statement call, and
+   what 500 TPS costs at on-demand pricing. The point is that "500+ TPS" stops being a latency claim and
+   becomes a capacity claim with a bill attached.
+7. **p99 per dependency**, from step 72's spans: ledger, fraud, accounts, SPI, Redis, DynamoDB. Report the
+   split for the send path so a breach is attributed, not just observed.
+8. **A degradation scenario.** Run the Black Friday profile with one dependency degraded — a slow SPI
+   (mock-bacen's `/admin/config`) and, if step 64 has landed, a slow fraud-service — and record what the
+   platform gives up first. The brief's `p99 < 2s` is claimed *with* a slow SPI, so it has to be measured
+   that way at least once.
 
 ## Tests (TDD)
 - The k6 thresholds *are* the assertions; a run that violates a p99/error budget exits non-zero.
@@ -50,6 +79,10 @@ docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
 - [ ] Three profiles with SLO thresholds that fail the run on breach
 - [ ] Realistic scenario mix; per-endpoint p99 asserted (2s send, 300ms balance)
 - [ ] `load/RESULTS.md` records the numbers
+- [ ] Infrastructure stated, and any deviation from "representative" recorded rather than glossed
+- [ ] WCU/RCU + cost budget per table/GSI at the Black Friday rate
+- [ ] p99 broken down per dependency for the send path
+- [ ] Degradation scenario run and its trade-off recorded
 
 ## CHANGELOG entry
 `### Added` → `k6 load profiles (low, standard ~58 TPS, Black Friday 500+ TPS) with SLO-failing thresholds and RESULTS.md (step 47)`

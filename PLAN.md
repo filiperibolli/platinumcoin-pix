@@ -7,7 +7,10 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - One **step** = one small, verifiable increment with its own spec, tests and acceptance criteria.
 - One **sprint** = one flow, ending in a runnable, demoable state; every flow is drawn as a
-  Mermaid sequence diagram in `ARCHITECTURE.md` (Part II — §6).
+  Mermaid sequence diagram in `ARCHITECTURE.md` (Part II — §6). **One deliberate exception:** a
+  *remediation* sprint (Sprint 11.5) delivers no new flow — it hardens flows that already exist, so it
+  has no §6 section of its own and instead *amends* the diagrams of the flows it touches, each step
+  naming which one it updates and doing so in its own commit.
 - Ordering is **dependency-correct**: `ledger` before the first money-moving Pix; internal
   (synchronous) Pix before external (asynchronous) settlement.
 - Work top-to-bottom; a step may only start when its prerequisites are checked.
@@ -117,13 +120,53 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 
 - [x] [Step 44](docs/steps/step-44.md) — Prometheus + Grafana dashboards (technical + business funnel) + silence alerts (settlement watchdog, DLQ depth, reconciliation age)
 
+## Sprint 11.5 — External review remediation (P0/P1)
+> **Inserted, not renumbered.** An independent staff-level review by **Geison Flores** (Mercado Livre) landed as
+> [`docs/solucao-e-sugestoes.html`](docs/solucao-e-sugestoes.html) via [PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58),
+> classifying its findings P0 (money correctness & security) / P1 (operations & scale) / P2. This sprint sits
+> **between Sprints 11 and 12** so the later sprint numbers — referenced by ARCHITECTURE §6.12-6.14, the README,
+> the CHANGELOG and Sprint 15's prerequisites — stay valid. Its steps take the **next free numbers (65+)**, as
+> step 64 already did; each step file records that it was numbered out of order and why.
+> Every finding was verified against the code before a spec was written; findings already covered
+> (PII in logs → ADR-0012's deliberate sandbox trade-off; PostgreSQL for the ledger → ADR-0020) produced an ADR
+> or a backlog note, **not** a step.
+
+**Flow delivered:** a payment operation that survives a crash and a race — durable identity before the money,
+an ambiguous outcome resolved by that same identity, a single terminal winner, and internal ports that refuse a
+user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **Diagram:** ARCHITECTURE §6.4 / §6.6 / §6.7 (amended)
+
+**P0 — money correctness & security.** These four precede step 45; step 66 additionally requires 65.
+
+- [ ] [Step 65](docs/steps/step-65.md) — durable operation identity: `txId`/`endToEndId` minted **before** the idempotency claim and persisted by it; a resume reuses the stored identity ([ADR-0014](docs/adr/0014-durable-operation-identity.md), amends ADR-0002)
+- [ ] [Step 66](docs/steps/step-66.md) — a ledger timeout is an **unknown result**: resolve by re-posting the same `txId` and read the `replayed` flag the ledger already returns ([ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md)) · *requires 65*
+- [ ] [Step 67](docs/steps/step-67.md) — finalization fencing: CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` **before** any posting; settle XOR reverse ([ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md), amends ADR-0003)
+- [ ] [Step 68](docs/steps/step-68.md) — internal-port isolation: scoped service tokens (`typ`/`iss`/`aud`/`scope`); a user JWT gets `403` on every `/internal/**` route ([ADR-0017](docs/adr/0017-workload-identity-for-internal-ports.md), amends ADR-0007)
+- [ ] [Step 69](docs/steps/step-69.md) — recovery & fencing invariant suite: crash-after-commit, ambiguous timeout, concurrent settle×reverse, lateral-access matrix, conservation everywhere **✍️ hand-written zone** · *requires 65-68*
+
+**P1 — operations & scale.**
+
+- [ ] [Step 70](docs/steps/step-70.md) — fraud failure classification: fail-open only for transient failures; auth/contract/bug failures become a visible `FRAUD_ERROR` ([ADR-0018](docs/adr/0018-fraud-failure-classification.md), amends ADR-0005) · *drilled by step 64*
+- [ ] [Step 71](docs/steps/step-71.md) — outbox lanes (settlement · notification · audit), parallel publishers, backpressure, per-lane queue-age SLO + parallel settlement consumer ([ADR-0019](docs/adr/0019-outbox-lanes-and-priority.md), amends ADR-0004) · *closes the reversal incident in `docs/load/RESULTS.md` Context 2*
+- [ ] [Step 72](docs/steps/step-72.md) — distributed tracing (OTel, across HTTP **and** the queues) + error-budget burn alerts — the **delta** over step 44, which keeps everything it delivered ([ADR-0021](docs/adr/0021-distributed-tracing-and-error-budget-alerts.md))
+
+> **The fourth P1 — "comprovar 500+ TPS" — is discharged by [step 47](docs/steps/step-47.md), whose scope was
+> widened rather than duplicated** (representative infrastructure, WCU/RCU + cost budget, p99 per dependency,
+> degradation scenario). See its "What the external review added" section.
+
 ## Sprint 12 — Hardening, E2E & load
 **Flow delivered:** the full journey proven under an automated E2E + failure drill + SLO load tests.
 **Infra que sobe:** k6.
 
 - [ ] [Step 45](docs/steps/step-45.md) — hardening: API versioning review, guarded status transitions, error contract audit, security checklist
+  > Owns the **AWS credential / IAM** posture (ADR-0013). The external review's P0 on **HTTP service identity**
+  > is a different concern and lands earlier, in [step 68](docs/steps/step-68.md) — the two are neighbours and
+  > are often confused. Prerequisite: all four Sprint 11.5 P0 steps.
 - [ ] [Step 46](docs/steps/step-46.md) — end-to-end test: full journey send→settle→receive→notify→statement, incl. failure drill
 - [ ] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
+  > **Scope widened by the external review (P1 · capacidade), not duplicated by a new step:** representative
+  > infrastructure (or the deviation documented against `docs/load/BOTTLENECK.md`), a WCU/RCU + cost budget,
+  > p99 **per dependency** (fed by step 72's tracing), and a degradation scenario. Best run after
+  > [step 71](docs/steps/step-71.md), or it measures a ~25 events/s outbox drain.
 - [ ] [Step 64](docs/steps/step-64.md) — **PROPOSED**, not yet prioritized: fraud-service runtime latency/failure injection (`AdminConfigController`, mirrors mock-bacen-spi) — closes a gap `docs/load/RESULTS.md` found (fraud-service has no runtime dial, unlike mock-bacen-spi, so its fail-open path can't be drilled outside a test process). Numbered 64 (next free number) because it was drafted out of band, not in top-to-bottom order — see the step file's own note.
 
 ## Sprint 13 — API tooling & DX
@@ -163,3 +206,37 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [ ] [Step 61](docs/steps/step-61.md) — Concept: **async settlement + bounded reconciliation** — `202` not `200`, query-before-retry, DLQ, "eventual" made *< 5 min* (Questions 4 & 7) **✍️** (prereq: step 35)
 - [ ] [Step 62](docs/steps/step-62.md) — Concept: **correlation-id observability** — the id in the log *pattern*, one `grep` reconstructs a transaction across services; silence alerts (ADR-0012) **✍️** (prereq: step 44)
 - [ ] [Step 63](docs/steps/step-63.md) — Concept: **99.99% availability & the ledger-down-30s behavior** — fail-fast `503`, nothing debited, retry-safe; the error-budget math (Question 7) **✍️** (prereq: step 45)
+
+---
+
+## Backlog — noted, deliberately not scheduled as steps
+
+From the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)). Recorded here so a
+reader finds the answer next to the question; none of these is an unfinished task.
+
+- **P2 · versioned internal contracts (events & DTOs).** Real and open. A versioned schema, backward/forward
+  compatibility and consumer-driven contract tests would stop a status enum drifting between two services — the
+  live example being the two `TransactionStatus` enums that "agree by contract, not by construction" (their own
+  javadocs say so), which [step 67](docs/steps/step-67.md) must update in lockstep. Not a step **yet**: with all
+  consumers in one repo and one build, a schema registry buys ceremony over safety. Promote it the day a consumer
+  ships on its own cadence. Public-API versioning is already [step 45](docs/steps/step-45.md) task 3.
+- **P2 · PII masking in logs.** *Already decided, in the opposite direction, and that is the point.*
+  [ADR-0012](docs/adr/0012-verbose-logs-with-real-values.md) deliberately logs Pix keys, CPFs and account ids in
+  the clear because this is a sandbox whose logs are a teaching artifact, and it documents the LGPD trade-off and
+  exactly what production reverses. Secrets are already never logged. No step; the ADR is the answer.
+- **P2 · software supply chain** (Maven Wrapper, coverage gates, static analysis, SCA, SBOM, secret scanning,
+  non-root images pinned by digest). Partly covered — [step 45](docs/steps/step-45.md) task 4 runs a dependency/CVE
+  scan. The rest is real and would be one focused step; it moves no money and no correctness, so it queues behind
+  everything in Sprint 11.5.
+- **P3 · multi-AZ production plan** (RTO/RPO, PITR, KMS + key rotation, tested failover, degraded capacity).
+  Out of scope by construction: this platform is 100% local, no Kubernetes, no cloud account (CLAUDE.md). It is
+  already treated as target architecture in ARCHITECTURE and defended in writing by
+  [step 63](docs/steps/step-63.md). No step.
+- **Modular monolith / service consolidation.** The review says "evolução seletiva… consolidar deve reduzir uma
+  falha concreta, não apenas implantações". The concrete failure it names — the payment/settlement state machine
+  split across two services — is what [ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md)
+  addresses **without** moving code. Revisit only if fencing proves insufficient; see
+  [ADR-0020](docs/adr/0020-keep-dynamodb-for-the-ledger.md) §5.
+- **PostgreSQL for the ledger.** Decided: **no migration**, DynamoDB stays, `labs/ledger-pg` stays a lab.
+  [ADR-0020](docs/adr/0020-keep-dynamodb-for-the-ledger.md) records the decision, the reasoning and the three
+  conditions that would reopen it — measured by steps 50-51.
