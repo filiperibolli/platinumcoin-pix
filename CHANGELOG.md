@@ -27,6 +27,33 @@ The platform reached its halfway mark: **the full money path is built, tested an
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
 ### Changed
+- **Sprint 11.5 planned — external review remediation** (2026-08-22): an independent staff-level review
+  by **Geison Flores** (Mercado Livre) landed as `docs/solucao-e-sugestoes.html` (PR #58), classifying
+  findings P0 (money correctness & security) / P1 (operations & scale) / P2. **Every finding was
+  verified against the code before a spec was written**, and the three P0s that turned out to be real
+  and open are: (1) the `txId` is minted *after* the idempotency claim
+  (`SendPixUseCase:424/499`), so a crash-resume past `STALE_SECONDS` mints a **new** identity and
+  double-debits; (2) a ledger timeout is asserted to mean "nothing debited"
+  (`HttpLedgerClient:305-310`) while the ledger's own `replayed` flag is discarded at `:283`; (3) both
+  finalization paths post to the ledger *before* their guarded transition
+  (`SettlementFinalizer:88/92` and `:152/157`), so a settle racing a reverse posts `-rel` **and**
+  `-rev` — money created, as `StuckTransactionResolver`'s own javadoc admits, mitigated only
+  probabilistically by the safety window. The fourth: payment-service forwards the **end user's**
+  bearer to every internal port, making any user's login a valid credential on
+  `POST /internal/ledger/postings`. **Planned as Sprint 11.5** (inserted between Sprints 11 and 12 so
+  no later sprint number moves; steps take the next free numbers 65-72, as step 64 already did):
+  steps 65-68 (the P0s, all preceding step 45), step 69 (✍️ hand-written recovery & fencing invariant
+  suite), steps 70-72 (the P1s). **Reconciled rather than duplicated:** step 47's scope was widened for
+  the 500+ TPS finding, step 44 was left intact with step 72 delivering only its delta (OTel + error
+  budgets), and step 45 keeps AWS/IAM while the HTTP-identity P0 moved to step 68.
+  **ADR-0014 … ADR-0021 added**, each crediting the review and linking PR #58 — durable operation
+  identity (amends ADR-0002), timeout-as-unknown-result, finalization fencing (amends ADR-0003),
+  workload identity for internal ports (amends ADR-0007), fraud failure classification (amends
+  ADR-0005), outbox lanes (amends ADR-0004), **keeping DynamoDB for the ledger** (the review's
+  "avaliar depois", recorded as a decision *not* to migrate, with the three conditions that would
+  reopen it), and OTel tracing alongside — not instead of — the ADR-0012 correlation id.
+  Findings already answered produced no step: PII-in-logs is ADR-0012's deliberate sandbox trade-off,
+  and internal contract versioning is a backlog note. **Planning only — no production code changed.**
 - **ADR-0013 added** (2026-08-11): AWS credentials & IAM posture — local emulation vs. production.
   Raised reviewing step 26: the SQS resource policy written there is correct for real AWS but
   **unenforced by LocalStack**, and the same is true of every service's `StaticCredentialsProvider`
