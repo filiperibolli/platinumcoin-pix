@@ -42,7 +42,7 @@ import org.springframework.stereotype.Repository;
  * change to it is a change to both services.
  *
  * <h2>Metrics</h2>
- * {@code cache.hit} / {@code cache.miss}, tagged {@code cache=balance}, registered eagerly so both
+ * {@code pix.cache.hit} / {@code pix.cache.miss}, tagged {@code cache=balance}, registered eagerly so both
  * series exist at {@code 0} from boot (a dashboard reads a real zero instead of a missing series). The
  * hit rate is the KPI that says whether the cache is still earning its operational weight; a
  * <i>degraded</i> read — Redis down or a corrupt value — counts as a miss and is additionally logged
@@ -56,8 +56,8 @@ public class RedisBalanceCache implements BalanceCache {
     /** Shared with ledger-service's invalidator; see the class javadoc. */
     private static final String KEY_PREFIX = "balance:";
 
-    private static final String HIT_METRIC = "cache.hit";
-    private static final String MISS_METRIC = "cache.miss";
+    private static final String HIT_METRIC = "pix.cache.hit";
+    private static final String MISS_METRIC = "pix.cache.miss";
     private static final String CACHE_TAG = "cache";
     private static final String CACHE_NAME = "balance";
 

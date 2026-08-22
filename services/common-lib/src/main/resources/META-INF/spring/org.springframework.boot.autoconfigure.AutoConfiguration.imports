@@ -1,1 +1,2 @@
 com.platinumcoin.pix.common.autoconfigure.CommonWebAutoConfiguration
+com.platinumcoin.pix.common.autoconfigure.CommonMetricsAutoConfiguration

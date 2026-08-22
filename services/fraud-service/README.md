@@ -22,6 +22,7 @@ rolling `INCR`/`EXPIRE` windows); Sprint 9's balance cache reuses the **same** c
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/internal/fraud/score` | Bearer (internal) | Rule-based score → `{decision, score, reasons[]}` under a p99 < 150ms budget |
 | `GET`  | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 ### `POST /internal/fraud/score`
 

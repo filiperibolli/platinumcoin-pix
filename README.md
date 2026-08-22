@@ -239,7 +239,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 
 **Objective 3 — Stay reliable behind a slow, flaky external rail.**
 - **KR3.1** Stuck transactions detected and reconciled in **< 5 min**.
-  *Observed:* the `reconciliation.oldest.seconds` metric with its `>300` SLO alert ([step 35](docs/steps/step-35.md)); the E2E failure drill confirms resolution under 5 min ([step 46](docs/steps/step-46.md)).
+  *Observed:* the `pix.reconciliation.oldest.seconds` metric with its `>300` SLO alert ([step 35](docs/steps/step-35.md)); the E2E failure drill confirms resolution under 5 min ([step 46](docs/steps/step-46.md)).
 - **KR3.2** DLQ depth returns to 0 after a simulated SPI outage — retries with backoff drain the backlog, nothing is lost.
   *Observed:* the DLQ-depth gauge with its `>0` alert in the AlertEvaluator/dashboard ([step 44](docs/steps/step-44.md)); drain proven under the failure drill ([step 46](docs/steps/step-46.md)).
 
@@ -267,7 +267,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── CHANGELOG.md               ← Keep a Changelog; one entry per completed step
 ├── docs/
 │   ├── brief.md               ← the exercise brief + the 7 design questions, verbatim
-│   ├── adr/                   ← Architecture Decision Records (0001–0010)
+│   ├── adr/                   ← Architecture Decision Records (0001–0013)
 │   ├── api/openapi.yaml       ← REST contract
 │   ├── data-model.md          ← DynamoDB tables, keys, GSIs, ledger invariants
 │   ├── messaging-kafka-appendix.md ← SNS/SQS ↔ Kafka concept mapping
@@ -279,6 +279,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── infra/                     ← (created in step 06) docker-compose, LocalStack init
 │   └── observability/         ← (step 44) Prometheus config + Grafana provisioning/dashboards
 ├── load/k6/                   ← (step 47) k6 load-test scripts: low, standard, black-friday
+├── scripts/trace.sh           ← (step 44) reconstruct one payment's path across every service by id
 ├── tools/postman/             ← Postman collection + env (living: one request per endpoint; finalized step 48)
 ├── tools/api-explorer/        ← single-file HTML API explorer (living: one card per endpoint; finalized step 49)
 └── pom.xml                    ← (created in step 01) parent POM

@@ -8,6 +8,7 @@ import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import com.platinumcoin.pix.payment.domain.port.OutboxEventStore;
+import com.platinumcoin.pix.payment.domain.port.PaymentFunnelMetrics;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
@@ -67,11 +68,12 @@ public class PaymentBeansConfig {
             FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
+            PaymentFunnelMetrics funnel,
             @Value("${pix.clearing-account-id}") String clearingAccountId,
             Clock clock) {
         return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, clearingAccountId, clock);
+                endToEndIds, funnel, clearingAccountId, clock);
     }
 
     @Bean

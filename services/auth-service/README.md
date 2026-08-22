@@ -21,6 +21,7 @@ them (from step 05).
 | `POST` | `/v1/auth/login` | public | Authenticate `{username,password}` → `{accessToken, tokenType:"Bearer", expiresIn:900}` |
 | `GET`  | `/v1/auth/me` | Bearer | Echo the caller identity from the token → `{userId, accountId}`; proves the shared `JwtAuthFilter` is enforcing auth |
 | `GET`  | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 **JWT claims** (exactly): `sub` (userId), `accountId`, `jti` (UUID), `iat`, `exp` (+15 min).
 Signed HS256. Bad credentials ⇒ `401 application/problem+json` (`code: INVALID_CREDENTIALS`), with

@@ -32,9 +32,18 @@ public interface SettlementTransactionStore {
      * is a transaction that has left those two states — a {@code SETTLED} one dragged back to
      * {@code SENT_TO_SPI} would be settled a second time, i.e. the same money sent twice.
      *
+     * <p><b>The return value is what keeps the funnel honest</b> (step 44). Because the guard accepts a
+     * re-claim, calling this on every redelivery is correct behaviour — but counting a funnel stage on
+     * every call would count <i>attempts</i>, not payments, and a rail outage would report more payments
+     * at {@code SENT_TO_SPI} than were ever debited (observed: 31 vs 13 during the step-44 drill). So the
+     * store reports which of the two things just happened.
+     *
+     * @return {@code true} if this call actually moved the transaction {@code DEBITED → SENT_TO_SPI} —
+     *         the first time the rail was asked; {@code false} if it was already {@code SENT_TO_SPI} and
+     *         this was a re-claim by a redelivery or the reconciliation loop
      * @throws TransitionNotAllowedException when the transaction is absent or in another state
      */
-    void markSentToSpi(String txId, Instant at);
+    boolean markSentToSpi(String txId, Instant at);
 
     /**
      * {@code SENT_TO_SPI → SETTLED}, together with the {@code PixSettled} outbox event, in <b>one</b>

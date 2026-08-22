@@ -3,7 +3,7 @@ package com.platinumcoin.pix.settlement.domain.usecase;
 /**
  * What one reconciliation scan found (step 34): how many stuck transactions were handed to the
  * reconciliation path, and the age in seconds of the oldest of them — the value the
- * {@code reconciliation.oldest.seconds} gauge reports.
+ * {@code pix.reconciliation.oldest.seconds} gauge reports.
  *
  * <p>The use case returns this rather than touching a meter itself: Micrometer is a framework type and the
  * domain stays plain Java (ADR-0010), so the {@code api/} scanner reads {@code oldestAgeSeconds} onto the

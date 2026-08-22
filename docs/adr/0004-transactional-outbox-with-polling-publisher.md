@@ -23,6 +23,6 @@ Streams would push changes with subsecond latency and no read cost — but at th
 
 ## Consequences
 - Consumers must be idempotent (they must be anyway).
-- Publisher liveness must be monitored (silence alert: unpublished outbox items older than N seconds — the `outbox.lag` gauge).
+- Publisher liveness must be monitored (silence alert: unpublished outbox items older than N seconds — the `pix.outbox.lag` gauge).
 - Ordering: the poll processes oldest-first, but strict per-transaction ordering across redeliveries is not guaranteed — consumers rely on guarded status transitions, not event order (already required by at-least-once).
 - One extra sparse GSI on `pix_transactions` (GSI3); published items leave the index, so it stays tiny (only in-flight events).

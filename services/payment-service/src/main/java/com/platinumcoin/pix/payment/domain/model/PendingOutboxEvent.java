@@ -20,7 +20,7 @@ import java.util.Objects;
  * @param eventType     the routing key SNS filter policies match on ({@code PixDebited}, …)
  * @param payloadJson   the business facts, already serialized — opaque to the domain by design
  * @param occurredAt    when the state change committed; the sparse index's sort key, so this is also
- *                      what "oldest first" and the {@code outbox.lag} gauge are measured on
+ *                      what "oldest first" and the {@code pix.outbox.lag} gauge are measured on
  * @param correlationId the request that caused the event, carried across the asynchronous boundary so
  *                      one {@code grep} still reconstructs the path (ADR-0012); {@code null} when the
  *                      event was minted outside a request thread

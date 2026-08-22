@@ -69,6 +69,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Micrometer core, OPTIONAL (step 44): common-lib compiles the shared MeterFilter that gives
+             every service the same latency-histogram posture (CommonMetricsAutoConfiguration), the
+             metrics counterpart of the shared logback config. `optional` keeps it off the transitive
+             classpath — every service already brings Micrometer via spring-boot-starter-actuator, and
+             the auto-configuration is @ConditionalOnClass so a consumer without it is unaffected.
+             common-lib stays THIN. Version via the Spring Boot BOM in the parent. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Web types are OPTIONAL: common-lib compiles the filter, @RestControllerAdvice and
              RestClientCustomizer against them, but does NOT force web onto every consumer.
              Each service brings its own spring-boot-starter-web; the auto-configuration is

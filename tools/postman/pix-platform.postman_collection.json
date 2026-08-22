@@ -974,7 +974,7 @@
                 "balance"
               ]
             },
-            "description": "The caller's balance (step 40), served **cache-aside** on Redis with a 5s TTL and a ledger fallback.\n\n**Run it twice.** The first call is a *miss*: payment-service reads ledger-service's strongly-consistent balance and writes `balance:<accountId>` with `EX 5`. The second is a *hit* — ledger-service logs nothing at all, and that silence is the whole point. Watch the counters move:\n\n```\ncurl -s localhost:8084/actuator/metrics/cache.hit | jq '.measurements[0].value'   # /actuator/prometheus arrives in step 44\ndocker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001\ndocker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001\n```\n\n**The account comes from the JWT** — there is no path or query parameter that could name another one (Domain Safety Rule #1).\n\n**Why a stale value is harmless:** no money decision reads it. The `balance >= amount` guard is a condition expression *inside* the ledger's atomic write, so the cache can never authorize an overdraft — it can only make a *displayed* number up to 5s old, which `asOf` reports honestly."
+            "description": "The caller's balance (step 40), served **cache-aside** on Redis with a 5s TTL and a ledger fallback.\n\n**Run it twice.** The first call is a *miss*: payment-service reads ledger-service's strongly-consistent balance and writes `balance:<accountId>` with `EX 5`. The second is a *hit* — ledger-service logs nothing at all, and that silence is the whole point. Watch the counters move:\n\n```\ncurl -s localhost:8084/actuator/metrics/pix.cache.hit | jq '.measurements[0].value'   # /actuator/prometheus arrives in step 44\ndocker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001\ndocker compose -f infra/docker-compose.yml exec redis redis-cli TTL balance:acc-001\n```\n\n**The account comes from the JWT** — there is no path or query parameter that could name another one (Domain Safety Rule #1).\n\n**Why a stale value is harmless:** no money decision reads it. The `balance >= amount` guard is a condition expression *inside* the ledger's atomic write, so the cache can never authorize an overdraft — it can only make a *displayed* number up to 5s old, which `asOf` reports honestly."
           }
         },
         {
@@ -2447,6 +2447,188 @@
               ]
             },
             "description": "Actuator health — the contract compose healthchecks rely on. Expect {\"status\":\"UP\"}."
+          }
+        }
+      ]
+    },
+    {
+      "name": "observability",
+      "description": "The three layers of step 44: the **scrape surface** each service exposes, the **Prometheus** instance that polls all of them, and the **business funnel** you can query directly.\n\nFull metric catalog, alert-rule table and the reasoning behind both: `docs/observability.md`. The dashboards themselves live at http://localhost:3000 (anonymous Viewer — no login) and are provisioned from `infra/observability/`, never configured by hand.\n\n**Run the payment-service folder first**, then come back here and watch the funnel move.",
+      "item": [
+        {
+          "name": "Scrape surface — payment-service funnel counters",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.text();",
+                  "pm.test('the funnel counter is exposed', () => pm.expect(body).to.include('pix_payments_stage_total'));",
+                  "pm.test('every stage exists, even at zero', () => {",
+                  "  ['RECEIVED','FRAUD_CHECKED','DEBITED','SENT_TO_SPI','SETTLED','REVERSED']",
+                  "    .forEach(s => pm.expect(body).to.include('stage=\"' + s + '\"'));",
+                  "});",
+                  "pm.test('money is exported in cents', () => pm.expect(body).to.include('pix_settled_amount_cents_total'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/actuator/prometheus",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "prometheus"
+              ]
+            },
+            "description": "What Prometheus polls every 10s. Search the response for `pix_payments_stage_total` — the single counter that answers the whole funnel.\n\n**The Micrometer name is not the Prometheus name.** `pix.payments.stage` becomes `pix_payments_stage_total`: the convention appends `_total` to every counter *and* the meter's `baseUnit` when one is set. That is why `baseUnit` is used only where it improves the name (`pix_settled_amount_cents_total` — for money the unit is worth a word) and why `PrometheusMetricNamesTest` pins the exact strings: a silently renamed series breaks every dashboard panel and alert rule *without failing anything*.\n\n**Every series exists at 0 from a cold boot.** A Prometheus counter that was never incremented has no series at all, so a funnel panel would render \"no data\" for a stage no payment has reached — indistinguishable, on a dashboard, from broken instrumentation."
+          }
+        },
+        {
+          "name": "Scrape surface — settlement-service (the other half of the funnel)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.text();",
+                  "pm.test('writes the SAME funnel family as payment-service', () => pm.expect(body).to.include('pix_payments_stage_total'));",
+                  "pm.test('DLQ depth gauge (KR3.2)', () => pm.expect(body).to.include('pix_settlement_dlq_depth_messages'));",
+                  "pm.test('reconciliation age gauge (KR3.1)', () => pm.expect(body).to.include('pix_reconciliation_oldest_seconds'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{settlementBaseUrl}}/actuator/prometheus",
+              "host": [
+                "{{settlementBaseUrl}}"
+              ],
+              "path": [
+                "actuator",
+                "prometheus"
+              ]
+            },
+            "description": "settlement-service writes to **the same** `pix_payments_stage_total` family as payment-service — that shared name is what lets one Grafana panel draw a single funnel across the asynchronous seam.\n\nIt holds only because both services take their tag vocabulary from the shared `PixMetrics` enums in common-lib. Prometheus would happily store `stage=\"SENT_TO_SPI\"` and `stage=\"sent_to_spi\"` as two unrelated series, and the funnel would split in half with nothing failing anywhere.\n\nAlso here: `pix_settlement_dlq_depth_messages` and `pix_reconciliation_oldest_seconds`, the two gauges KR3.1/KR3.2 are measured on."
+          }
+        },
+        {
+          "name": "Prometheus — are all targets up?",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data.result;",
+                  "pm.test('at least eight services are being scraped', () => pm.expect(r.length).to.be.at.least(8));",
+                  "const down = r.filter(x => x.value[1] !== '1').map(x => x.metric.service);",
+                  "pm.test('none of them is down: ' + JSON.stringify(down), () => pm.expect(down).to.be.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{prometheusBaseUrl}}/api/v1/query?query=up{job=\"pix-services\"}",
+              "host": [
+                "{{prometheusBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "query"
+              ]
+            },
+            "description": "**Pull-based monitoring gives this for free.** Prometheus does not receive metrics, it goes and fetches them — so if it cannot reach a service, *that is* the signal, and no missing-heartbeat logic has to be written. A `0` here means every other panel about that service is stale, not healthy.\n\nEight services plus Prometheus itself. The targets are listed by hand in `infra/observability/prometheus.yml` because docker-compose *is* the topology locally; in a real deployment the same block is a `*_sd_config` and nothing else about the design changes."
+          }
+        },
+        {
+          "name": "Prometheus — the business funnel, by stage",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data.result;",
+                  "const by = Object.fromEntries(r.map(x => [x.metric.stage, Number(x.value[1])]));",
+                  "console.log('funnel:', by);",
+                  "pm.test('the funnel never widens as it goes', () => {",
+                  "  pm.expect(by.FRAUD_CHECKED).to.be.at.most(by.RECEIVED);",
+                  "  pm.expect(by.DEBITED).to.be.at.most(by.FRAUD_CHECKED);",
+                  "});",
+                  "pm.test('nothing settled that was never debited', () => pm.expect(by.SETTLED).to.be.at.most(by.DEBITED));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{prometheusBaseUrl}}/api/v1/query?query=sum by (stage) (pix_payments_stage_total{outcome=\"ok\"})",
+              "host": [
+                "{{prometheusBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "query"
+              ]
+            },
+            "description": "The funnel as one query — this is exactly what the Grafana bar gauge draws.\n\nRead it top to bottom: each stage is necessarily ≤ the one before it, and the size of a step **down** is where payments are dying. `SENT_TO_SPI` is naturally far smaller than `DEBITED` — an internal Pix settles the instant its ledger posting commits and never touches the rail.\n\n**`RECEIVED/ok` means \"accepted into the flow\"**, fired on a won idempotency claim — exactly once per payment, never once per HTTP request. Counting arrivals would fold retries and replays into the funnel's first number and make every ratio below it wrong.\n\nSwap `outcome=\"ok\"` for `outcome=\"rejected\"` to get the other question: *where* do payments die? `RECEIVED` = limits and unknown keys, `FRAUD_CHECKED` = risk policy, `DEBITED` = insufficient funds."
+          }
+        },
+        {
+          "name": "Prometheus — R$ settled & duplicates absorbed (KR1.1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().data.result;",
+                  "pm.test('the series exists (registered at boot, even at zero)', () => pm.expect(r.length).to.eql(1));",
+                  "const cents = Number(r[0].value[1]);",
+                  "pm.test('money is a whole number of cents', () => pm.expect(cents % 1).to.eql(0));",
+                  "console.log('R$ settled:', (cents / 100).toFixed(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{prometheusBaseUrl}}/api/v1/query?query=sum(pix_settled_amount_cents_total)",
+              "host": [
+                "{{prometheusBaseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "query"
+              ]
+            },
+            "description": "Money that actually reached a payee, **in integer cents** (Domain Safety Rule #6). The division by 100 happens on the dashboard, at the display edge, and nowhere in the platform.\n\nChange the query to `sum(pix_idempotency_replayed_total)` for KR1.1's live evidence: every increment is a retry the platform absorbed *without moving money a second time*. The proof is the pairing — replays climb while `pix_payments_stage_total{stage=\"DEBITED\"}` does not. Run the payment-service *Idempotent replay* request twice and watch exactly that happen."
           }
         }
       ]

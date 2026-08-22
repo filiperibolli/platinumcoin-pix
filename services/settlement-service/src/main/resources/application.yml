@@ -61,7 +61,7 @@ pix:
     # booting healthy while consuming nothing would be the worst possible failure mode.
     queue-name: ${SETTLEMENT_QUEUE_NAME:settlement-queue}
     # The dead-letter queue this service's redrive policy targets (step 26). It consumes nothing from it;
-    # it only measures its depth as the settlement.dlq.depth metric (step 32) — a non-zero, sustained
+    # it only measures its depth as the pix.settlement.dlq.depth metric (step 32) — a non-zero, sustained
     # depth means money is stuck in clearing with no automatic path releasing it (step 44 alerts on it).
     dlq:
       queue-name: ${SETTLEMENT_DLQ_NAME:settlement-queue-dlq}
@@ -88,7 +88,7 @@ pix:
       retry-backoff-cap-seconds: ${SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS:60}
     # The stuck-transaction scanner (step 34): a scheduled GSI2 query for external sends parked too long in
     # DEBITED/SENT_TO_SPI, feeding them to the reconciliation path and reporting the oldest age as the
-    # reconciliation.oldest.seconds gauge.
+    # pix.reconciliation.oldest.seconds gauge.
     reconciliation:
       # How often the scan runs. 60s is far finer than the 5-min SLO it protects (ADR-0003), and one bounded
       # GSI2 query per status is cheap. fixedDelay, so a slow scan never overlaps the next.
@@ -109,10 +109,58 @@ pix:
       # them). 240s is comfortably past the 12s SPI timeout + retry backoff + DLQ threshold, yet inside the
       # 5-min SLO. FAILED (a definitive refusal) reverses immediately and ignores this window.
       reverse-safety-window-seconds: ${RECONCILIATION_REVERSE_SAFETY_WINDOW_SECONDS:240}
-      # The <5-min reconciliation SLO breach threshold (ADR-0003): reconciliation.oldest.seconds above this
+      # The <5-min reconciliation SLO breach threshold (ADR-0003): pix.reconciliation.oldest.seconds above this
       # fires the in-code SLO alert (step 35) and, from step 44, the Prometheus alert on the same gauge —
       # one number, so the code and the dashboard never disagree on what "late" means.
       slo-breach-seconds: ${RECONCILIATION_SLO_BREACH_SECONDS:300}
+    # The platform alert watchdog (step 44, task 4). settlement-service hosts it because the rule that
+    # matters most — "debits are flowing but nothing is settling" — is a statement about the pipeline this
+    # service terminates, and because it already owns the reconciliation SLO alert and the DLQ probe.
+    # Half the rules read metrics OTHER services publish, so the watchdog queries Prometheus rather than
+    # its own registry: that is the only vantage point from which a cross-service question can be asked.
+    # A Prometheus that is down degrades the watchdog to silence (rules are SKIPPED, never guessed) —
+    # nothing on the money path depends on any of this.
+    alerts:
+      # The scraper the watchdog reads through. Inside compose it is the container name; a bare `mvn
+      # spring-boot:run` on the host reaches the published port instead.
+      prometheus-url: ${PROMETHEUS_URL:http://localhost:9091}
+      # How often a round runs. 30s is far finer than the tightest window it protects (the 120s silence
+      # rule), so a breach is announced within one window rather than one round late, and six PromQL
+      # instant queries every 30s is nothing. Milliseconds, like every other @Scheduled delay in this
+      # platform: Spring's fixedDelayString accepts a plain number or ISO-8601, never "30s".
+      fixed-delay-ms: ${ALERTS_FIXED_DELAY_MS:30000}
+      # How long SETTLED may stand still WHILE DEBITS ARE FLOWING before that is an incident. A normal
+      # settlement is <=10s (ADR-0003), so this is a dozen budgets of slack: a merely slow rail must not
+      # page anyone, but the window still closes well inside the 5-minute reconciliation SLO.
+      settlement-silence: ${ALERTS_SETTLEMENT_SILENCE:120s}
+      # Zero, deliberately: the FIRST message in the DLQ is the alert. A dead-lettered settlement is money
+      # parked in the clearing account that no automatic path is releasing (ADR-0003), so there is no
+      # "acceptable backlog" to tolerate before a human looks.
+      dlq-depth-bound: ${ALERTS_DLQ_DEPTH_BOUND:0}
+      # The same <5-min SLO number as slo-breach-seconds above. Two vantage points on one threshold: the
+      # in-process alert (step 35) sees it the moment a scan computes it even with Prometheus down, and
+      # this rule sees it across restarts and from the platform's point of view.
+      reconciliation-age: ${ALERTS_RECONCILIATION_AGE:300s}
+      # How far the outbox publisher may fall behind. Past this, PixDebited events are committed but
+      # unpublished (ADR-0004) — settlement is not failing, it is not being ASKED, which looks identical
+      # on every technical panel and is exactly what a silence-shaped rule is for.
+      outbox-lag: ${ALERTS_OUTBOX_LAG:60s}
+      # The fail-open CEILING (ADR-0005). Skipping the fraud check under timeout is a deliberate design,
+      # so the alert is not "it happened" but "it is now routine": above 5% of decisions, sends are
+      # regularly unscored and the 200ms budget needs attention rather than tolerance.
+      fraud-skipped-ceiling: ${ALERTS_FRAUD_SKIPPED_CEILING:0.05}
+      # The balance cache hit-rate FLOOR (ADR-0008). The 300ms p99 budget (KR2.2) assumes most reads are
+      # served from Redis; below 70% the budget is resting on the ledger, which still answers correctly
+      # but not necessarily in time. Correctness is never at stake here — no money decision reads the
+      # cache — so this is a latency-risk signal, not a money one.
+      cache-hit-floor: ${ALERTS_CACHE_HIT_FLOOR:0.70}
+      # The PromQL lookback the two ratio rules are measured over. Recent behaviour, not a lifetime
+      # average: a cumulative hit rate over a week would take days to react to a cache that just died.
+      ratio-window: ${ALERTS_RATIO_WINDOW:10m}
+      # How many events a ratio needs in that window before it is allowed to mean anything. Under this,
+      # the rule reports SKIPPED rather than dividing by an almost-empty denominator — otherwise the
+      # cache-hit floor fires every quiet night purely because nobody read a balance (see AlertRule.Ratio).
+      ratio-minimum-samples: ${ALERTS_RATIO_MINIMUM_SAMPLES:20}
   # The immutable audit trail (step 43). settlement-service is the platform's audit writer: it consumes
   # the ONLY unfiltered subscription on pix-events (audit-queue, step 42) and appends every event as a
   # JSON line to S3. Audit does not act on events, it records that they happened — which is why the
@@ -207,7 +255,11 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        # `prometheus` is the scrape surface (step 44): Prometheus polls it every 10s and Grafana reads
+        # everything from there. Exposed on the same unauthenticated actuator path as health — a local
+        # sandbox decision; in production the metrics port is bound to an internal interface and never
+        # routed publicly (the metric values themselves are business data).
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # Enables the liveness/readiness health groups the compose healthcheck probes.

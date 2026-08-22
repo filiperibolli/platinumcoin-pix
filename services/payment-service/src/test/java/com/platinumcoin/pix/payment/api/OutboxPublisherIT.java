@@ -213,7 +213,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
     }
 
     /**
-     * {@code outbox.lag} is the publisher's liveness signal (silence alert, step 44): the age of the
+     * {@code pix.outbox.lag} is the publisher's liveness signal (silence alert, step 44): the age of the
      * oldest event still waiting. An event stamped five minutes ago must show up as ~300s, not as "the
      * publisher is fine because it just ran".
      */
@@ -308,7 +308,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
     }
 
     private double lagSeconds() {
-        return meterRegistry.get("outbox.lag").gauge().value();
+        return meterRegistry.get("pix.outbox.lag").gauge().value();
     }
 
     /**

@@ -29,6 +29,7 @@ flow (Domain Safety Rule #1).
 | `DELETE` | `/v1/pix-keys/{keyValue}` | Bearer | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
 | `GET` | `/internal/pix-keys/resolve?key=…` | Bearer | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key, `{internal:false, externalBank:<ispb>}` for one held at another PSP (delegated to mock-bacen, step 30); unknown in **both** ⇒ `404 KEY_NOT_FOUND`; DICT unreachable ⇒ `503 DIRECTORY_UNAVAILABLE`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
+| `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 Unknown account ⇒ `404 application/problem+json` with `code: ACCOUNT_NOT_FOUND`. No token ⇒ `401`
 (`code: UNAUTHORIZED`) — including on `/internal/**`.

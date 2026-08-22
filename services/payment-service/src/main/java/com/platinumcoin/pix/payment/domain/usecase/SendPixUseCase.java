@@ -2,10 +2,14 @@ package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
+import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
+import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
@@ -21,6 +25,7 @@ import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
 import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
+import com.platinumcoin.pix.payment.domain.port.PaymentFunnelMetrics;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
@@ -104,6 +109,7 @@ public class SendPixUseCase {
     private final FraudScorer fraudScorer;
     private final LedgerClient ledger;
     private final EndToEndIdGenerator endToEndIds;
+    private final PaymentFunnelMetrics funnel;
     private final String clearingAccountId;
     private final Clock clock;
 
@@ -116,6 +122,7 @@ public class SendPixUseCase {
             FraudScorer fraudScorer,
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
+            PaymentFunnelMetrics funnel,
             String clearingAccountId,
             Clock clock) {
         this.transactions = transactions;
@@ -126,6 +133,7 @@ public class SendPixUseCase {
         this.fraudScorer = fraudScorer;
         this.ledger = ledger;
         this.endToEndIds = endToEndIds;
+        this.funnel = funnel;
         this.clearingAccountId = clearingAccountId;
         this.clock = clock;
     }
@@ -151,12 +159,21 @@ public class SendPixUseCase {
         if (key == null || key.isBlank()) {
             log.warn("Send refused, the Idempotency-Key header is missing on a money-moving POST, "
                     + "returning 400 | debtorAccountId={}", command.debtorAccountId());
+            funnel.stageReached(Stage.RECEIVED, Outcome.REJECTED);
             throw new IdempotencyKeyRequiredException();
         }
 
         // Validate money BEFORE any idempotency write: a malformed request is a client error that must
-        // leave no record behind (each retry simply 400s again).
-        long amountCents = Money.toCents(command.amount());
+        // leave no record behind (each retry simply 400s again). It is a funnel rejection at RECEIVED
+        // without ever being an acceptance — the graph's first number must count payments the platform
+        // took responsibility for, not every byte that arrived at the socket.
+        long amountCents;
+        try {
+            amountCents = Money.toCents(command.amount());
+        } catch (InvalidAmountException e) {
+            funnel.stageReached(Stage.RECEIVED, Outcome.REJECTED);
+            throw e;
+        }
         String accountId = command.debtorAccountId();
         String requestHash = requestHashOf(command);
 
@@ -183,6 +200,9 @@ public class SendPixUseCase {
                 log.warn("Idempotency key reused with a different payload, returning 409 | "
                                 + "debtorAccountId={} idempotencyKey={} storedHash={} attemptedHash={}",
                         accountId, key, record.requestHash(), requestHash);
+                // A refusal, not a replay: the client asked for a *different* payment under a used key,
+                // and this one will never happen. It dies at intake.
+                funnel.stageReached(Stage.RECEIVED, Outcome.REJECTED);
                 throw new IdempotencyKeyReuseException();
             }
 
@@ -191,6 +211,10 @@ public class SendPixUseCase {
                 log.info("Idempotency hit on a completed request, replaying the stored response | "
                                 + "debtorAccountId={} idempotencyKey={} httpStatus={} transactionId={}",
                         accountId, key, record.httpStatus(), snapshot.get("transactionId"));
+                // KR1.1's live evidence: a duplicate the platform absorbed. Note what is NOT incremented
+                // here — no stage advances — which is what makes "0 duplicate debits" observable rather
+                // than merely asserted (ADR-0002, Domain Safety Rule #2).
+                funnel.idempotentReplay();
                 return SendPixOutcome.replayed(
                         record.httpStatus(), snapshot.get("transactionId"), snapshot.get("endToEndId"));
             }
@@ -238,9 +262,24 @@ public class SendPixUseCase {
      */
     private SendPixOutcome acceptAndComplete(
             SendPixCommand command, long amountCents, String accountId, String key, Instant now) {
+        // 0) The funnel's entry point. Counted here rather than at the top of execute() because THIS is
+        //    where a payment becomes real: a won idempotency claim, exactly once per key. Counting on
+        //    every arriving request would fold retries and replays into "payments received" and make
+        //    every conversion ratio below it wrong.
+        funnel.stageReached(Stage.RECEIVED, Outcome.OK);
+
         // 1) Resolve the destination FIRST. An unresolvable key is a 422 before the limit counter is
         //    touched or any money moves — so a KEY_NOT_FOUND leaves no reservation to unwind.
-        KeyResolution destination = pixKeys.resolve(command.pixKey());
+        KeyResolution destination;
+        try {
+            destination = pixKeys.resolve(command.pixKey());
+        } catch (KeyNotFoundException e) {
+            // The DICT looked and said "no such key": definitive, so the payment dies at intake. A
+            // *unreachable* directory is a different exception and is deliberately not counted — nothing
+            // was decided there.
+            funnel.stageReached(Stage.RECEIVED, Outcome.REJECTED);
+            throw e;
+        }
         log.info("Destination Pix key resolved | creditorKey={} internal={} creditorAccountId={} "
                         + "externalBank={} debtorAccountId={}",
                 command.pixKey(), destination.internal(), destination.accountId(),
@@ -301,6 +340,9 @@ public class SendPixUseCase {
         log.warn("Send refused, the daily Pix limit would be exceeded, returning 422 | "
                         + "debtorAccountId={} amountCents={} dailyLimitCents={} day={} decision={}",
                 accountId, amountCents, dailyLimitCents, day, decision);
+        // Dies at RECEIVED, not at FRAUD_CHECKED: the limit is enforced before fraud is ever consulted,
+        // so counting it later would invent a stage this payment never reached.
+        funnel.stageReached(Stage.RECEIVED, Outcome.REJECTED);
         throw new LimitExceededException();
     }
 
@@ -322,12 +364,17 @@ public class SendPixUseCase {
     private FraudDecision screenForFraud(String accountId, String pixKey, long amountCents, Instant now) {
         FraudDecision decision = fraudScorer.score(accountId, pixKey, amountCents, now);
 
+        // The verdict mix, recorded for every outcome including SKIPPED — the fail-open share of this
+        // counter is the only place the platform reports how often the 200ms budget was blown (ADR-0005).
+        funnel.fraudDecision(decision);
+
         if (decision == FraudDecision.DENY) {
             LocalDate day = now.atZone(LIMIT_ZONE).toLocalDate();
             dailyLimits.release(accountId, amountCents, day);
             log.warn("Fraud screening denied the send, released the daily-limit reservation, returning "
                             + "422 | debtorAccountId={} pixKey={} amountCents={} day={} decision={}",
                     accountId, pixKey, amountCents, day, decision);
+            funnel.stageReached(Stage.FRAUD_CHECKED, Outcome.REJECTED);
             throw new FraudDeniedException();
         }
 
@@ -350,6 +397,9 @@ public class SendPixUseCase {
         log.info("Fraud stage advanced the transaction RECEIVED->FRAUD_CHECKED | debtorAccountId={} "
                         + "pixKey={} decision={} fraudSkipped={}",
                 accountId, pixKey, decision, decision == FraudDecision.SKIPPED);
+        // A skip ADVANCES the funnel: fail-open means the payment proceeds. It is visible as risk in the
+        // decision mix above, never as a drop-off here — the two are different questions.
+        funnel.stageReached(Stage.FRAUD_CHECKED, Outcome.OK);
         return decision;
     }
 
@@ -384,6 +434,9 @@ public class SendPixUseCase {
             releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
             throw e;
         }
+        // The atomic posting committed: the payer's money moved (Domain Safety Rule #4). Counted after
+        // the call returns, never before — an optimistic increment would report money that did not move.
+        funnel.stageReached(Stage.DEBITED, Outcome.OK);
 
         // Internal transfer: the posting committed, so it is settled now. The fraud verdict rides along
         // (fraudSkipped is its boolean shorthand) so the FRAUD_CHECKED stage is durable on the item.
@@ -408,6 +461,11 @@ public class SendPixUseCase {
         log.info("Internal Pix moved money and settled, persisted as SETTLED, returning 202 Accepted | "
                         + "txId={} status={} settledAt={}",
                 txId, transaction.status(), transaction.settledAt());
+        // An internal send is terminal here — no SPI leg — so this service closes the funnel itself and
+        // owns the settled volume. The external branch deliberately does neither: settlement-service does
+        // (step 44, task 1), because only BACEN can say the money arrived.
+        funnel.stageReached(Stage.SETTLED, Outcome.OK);
+        funnel.settled(amountCents);
         return transaction;
     }
 
@@ -454,6 +512,7 @@ public class SendPixUseCase {
             releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
             throw e;
         }
+        funnel.stageReached(Stage.DEBITED, Outcome.OK);
 
         // The money left the payer but has NOT reached the other PSP: DEBITED, and settledAt stays null
         // until settlement confirms it (step 31). There is no creditorAccountId — the payee banks
@@ -522,6 +581,10 @@ public class SendPixUseCase {
         log.warn("Ledger refused the debit for insufficient funds, released the daily-limit "
                         + "reservation, returning 422 | txId={} debtorAccountId={} amountCents={} day={}",
                 txId, accountId, amountCents, day);
+        // The ledger's own verdict, reached inside its atomic write — definitive, so the payment dies at
+        // DEBITED. Shared by both destinations because a refused debit is a property of the payer, not of
+        // where the payee banks.
+        funnel.stageReached(Stage.DEBITED, Outcome.REJECTED);
     }
 
     /**

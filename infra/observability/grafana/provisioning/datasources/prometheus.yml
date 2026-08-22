@@ -1,0 +1,29 @@
+# Grafana datasource, provisioned as code (step 44).
+#
+# THE POINT OF THIS FILE IS THAT NOBODY EVER CLICKS "ADD DATA SOURCE".
+# A dashboard configured by hand lives in one person's browser and dies with the container. Provisioning
+# makes the monitoring stack reproducible the same way the application is: `docker compose up` and the
+# graphs are there, on every machine, at the revision the repo says. The dashboards committed next door
+# reference this datasource by its stable `uid` — which is why the uid is written here explicitly instead
+# of being generated: a generated uid would differ per machine and every panel would come up "datasource
+# not found".
+#
+# Grafana reads this at startup from /etc/grafana/provisioning/datasources (mounted read-only in compose).
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: platinumcoin-prometheus
+    type: prometheus
+    access: proxy          # Grafana's backend queries Prometheus; the browser never talks to it directly,
+                           # so this works identically from any host and needs no CORS on Prometheus.
+    url: http://prometheus:9090   # container name on pix-net — the host mapping (9091) is for humans
+    isDefault: true
+    editable: false        # a change made in the UI would not survive a restart; better to refuse it
+                           # than to let someone believe an edit was saved. Edit the file, restart, done.
+    jsonData:
+      # Must match (or exceed) prometheus.yml's scrape_interval, or Grafana will happily build queries
+      # with a step finer than the data actually has and draw sawtooth gaps that look like outages.
+      timeInterval: 10s
+      httpMethod: POST

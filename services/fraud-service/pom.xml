@@ -39,6 +39,17 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Prometheus scrape endpoint (step 44): turns the Micrometer meters this service already
+             records into /actuator/prometheus, the one surface the Prometheus container scrapes.
+             Runtime scope — no code compiles against the registry; it is discovered and wired by
+             Actuator's auto-configuration the moment it is on the classpath. Version via the Spring
+             Boot BOM in the parent. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Redis client (Lettuce) via Spring Data Redis. Confined to infra/: the ArchUnit test fails
              the build if a domain type imports a Spring package. This is the velocity-counter store
              (INCR + EXPIRE) step 24 uses; Redis is its own container (ADR-0008, ElastiCache stand-in). -->

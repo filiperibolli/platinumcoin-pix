@@ -17,6 +17,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
 import software.amazon.awssdk.services.dynamodb.model.Put;
+import software.amazon.awssdk.services.dynamodb.model.ReturnValue;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledException;
 import software.amazon.awssdk.services.dynamodb.model.Update;
@@ -81,7 +82,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
      * the index keys would leave a settled payment sitting forever in the stuck-transaction query.
      */
     @Override
-    public void markSentToSpi(String txId, Instant at) {
+    public boolean markSentToSpi(String txId, Instant at) {
         String now = at.toString();
         Map<String, AttributeValue> values = Map.of(
                 ":target", AttributeValue.fromS(TransactionStatus.SENT_TO_SPI.name()),
@@ -95,8 +96,13 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
                         + "updatedAt={}",
                 TABLE, TX_PREFIX, txId, META_SK, now);
 
+        Map<String, AttributeValue> previous;
         try {
-            dynamo.updateItem(request -> request
+            // ALL_OLD costs nothing extra (DynamoDB has the item in hand to evaluate the condition) and
+            // is the only way to distinguish "I just put this on the rail" from "it was already on the
+            // rail and I re-stamped updatedAt" — the two cases the caller's funnel counter must not
+            // conflate. Doing it as a separate GetItem first would be a read-then-check race.
+            previous = dynamo.updateItem(request -> request
                     .tableName(TABLE)
                     .key(metaKey(txId))
                     .updateExpression(
@@ -104,16 +110,23 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
                     .conditionExpression(
                             "attribute_exists(pk) AND (#status = :debited OR #status = :target)")
                     .expressionAttributeNames(STATUS_ALIAS)
-                    .expressionAttributeValues(values));
+                    .expressionAttributeValues(values)
+                    .returnValues(ReturnValue.ALL_OLD)).attributes();
         } catch (ConditionalCheckFailedException e) {
             throw new TransitionNotAllowedException(txId, "DEBITED or SENT_TO_SPI",
                     TransactionStatus.SENT_TO_SPI.name());
         }
 
+        AttributeValue previousStatus = previous == null ? null : previous.get("status");
+        boolean firstClaim = previousStatus != null
+                && TransactionStatus.DEBITED.name().equals(previousStatus.s());
+
         log.info("Transaction claimed as in flight to BACEN, the state now says the rail was asked, which "
-                        + "is what a retry or the reconciliation loop keys off | txId={} status={} "
-                        + "updatedAt={}",
-                txId, TransactionStatus.SENT_TO_SPI, now);
+                        + "is what a retry or the reconciliation loop keys off | txId={} previousStatus={} "
+                        + "status={} firstClaim={} updatedAt={}",
+                txId, previousStatus == null ? null : previousStatus.s(), TransactionStatus.SENT_TO_SPI,
+                firstClaim, now);
+        return firstClaim;
     }
 
     /**

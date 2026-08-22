@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
  * with a service credential/mTLS rather than an end-user token (step-45 hardening).
  *
  * <p><b>The latency budget is a first-class metric.</b> A dedicated Micrometer {@link Timer}
- * ({@code fraud.score}) records every scoring call so the p99 &lt; 150ms target is observable in
+ * ({@code pix.fraud.score}) records every scoring call so the p99 &lt; 150ms target is observable in
  * {@code /actuator/metrics} (and scraped by Prometheus in step 44) — the timer is the standing proof
  * that the budget the caller enforces is actually met, not a one-off test assertion.
  */
@@ -34,7 +34,7 @@ public class FraudScoreController {
 
     public FraudScoreController(ScoreFraudUseCase scoreFraud, MeterRegistry meterRegistry) {
         this.scoreFraud = scoreFraud;
-        this.scoreTimer = Timer.builder("fraud.score")
+        this.scoreTimer = Timer.builder("pix.fraud.score")
                 .description("In-path fraud scoring latency (budget: p99 < 150ms)")
                 .publishPercentiles(0.5, 0.95, 0.99)
                 .register(meterRegistry);

@@ -274,7 +274,7 @@ class ReconciliationIT extends LocalStackTestBase {
     }
 
     private double resolvedCount(String action) {
-        var counter = meterRegistry.find("reconciliation.resolved").tag("action", action).counter();
+        var counter = meterRegistry.find("pix.reconciliation.resolved").tag("action", action).counter();
         return counter == null ? 0.0 : counter.count();
     }
 

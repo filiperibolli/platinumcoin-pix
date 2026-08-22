@@ -69,7 +69,8 @@ class StuckTransactionResolverTest {
         ledger = new RecordingLedger();
         dailyLimits = new RecordingLimits();
         metrics = new RecordingMetrics();
-        var finalizer = new SettlementFinalizer(transactions, ledger, dailyLimits);
+        var finalizer = new SettlementFinalizer(transactions, ledger, dailyLimits,
+                new com.platinumcoin.pix.settlement.domain.usecase.RecordingSettlementFunnelMetrics());
         resolver = new StuckTransactionResolver(reconciliationStore, spi, finalizer, metrics, SAFETY_WINDOW,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
@@ -254,7 +255,7 @@ class StuckTransactionResolverTest {
         private String reversedReason;
 
         @Override
-        public void markSentToSpi(String txId, Instant at) {
+        public boolean markSentToSpi(String txId, Instant at) {
             throw new UnsupportedOperationException("the resolver does not re-claim");
         }
 

@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.settlement.domain.usecase;
 
+import com.platinumcoin.pix.common.web.CorrelationId;
 import com.platinumcoin.pix.settlement.domain.model.StuckTransaction;
 import com.platinumcoin.pix.settlement.domain.model.TransactionStatus;
 import com.platinumcoin.pix.settlement.domain.port.StuckTransactionReconciler;
@@ -37,7 +38,7 @@ import org.slf4j.LoggerFactory;
  * <h2>The age metric is the leading indicator</h2>
  * {@link #execute()} returns the age of the oldest stuck transaction. That number climbing is the earliest
  * visible sign the &lt;5-min SLO (ADR-0003) is at risk — it rises before anything reaches the DLQ — which is
- * why the {@code api/} scanner surfaces it as {@code reconciliation.oldest.seconds} for step 44 to alert on.
+ * why the {@code api/} scanner surfaces it as {@code pix.reconciliation.oldest.seconds} for step 44 to alert on.
  *
  * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): the schedule lives in {@code api/}; the read and
  * the hand-off each sit behind a port.
@@ -82,10 +83,27 @@ public class ScanStuckTransactionsUseCase {
                 if (oldest == null || tx.updatedAt().isBefore(oldest)) {
                     oldest = tx.updatedAt();
                 }
-                log.warn("Stuck transaction found, handing it to the reconciliation path to resolve | "
-                                + "txId={} status={} updatedAt={} ageSeconds={}",
-                        tx.txId(), tx.status(), tx.updatedAt(), tx.ageAt(now).toSeconds());
-                reconciler.reconcile(tx);
+                // Adopt the transaction's id onto the MDC for the whole resolution (step 44's path
+                // audit). This thread is the scheduler's, so no HTTP filter ever put anything there, and
+                // without this every line the resolver, the ledger client and the AWS SDK emit while
+                // rescuing THIS payment would print `tx=n/a` — leaving the reconciliation stage the one
+                // hole in a payment's reconstructable path. Same treatment the outbox publisher gets.
+                //
+                // Only the txId, honestly: a scheduled scan has no originating request, and the
+                // correlation id of the send that created this transaction is not on the item (it lives
+                // on the outbox events — docs/data-model.md). So reconciliation is traceable by txId,
+                // which is why scripts/trace.sh accepts either id.
+                CorrelationId.restore(null, tx.txId());
+                try {
+                    log.warn("Stuck transaction found, handing it to the reconciliation path to resolve | "
+                                    + "txId={} status={} updatedAt={} ageSeconds={}",
+                            tx.txId(), tx.status(), tx.updatedAt(), tx.ageAt(now).toSeconds());
+                    reconciler.reconcile(tx);
+                } finally {
+                    // Worker threads are pooled and reused: a leaked id would mislabel the next
+                    // transaction this very loop resolves.
+                    CorrelationId.clear();
+                }
             }
         }
 

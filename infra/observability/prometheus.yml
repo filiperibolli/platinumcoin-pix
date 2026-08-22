@@ -1,0 +1,67 @@
+# Prometheus scrape configuration — PlatinumCoin Pix (step 44).
+#
+# WHY EVERY SERVICE IS LISTED BY HAND
+# Prometheus is pull-based: it does not receive metrics, it goes and fetches them, which means it needs
+# to know who exists. In a real deployment that list comes from service discovery (ECS/EKS/Consul SD) and
+# nobody edits a file to add a replica. Locally, docker-compose IS the topology and it is eight fixed
+# names on one bridge network, so static_configs is not a simplification — it is the same information,
+# written where a reader can see it. The moment this platform grew a scheduler, this file would be
+# replaced by a `*_sd_config` block and nothing else about the design would change.
+#
+# WHY PULL AT ALL, AND WHAT IT COSTS
+# A push model (StatsD, OTLP push) would let a service report and forget. Pull buys two things that
+# matter more here: an "up" series for free — if Prometheus cannot reach a service, that IS the signal,
+# and no missing-heartbeat logic has to be written — and no queue of metrics to lose when the collector
+# is down. What it costs is exactly what this file is: the scraper must know the targets.
+#
+# Container ports, not host ports: Prometheus runs INSIDE pix-net and reaches each service by its
+# compose service name. The host mapping (9091 -> 9090) exists only so a human can open the UI.
+
+global:
+  # 10s: fine enough that the 120s settlement-silence rule sees a stall within a small fraction of its
+  # window, coarse enough to be nothing on a laptop. Prometheus needs at least two samples in a range to
+  # compute a rate, so this also sets the floor for the shortest usable [1m] window in a panel.
+  scrape_interval: 10s
+  scrape_timeout: 5s
+  # Attached to every series this Prometheus stores. Harmless locally; the habit that keeps federated or
+  # remote-written data from two environments from silently merging.
+  external_labels:
+    platform: platinumcoin-pix
+    env: local
+
+scrape_configs:
+  # The platform's own services. `metrics_path` is Actuator's Prometheus endpoint, exposed by every
+  # service via `management.endpoints.web.exposure.include` (step 44).
+  #
+  # One job, many targets, rather than one job per service: the `job` label then means "a PlatinumCoin
+  # service" and the `service` label (below) says which — so a technical panel can say `by (service)` and
+  # get every service without the query naming any of them. Adding a ninth service is one line here and
+  # zero dashboard edits.
+  - job_name: pix-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["auth-service:8081"]
+        labels: { service: auth-service }
+      - targets: ["account-service:8082"]
+        labels: { service: account-service }
+      - targets: ["fraud-service:8083"]
+        labels: { service: fraud-service }
+      - targets: ["payment-service:8084"]
+        labels: { service: payment-service }
+      - targets: ["ledger-service:8085"]
+        labels: { service: ledger-service }
+      - targets: ["settlement-service:8086"]
+        labels: { service: settlement-service }
+      - targets: ["notification-service:8087"]
+        labels: { service: notification-service }
+      # The simulated BACEN rail. It is not part of the platform, but its latency and error rate are the
+      # independent variable in every resilience drill — so it is scraped too, and labelled as what it is.
+      - targets: ["mock-bacen-spi:9090"]
+        labels: { service: mock-bacen-spi, role: external-rail }
+
+  # Prometheus scraping itself. Cheap, and it is how you find out that the scraper is the thing that is
+  # struggling — the question every "why is the dashboard empty?" starts with.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: { service: prometheus }

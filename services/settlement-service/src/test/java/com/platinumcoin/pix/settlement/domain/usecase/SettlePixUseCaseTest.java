@@ -53,6 +53,7 @@ class SettlePixUseCaseTest {
     private FakeLedgerClient ledger;
     private FakeDailyLimitRelease dailyLimits;
     private SettlePixUseCase useCase;
+    private RecordingSettlementFunnelMetrics funnel;
 
     @BeforeEach
     void setUp() {
@@ -61,9 +62,10 @@ class SettlePixUseCaseTest {
         transactions = new FakeSettlementTransactionStore(trace);
         ledger = new FakeLedgerClient(trace);
         dailyLimits = new FakeDailyLimitRelease(trace);
+        funnel = new RecordingSettlementFunnelMetrics();
         var finalizer = new com.platinumcoin.pix.settlement.domain.service.SettlementFinalizer(
-                transactions, ledger, dailyLimits);
-        useCase = new SettlePixUseCase(processedEvents, spi, transactions, finalizer, OUR_ISPB,
+                transactions, ledger, dailyLimits, funnel);
+        useCase = new SettlePixUseCase(processedEvents, spi, transactions, finalizer, funnel, OUR_ISPB,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

@@ -1,11 +1,14 @@
 package com.platinumcoin.pix.settlement.domain.service;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
+import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
+import com.platinumcoin.pix.settlement.domain.port.SettlementFunnelMetrics;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import com.platinumcoin.pix.settlement.domain.usecase.SettleOutcome;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixCommand;
@@ -54,12 +57,14 @@ public class SettlementFinalizer {
     private final SettlementTransactionStore transactions;
     private final LedgerClient ledger;
     private final DailyLimitRelease dailyLimits;
+    private final SettlementFunnelMetrics funnel;
 
     public SettlementFinalizer(SettlementTransactionStore transactions, LedgerClient ledger,
-            DailyLimitRelease dailyLimits) {
+            DailyLimitRelease dailyLimits, SettlementFunnelMetrics funnel) {
         this.transactions = transactions;
         this.ledger = ledger;
         this.dailyLimits = dailyLimits;
+        this.funnel = funnel;
     }
 
     /**
@@ -102,6 +107,12 @@ public class SettlementFinalizer {
                         + "amountCents={} creditorIspb={} settledAt={} settledEventId={}",
                 command.txId(), command.endToEndId(), command.amountCents(), confirmation.creditorIspb(),
                 confirmation.settledAt(), event.eventId());
+        // Terminal and durable: the funnel closes here for an external send, and the settled volume is
+        // counted once, from the same place the SETTLED transition committed. Both callers — the queue
+        // consumer and the reconciliation resolver — reach this line, which is exactly why the counting
+        // lives in the shared finalizer rather than in each of them.
+        funnel.stageReached(Stage.SETTLED, Outcome.OK);
+        funnel.settled(command.amountCents());
         return SettleOutcome.SETTLED;
     }
 
@@ -163,6 +174,10 @@ public class SettlementFinalizer {
                         + "reversedEventId={}",
                 command.txId(), command.endToEndId(), command.amountCents(), command.debtorAccountId(),
                 command.clearingAccountId(), reason, event.eventId());
+        // The funnel's REVERSED branch: outcome=ok because the *compensation* succeeded — the payer has
+        // their money back. That the payment failed is what the branch itself says; a "rejected" reversal
+        // would mean a reversal that could not be performed, which is an ERROR, not a funnel outcome.
+        funnel.stageReached(Stage.REVERSED, Outcome.OK);
         return SettleOutcome.REVERSED;
     }
 

@@ -45,6 +45,17 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- Prometheus scrape endpoint (step 44): turns the Micrometer meters this service already
+             records into /actuator/prometheus, the one surface the Prometheus container scrapes.
+             Runtime scope — no code compiles against the registry; it is discovered and wired by
+             Actuator's auto-configuration the moment it is on the classpath. Version via the Spring
+             Boot BOM in the parent. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- Bean Validation for the inbound webhook's wire shape (step 37): a malformed delivery is
              refused at the edge with 400 VALIDATION_ERROR, before any use case sees it. -->
         <dependency>

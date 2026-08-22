@@ -35,7 +35,7 @@ import org.springframework.stereotype.Component;
  * overlapping and publishing the same events twice — self-inflicted duplicates on top of the ones the
  * design already tolerates.
  *
- * <h2>{@code outbox.lag}</h2>
+ * <h2>{@code pix.outbox.lag}</h2>
  * The gauge reports the age of the oldest event still waiting, in seconds. It is the publisher's
  * liveness signal: a climbing value means events are being written faster than they go out, or one is
  * stuck; a value that stops being reported at all means the publisher is dead — which is why step 44
@@ -53,7 +53,7 @@ public class OutboxPublisher {
 
     public OutboxPublisher(PublishOutboxEventsUseCase publishOutboxEvents, MeterRegistry meterRegistry) {
         this.publishOutboxEvents = publishOutboxEvents;
-        Gauge.builder("outbox.lag", lagMillis, millis -> millis.get() / 1000.0)
+        Gauge.builder("pix.outbox.lag", lagMillis, millis -> millis.get() / 1000.0)
                 .description("Age of the oldest unpublished outbox event — publisher liveness (ADR-0004)")
                 .baseUnit("seconds")
                 .register(meterRegistry);

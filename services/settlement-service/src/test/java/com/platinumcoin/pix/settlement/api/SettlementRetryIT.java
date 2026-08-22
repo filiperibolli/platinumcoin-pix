@@ -33,7 +33,7 @@ import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 /**
  * Step 32's resilience against real SQS: retries driven by visibility redelivery, query-before-retry
  * catching a timeout that actually settled, and the redrive to {@code settlement-queue-dlq} after five
- * receives — with the DLQ depth exposed as {@code settlement.dlq.depth}.
+ * receives — with the DLQ depth exposed as {@code pix.settlement.dlq.depth}.
  *
  * <p><b>Why the backoff base is 0 here.</b> Production spaces retries out with an exponential visibility
  * backoff (5, 10, 20, 40, 60s). A test must not wait on wall-clock, so the base is dialled to 0: the
@@ -147,7 +147,7 @@ class SettlementRetryIT extends LocalStackTestBase {
 
     /**
      * A rail that never answers: the message rides its five receives into the DLQ (step 26's redrive
-     * policy, {@code maxReceiveCount=5}), and {@code settlement.dlq.depth} reflects it. A DLQ message is
+     * policy, {@code maxReceiveCount=5}), and {@code pix.settlement.dlq.depth} reflects it. A DLQ message is
      * not lost — it is flagged for reconciliation (step 35) and this metric.
      */
     @Test
@@ -164,7 +164,7 @@ class SettlementRetryIT extends LocalStackTestBase {
 
         assertThat(depth).as("the message that could never settle landed in the DLQ").isEqualTo(1L);
         assertThat(dlqGauge.refresh()).isEqualTo(1L);
-        assertThat(meterRegistry.get("settlement.dlq.depth").gauge().value())
+        assertThat(meterRegistry.get("pix.settlement.dlq.depth").gauge().value())
                 .as("the metric a step-44 alert reads reflects the stuck settlement").isEqualTo(1.0);
         assertThat(meta(txId).get("status").s())
                 .as("nothing settled: the money is still in clearing, flagged in the DLQ")

@@ -726,7 +726,7 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
 # 4. publisher liveness: age of the oldest unpublished event, in seconds (0.0 on a drained outbox).
 #    A climbing value = falling behind or stuck; no value at all = the publisher is dead (step 44
 #    alerts on the silence, not only on the threshold).
-curl -s localhost:8084/actuator/metrics/outbox.lag | jq
+curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
 ```
 
 **Step 18 — sending a Pix (walking skeleton) through payment-service** (`:8084`). The endpoint
@@ -1138,11 +1138,10 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
 $RC GET balance:acc-001          # (nil) → evicted by ledger-service
 curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq   # fresh
 
-# (d) hit/miss metrics — the KPI the 300ms budget rests on (graphed in step 44).
-#     NOTE: /actuator/prometheus does not exist yet — the Prometheus registry is wired into every
-#     service in step 44. Until then the same counters are on the Actuator metrics endpoint:
-curl -s localhost:8084/actuator/metrics/cache.hit  | jq '.measurements[0].value'
-curl -s localhost:8084/actuator/metrics/cache.miss | jq '.measurements[0].value'
+# (d) hit/miss metrics — the KPI the 300ms budget rests on (graphed on the Technical dashboard).
+#     Since step 44 every service also exposes /actuator/prometheus, which is what Prometheus scrapes:
+curl -s localhost:8084/actuator/metrics/pix.cache.hit  | jq '.measurements[0].value'
+curl -s localhost:8084/actuator/prometheus | grep -E '^pix_cache_(hit|miss)_total'
 ```
 
 Measured on this stack (200 serial reads, warm cache): **p50 3.9ms · p95 5.2ms · p99 9.8ms** — against a
@@ -1237,11 +1236,53 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 > **Deleting hot data after archiving is deliberately not implemented** — see `docs/data-model.md` §8.2
 > for what production does instead and why the local platform stops one step short.
 
-### 5.9 Dashboards, load tests and API tooling (after their steps)
+### 5.9 Observability — dashboards, alerts & path tracing (step 44)
+
+Prometheus and Grafana come up with everything else — **always on, not an optional profile**: a dashboard
+you have to remember to start is a dashboard that is down exactly when something breaks. Full metric
+catalog, alert-rule table and the reasoning behind both: **`docs/observability.md`**.
 
 ```bash
-# Grafana (admin/admin): technical dashboard + business funnel
+# (a) every service exposes the scrape surface
+curl -s localhost:8084/actuator/prometheus | grep '^pix_payments_stage_total'
+
+# (b) Prometheus — all nine targets should be `up` (eight services + itself)
+open http://localhost:9091/targets
+curl -s 'localhost:9091/api/v1/query?query=up{job="pix-services"}' | jq -r \
+  '.data.result[] | "\(.metric.service)\t\(.value[1])"'
+
+# (c) Grafana — anonymous Viewer, so there is no login to get past (admin/admin to edit).
+#     Home is the funnel; both dashboards are provisioned from infra/observability/, never click-ops.
 open http://localhost:3000
+
+# (d) the funnel, straight from Prometheus — send a Pix first, then watch it move
+curl -s 'localhost:9091/api/v1/query?query=sum by (stage) (pix_payments_stage_total{outcome="ok"})' \
+  | jq -r '.data.result[] | "\(.metric.stage)\t\(.value[1])"'
+```
+
+**The silence-alert drill** — the one that proves the platform notices when *nothing* happens (the way
+async systems actually fail). Full walk-through in `docs/observability.md` §4:
+
+```bash
+curl -s -X POST localhost:9090/admin/config -H 'Content-Type: application/json' -d '{"failureRate":1.0}'
+# ...keep sending external Pix; within ~2 min:
+docker compose -f infra/docker-compose.yml logs settlement-service | grep "ALERT FIRING"
+curl -s -X POST localhost:9090/admin/config -H 'Content-Type: application/json' -d '{"failureRate":0.0}'
+docker compose -f infra/docker-compose.yml logs settlement-service | grep "ALERT RESOLVED"
+```
+
+**Tracing one request across every service** — `X-Correlation-Id` comes back on every response and is in
+every problem+json body, so you always have the handle:
+
+```bash
+./scripts/trace.sh <correlationId>        # what one REQUEST caused, in chronological order
+./scripts/trace.sh <txId>                 # one PAYMENT's whole life, reconciliation included
+./scripts/trace.sh <id> --all --since 6h  # plus DEBUG adapter detail (the DynamoDB keys, the payloads)
+```
+
+### 5.10 Load tests and API tooling (after their steps)
+
+```bash
 
 # k6 load profiles (step 47) — k6 runs in Docker, no local install needed
 docker run --rm -i --network=host grafana/k6 run - < load/k6/low.js
@@ -1296,7 +1337,7 @@ Integration tests do **not** need the compose stack running — Testcontainers m
 | ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Pinned in the parent POM (`docker.api.version`, default 1.44); on an older engine run `mvn verify -Ddocker.api.version=1.41` — see §6 |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |
-| Outbox events not flowing | Polling publisher in payment-service — check its logs and the `outbox.lag` metric; query GSI3 for stuck unpublished items |
+| Outbox events not flowing | Polling publisher in payment-service — check its logs and the `pix.outbox.lag` metric; query GSI3 for stuck unpublished items |
 | 202 but status stuck in DEBITED | settlement-queue consumer down or BACEN failure injection active; reconciliation will resolve within 5 min — that's it working as designed |
 | Port already in use | Adjust the host-side port mapping in `infra/docker-compose.yml` |
 | RAM pressure | Every JVM is capped (`JAVA_TOOL_OPTIONS=-Xmx512m`); total stack ≈ 6–8GB |

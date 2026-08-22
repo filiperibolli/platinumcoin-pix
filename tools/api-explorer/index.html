@@ -704,7 +704,7 @@
           },
           {
             method: 'GET', path: '/v1/accounts/me/balance', title: 'Balance — press Send TWICE (miss, then hit)', auth: true, capturesToken: false,
-            desc: 'The platform\'s highest-volume read (step 40, ADR-0008), and the one with a hard 300ms p99 budget: ~10 balance reads happen per transaction, every time somebody opens the app. It is served CACHE-ASIDE on Redis. Press Send ONCE: that is a MISS — payment-service asks ledger-service for a strongly-consistent balance, writes balance:&lt;accountId&gt; into Redis with EX 5, and answers. Press Send AGAIN within five seconds: that is a HIT, and ledger-service logs NOTHING AT ALL — the silence is the cache working. Confirm both from the outside: docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001 (the stored JSON) and ... TTL balance:acc-001 (≤ 5, the staleness ceiling in seconds); the hit rate itself is at /actuator/metrics/cache.hit and /actuator/metrics/cache.miss (a Prometheus registry, and the cache_hit_total series, arrive in step 44). THE ACCOUNT COMES FROM YOUR TOKEN: the path is /me and there is no parameter that could name another account — the same mechanism that protects the debited account on a send (Domain Safety Rule #1). asOf is WHEN THE LEDGER WAS READ, not the time of the response, so a hit honestly reports that its number may be up to 5s old. WHY THAT STALENESS IS SAFE: no money decision ever reads this value. The balance &gt;= amount guard is a condition expression INSIDE the ledger\'s atomic TransactWriteItems, so a cache that is stale, corrupt or entirely down changes what you SEE for at most five seconds and can never change what the ledger ALLOWS. The build enforces it — an ArchUnit rule fails if any use case other than GetBalanceUseCase so much as references the cache port. And the failure posture inverts the usual cache risk: stop Redis (docker compose ... stop redis) and this card still answers 200, just from the ledger every time. Losing the cache costs latency, never correctness or availability.',
+            desc: 'The platform\'s highest-volume read (step 40, ADR-0008), and the one with a hard 300ms p99 budget: ~10 balance reads happen per transaction, every time somebody opens the app. It is served CACHE-ASIDE on Redis. Press Send ONCE: that is a MISS — payment-service asks ledger-service for a strongly-consistent balance, writes balance:&lt;accountId&gt; into Redis with EX 5, and answers. Press Send AGAIN within five seconds: that is a HIT, and ledger-service logs NOTHING AT ALL — the silence is the cache working. Confirm both from the outside: docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001 (the stored JSON) and ... TTL balance:acc-001 (≤ 5, the staleness ceiling in seconds); the hit rate itself is at /actuator/metrics/pix.cache.hit and /actuator/metrics/pix.cache.miss (a Prometheus registry, and the cache_hit_total series, arrive in step 44). THE ACCOUNT COMES FROM YOUR TOKEN: the path is /me and there is no parameter that could name another account — the same mechanism that protects the debited account on a send (Domain Safety Rule #1). asOf is WHEN THE LEDGER WAS READ, not the time of the response, so a hit honestly reports that its number may be up to 5s old. WHY THAT STALENESS IS SAFE: no money decision ever reads this value. The balance &gt;= amount guard is a condition expression INSIDE the ledger\'s atomic TransactWriteItems, so a cache that is stale, corrupt or entirely down changes what you SEE for at most five seconds and can never change what the ledger ALLOWS. The build enforces it — an ArchUnit rule fails if any use case other than GetBalanceUseCase so much as references the cache port. And the failure posture inverts the usual cache risk: stop Redis (docker compose ... stop redis) and this card still answers 200, just from the ledger every time. Losing the cache costs latency, never correctness or availability.',
             headers: {}, body: null,
           },
           {
@@ -901,6 +901,42 @@
           {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
+            headers: {}, body: null,
+          },
+        ],
+      },
+      {
+        id: 'observability', name: 'observability', port: 9091, baseUrl: 'http://localhost:9091',
+        blurb: 'Not a service — the three layers that make the platform WATCHABLE (step 44): metrics (Micrometer → /actuator/prometheus, scraped every 10s), dashboards (Grafana at localhost:3000, anonymous Viewer so there is no login to get past, provisioned as code from infra/observability/ and never configured by hand) and alerts (an AlertEvaluator in settlement-service that announces FIRING/RESOLVED transitions with a runbook link). The base URL here is PROMETHEUS, so the cards below query it directly with PromQL — the same queries the Grafana panels run. Send a Pix from the payment-service tab (or run the Send Pix journey) and come straight back: the funnel moves in front of you. Full catalog and reasoning in docs/observability.md.',
+        endpoints: [
+          {
+            method: 'GET', path: '/api/v1/query?query=sum%20by%20(stage)%20(pix_payments_stage_total%7Boutcome%3D%22ok%22%7D)', title: 'The business funnel, by stage', auth: false, capturesToken: false,
+            desc: 'THE query of this sprint — exactly what the Grafana bar gauge draws. Read it top to bottom: each stage is necessarily ≤ the one before it, and the size of a step DOWN is where payments are dying. SENT_TO_SPI is naturally far smaller than DEBITED because an internal Pix settles the instant its ledger posting commits and never touches the rail. RECEIVED/ok means "ACCEPTED INTO THE FLOW", fired on a won idempotency claim — exactly once per payment, never once per HTTP request; counting arrivals would fold retries and replays into the funnel\'s first number and make every ratio below it wrong. ONE COUNTER, TWO SERVICES: payment-service writes RECEIVED→FRAUD_CHECKED→DEBITED (and SETTLED for an internal send), settlement-service writes SENT_TO_SPI→SETTLED and the REVERSED branch — the same metric name from both sides of the asynchronous seam, which is what lets one panel draw one funnel across a process boundary. It holds only because both take their tag spellings from a shared enum in common-lib: Prometheus would happily store stage="SENT_TO_SPI" and stage="sent_to_spi" as two unrelated series and the funnel would split in half with NOTHING failing anywhere. Swap outcome="ok" for outcome="rejected" in the URL to ask the other question — WHERE do payments die? RECEIVED = limits and unknown keys, FRAUD_CHECKED = risk policy, DEBITED = insufficient funds.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/api/v1/query?query=sum(pix_settled_amount_cents_total)', title: 'R$ settled (integer cents)', auth: false, capturesToken: false,
+            desc: 'Money that actually reached a payee. Note the unit IS IN THE SERIES NAME: pix_settled_amount_cents_total. Money is integer cents end to end (Domain Safety Rule #6) and the division by 100 happens on the dashboard, at the display edge, never in the platform — a float somewhere in the middle is exactly how a payments system loses a centavo per transaction. A counter, not a gauge: it only ever goes up, so its increase over a window is "R$ settled in that window" and a rate over it is "R$/second". Only genuine settlements increment it — an external send that is still in flight has moved the payer\'s money into the clearing account but has NOT reached a payee, and counting it here would report money as delivered while it sits in limbo.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/api/v1/query?query=sum(pix_idempotency_replayed_total)', title: 'Duplicates absorbed (KR1.1)', auth: false, capturesToken: false,
+            desc: 'The live evidence for "0 duplicate debits". Every increment is a retry the platform answered from a MEMOIZED response instead of moving money a second time (ADR-0002). This number going UP is the system working. The proof is the PAIRING, not the number: run the payment-service "Send Pix" card twice with the SAME Idempotency-Key, then reload this card and the funnel card — replays climbs by one while pix_payments_stage_total{stage="DEBITED"} does NOT. That pair of observations is what makes the invariant something you can watch at runtime rather than only assert in a test.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/api/v1/query?query=sum%20by%20(decision)%20(pix_fraud_decision_total)', title: 'Fraud decision mix + fail-open rate', auth: false, capturesToken: false,
+            desc: 'The verdict mix AS THE SEND FLOW SAW IT — which is why payment-service owns this metric and fraud-service does not. Only the CALLER can observe SKIPPED: the fail-open that happens when the 200ms budget is blown (ADR-0005), where fraud-service either answered too late or not at all and the payment proceeded UNSCORED and flagged. The SKIPPED share of this counter IS the fail-open rate, and the platform alerts when it goes above 5% — not because a skip is a failure (it is a deliberate choice of payment availability over scoring completeness) but because a skip that stops being exceptional means the budget needs attention rather than tolerance. To see one: arm a latency drill on mock-bacen... no — arm it on fraud instead by stopping the container (docker compose stop fraud-service), send a Pix, and watch SKIPPED tick up while the payment still returns 202.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/api/v1/query?query=up%7Bjob%3D%22pix-services%22%7D', title: 'Are all targets up?', auth: false, capturesToken: false,
+            desc: 'PULL-BASED MONITORING GIVES THIS FOR FREE. Prometheus does not RECEIVE metrics, it goes and FETCHES them — so if it cannot reach a service, that IS the signal, and no missing-heartbeat logic ever has to be written. A 0 here means every other panel about that service is STALE, not healthy, which is the distinction a push-based setup makes hard. That is the trade: pull costs you a list of targets (infra/observability/prometheus.yml lists eight services by hand, because docker-compose IS the topology locally; in a real deployment the same block becomes a service-discovery config and nothing else about the design changes) and buys you liveness detection you did not have to build.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/api/v1/query?query=max(pix_reconciliation_oldest_seconds)%20or%20vector(0)', title: 'Reconciliation age vs the 5-min SLO (KR3.1)', auth: false, capturesToken: false,
+            desc: 'Age of the oldest transaction still stuck in DEBITED/SENT_TO_SPI — the leading indicator of the <5-min reconciliation SLO (ADR-0003). The SAME number the in-process ReconciliationSloAlert watches (step 35), so the code and the graph can never disagree about what "late" means; step 44 pointed a second alert at the identical gauge from the platform\'s vantage point rather than inventing a second threshold. To make it climb: arm a failure drill on mock-bacen-spi (failureRate 1.0), send an external Pix, and watch this rise — then un-arm it and watch reconciliation pull it back to 0. The DLQ twin is sum(pix_settlement_dlq_depth_messages), whose alert bound is ZERO: the first dead-lettered settlement is money parked in clearing with no automatic path releasing it, so there is no "acceptable backlog" to tolerate before a human looks.',
             headers: {}, body: null,
           },
         ],
@@ -2202,7 +2238,177 @@
           },
         ],
       },
+      {
+        id: 'observability', name: 'Observability', phone: false,
+        title: 'Watch a payment move the funnel — and prove one grep can follow it',
+        blurb: 'The only journey that observes the platform instead of using it. It reads the funnel, sends one '
+          + 'real Pix through the whole path, reads the funnel again, and shows exactly which counters moved and '
+          + 'by how much — then hands you the correlation id that reconstructs that payment across every service. '
+          + 'Needs Prometheus up (docker compose up -d); it scrapes every service every 10s, so give it a moment.',
+        steps: [
+          {
+            title: 'Is Prometheus scraping everything?', call: 'GET :9091 /api/v1/query up{job="pix-services"}',
+            why: 'Pull-based monitoring gives liveness for <b>free</b>: Prometheus fetches metrics rather than '
+              + 'receiving them, so a service it cannot reach reports <code>0</code> and that IS the signal — no '
+              + 'heartbeat logic was ever written. Worth checking first, because every number below is only as '
+              + 'trustworthy as the scrape behind it: a stale panel and a healthy one look identical.',
+            run: async (ctx) => {
+              const r = await promQuery('up{job="pix-services"}');
+              if (!r.ok) {
+                return { ok: false, state: 'Prometheus unreachable',
+                  body: 'Could not reach http://localhost:9091.\nStart it with:\n'
+                    + '  docker compose -f infra/docker-compose.yml up -d prometheus grafana' };
+              }
+              const rows = r.json.data.result;
+              const down = rows.filter((x) => x.value[1] !== '1').map((x) => x.metric.service);
+              return { ok: down.length === 0 && rows.length >= 8,
+                state: `${rows.filter((x) => x.value[1] === '1').length}/${rows.length} up`,
+                body: rows.map((x) => `${(x.metric.service || '?').padEnd(22)} ${x.value[1] === '1' ? 'up' : 'DOWN'}`).join('\n') };
+            },
+          },
+          {
+            title: 'Read the funnel BEFORE', call: 'GET :9091 /api/v1/query pix_payments_stage_total',
+            why: 'The baseline. Every stage exists at <b>0</b> from a cold boot, on purpose: a Prometheus counter '
+              + 'that was never incremented has no series at all, so a panel would show "no data" for a stage no '
+              + 'payment has reached — indistinguishable, on a dashboard, from instrumentation that is simply '
+              + 'broken. Pre-registering every stage×outcome pair means the funnel reads a real zero.',
+            run: async (ctx) => {
+              ctx.before = await funnelSnapshot();
+              ctx.beforeSettled = await scalar('sum(pix_settled_amount_cents_total)');
+              return { ok: ctx.before !== null, state: 'baseline captured',
+                body: ctx.before === null ? 'Prometheus did not answer.' : funnelTable(ctx.before) };
+            },
+          },
+          {
+            title: 'Send one real internal Pix (R$ 4,20)', call: 'POST :8084 /v1/payments/pix',
+            why: 'A genuine payment down the full path — idempotency claim → daily limit → fraud → atomic '
+              + 'double-entry posting. It carries an <b>X-Correlation-Id we choose</b>, which is the handle the '
+              + 'last step traces. An internal send settles the moment its ledger posting commits, so it should '
+              + 'move four stages including SETTLED, and never SENT_TO_SPI: only settlement-service may claim the '
+              + 'rail, and only BACEN can say an external payment arrived.',
+            run: async (ctx) => {
+              const login = await doLogin('alice', 'alice');
+              ctx.aliceToken = login.json && login.json.accessToken;
+              ctx.cid = 'cid-explorer-' + crypto.randomUUID();
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/payments/pix',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID(),
+                  'X-Correlation-Id': ctx.cid },
+                body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '4.20',
+                  description: 'observability journey' }) });
+              ctx.txId = r.json && r.json.transactionId;
+              ctx.vars.txId = ctx.txId || '';
+              ctx.vars.correlationId = ctx.cid;
+              return { ok: r.ok, state: `${r.status} · ${ctx.txId || ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Read the funnel AFTER — which counters moved?', call: 'GET :9091 /api/v1/query (×2)',
+            why: 'The payoff. Four stages advance by exactly <b>1</b> and R$ 4,20 lands in the settled total as '
+              + '<b>420 cents</b> — money is integer cents end to end, and the division by 100 happens on a '
+              + 'dashboard, never in the platform. Note what did NOT move: SENT_TO_SPI. Note also that '
+              + 'Prometheus scrapes every 10s, so if a stage reads 0 here, wait a few seconds and re-run this '
+              + 'step — the counter already moved inside the service, the scraper simply has not been round yet.',
+            run: async (ctx) => {
+              await sleep(1200);
+              const after = await funnelSnapshot();
+              const afterSettled = await scalar('sum(pix_settled_amount_cents_total)');
+              if (!ctx.before || !after) return { ok: false, state: 'no data', body: 'Prometheus did not answer.' };
+              const stages = ['RECEIVED', 'FRAUD_CHECKED', 'DEBITED', 'SENT_TO_SPI', 'SETTLED'];
+              const delta = {}; stages.forEach((k) => { delta[k] = (after[k] || 0) - (ctx.before[k] || 0); });
+              const cents = (afterSettled || 0) - (ctx.beforeSettled || 0);
+              const good = delta.RECEIVED >= 1 && delta.FRAUD_CHECKED >= 1 && delta.DEBITED >= 1
+                && delta.SETTLED >= 1 && delta.SENT_TO_SPI === 0;
+              return { ok: good, state: good ? 'four stages +1, rail untouched ✓' : 'scrape may still be in flight',
+                body: stages.map((k) => `${k.padEnd(15)} ${String(ctx.before[k] || 0).padStart(6)} → `
+                  + `${String(after[k] || 0).padStart(6)}   ${delta[k] >= 0 ? '+' : ''}${delta[k]}`).join('\n')
+                  + `\n\nsettled amount  ${String(ctx.beforeSettled || 0).padStart(6)} → `
+                  + `${String(afterSettled || 0).padStart(6)}   +${cents} cents (R$ ${(cents / 100).toFixed(2)})` };
+            },
+          },
+          {
+            title: 'Where do payments die? (the REJECTED branch)', call: 'GET :9091 /api/v1/query outcome="rejected"',
+            why: 'The question the technical dashboard cannot answer, and the reason a business funnel exists. '
+              + 'Each rejection is counted at the stage that actually refused it: RECEIVED = limits and unknown '
+              + 'keys, FRAUD_CHECKED = risk policy, DEBITED = insufficient funds. What is deliberately NOT here: '
+              + 'retryable failures. An unreachable ledger decides nothing — the client retries and the payment '
+              + 'continues — so counting it would report a death the retry then resurrects, which is the fastest '
+              + 'way to make an operator stop trusting the graph.',
+            run: async (ctx) => {
+              const r = await promQuery('sum by (stage) (pix_payments_stage_total{outcome="rejected"})');
+              if (!r.ok) return { ok: false, state: 'no data', body: 'Prometheus did not answer.' };
+              const rows = r.json.data.result;
+              const total = rows.reduce((a, x) => a + Number(x.value[1]), 0);
+              return { ok: true, state: `${total} rejected so far`,
+                body: rows.map((x) => `${x.metric.stage.padEnd(15)} ${x.value[1]}`).join('\n')
+                  + '\n\nAll zero? Nothing has been refused yet. Send a Pix of 9999999.00 from the\n'
+                  + 'payment-service tab (422 LIMIT_EXCEEDED) and re-run this step.' };
+            },
+          },
+          {
+            title: 'Now trace that exact payment across every service', call: 'scripts/trace.sh',
+            why: 'A browser cannot read container logs, so this step hands you the command instead — and the '
+              + 'point is how <b>short</b> it is. The correlation id is in the log <b>pattern</b>, not in any log '
+              + 'statement (ADR-0012), so every record — ours, Spring\'s, the AWS SDK\'s — is prefixed with it, '
+              + 'across HTTP hops (a RestClient customizer forwards the header) and across the asynchronous seam '
+              + '(the event envelope carries it and each consumer restores it). The whole path is already written '
+              + 'down, in order; the script only collates and sorts it. One external send measured 48 lines '
+              + 'across 7 services.',
+            run: async (ctx) => {
+              return { ok: !!ctx.cid, state: 'copy the command below',
+                body: `# what this ONE request caused, in chronological order\n`
+                  + `./scripts/trace.sh ${ctx.cid || '<correlationId>'}\n\n`
+                  + `# everything that ever happened to this PAYMENT, reconciliation included\n`
+                  + `./scripts/trace.sh ${ctx.txId || '<txId>'}\n\n`
+                  + `# ...and the dashboards these same counters feed:\n`
+                  + `open http://localhost:3000     # Grafana — anonymous Viewer, no login\n`
+                  + `open http://localhost:9091     # Prometheus\n\n`
+                  + `A txId works too because the pattern carries TWO ids ([cid=... tx=...]). Work that no\n`
+                  + `request started — the reconciliation scan rescuing a stuck payment — honestly has no\n`
+                  + `correlation id, so those stages are pinned by tx= instead.` };
+            },
+          },
+        ],
+      },
     ];
+
+    /** Instant PromQL against Prometheus. POST + form body, not a query string: PromQL is written in
+     *  exactly the characters a URL treats as structure — `{`/`}` and a `+` that decodes to a space in
+     *  Go's form parser, which silently turns `sum(a) + sum(b)` into a syntax error. The settlement
+     *  watchdog hit both against a live Prometheus; this is the same fix. */
+    async function promQuery(expr) {
+      try {
+        return await send({ method: 'POST', base: baseOf('observability'), path: '/api/v1/query',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'query=' + encodeURIComponent(expr) });
+      } catch (e) {
+        // send() throws on a network/CORS failure. Here that is the expected case when the observability
+        // stack is simply not up, and a journey step should say so rather than blow up — so it becomes
+        // the same "no answer" the alert watchdog treats as SKIPPED, never as a zero.
+        return { ok: false, status: 0, json: null, bodyText: e.message };
+      }
+    }
+
+    /** One scalar sample, or null when Prometheus cannot answer (never a 0 — see AlertRule.Ratio). */
+    async function scalar(expr) {
+      const r = await promQuery(expr);
+      if (!r.ok || !r.json || !r.json.data.result.length) return null;
+      return Number(r.json.data.result[0].value[1]);
+    }
+
+    /** The funnel as { STAGE: count } for outcome="ok". */
+    async function funnelSnapshot() {
+      const r = await promQuery('sum by (stage) (pix_payments_stage_total{outcome="ok"})');
+      if (!r.ok || !r.json) return null;
+      const out = {};
+      r.json.data.result.forEach((x) => { out[x.metric.stage] = Number(x.value[1]); });
+      return out;
+    }
+
+    function funnelTable(snap) {
+      return ['RECEIVED', 'FRAUD_CHECKED', 'DEBITED', 'SENT_TO_SPI', 'SETTLED', 'REVERSED']
+        .map((k) => `${k.padEnd(15)} ${snap[k] || 0}`).join('\n');
+    }
 
     /** The three idempotency steps differ only in the body — the KEY is deliberately the same. */
     function sendWithKey(ctx, amount, description) {
