@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Solução recomendada e sugestões priorizadas para a plataforma PlatinumCoin PIX.">
+  <title>PlatinumCoin PIX — Solução e sugestões</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090f;
+      --surface: #0d111b;
+      --surface-2: #121827;
+      --line: #273044;
+      --line-soft: #1b2231;
+      --text: #f5f7fb;
+      --muted: #9ba6b8;
+      --cyan: #55d6be;
+      --cyan-soft: rgba(85, 214, 190, .12);
+      --blue: #74a7ff;
+      --violet: #b391ff;
+      --amber: #f4be62;
+      --red: #ff7d8c;
+      --green: #72dda2;
+      --max: 1220px;
+      --radius: 18px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 0%, rgba(85, 214, 190, .10), transparent 26rem),
+        radial-gradient(circle at 92% 18%, rgba(116, 167, 255, .09), transparent 30rem),
+        var(--bg);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+
+    button, input { font: inherit; }
+    a { color: inherit; }
+    code { font-family: var(--mono); }
+
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 20;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--text);
+      color: var(--bg);
+      transform: translateY(-160%);
+    }
+    .skip-link:focus { transform: translateY(0); }
+
+    .shell { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+
+    header {
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(7, 9, 15, .82);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero { padding: 70px 0 44px; }
+    .eyebrow, .section-kicker, .priority, .state {
+      font-family: var(--mono);
+      font-size: .74rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .eyebrow, .section-kicker { color: var(--cyan); }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 930px;
+      margin: 16px 0 22px;
+      font-size: clamp(2.65rem, 7vw, 6.7rem);
+      line-height: .93;
+      letter-spacing: -.065em;
+    }
+    h2 {
+      max-width: 900px;
+      margin-bottom: 16px;
+      font-size: clamp(2rem, 4.6vw, 4rem);
+      line-height: 1.02;
+      letter-spacing: -.045em;
+    }
+    h3 {
+      margin-bottom: 10px;
+      font-size: 1.15rem;
+      line-height: 1.25;
+    }
+    p { color: var(--muted); }
+    .hero-copy { max-width: 800px; font-size: clamp(1.05rem, 2vw, 1.3rem); }
+    .hero-copy strong { color: var(--text); }
+
+    .scope-note {
+      max-width: 980px;
+      margin-top: 28px;
+      padding: 15px 17px;
+      border: 1px solid #3e5360;
+      border-left: 3px solid var(--cyan);
+      border-radius: 12px;
+      color: #c6d0dc;
+      background: rgba(85, 214, 190, .06);
+    }
+
+    .targets {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 1px;
+      margin-top: 42px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--line);
+    }
+    .target { padding: 19px; background: var(--surface); }
+    .target strong { display: block; font: 800 1.18rem var(--mono); color: var(--cyan); }
+    .target span { display: block; margin-top: 4px; color: var(--muted); font-size: .82rem; }
+
+    .sticky-nav {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(7, 9, 15, .93);
+      backdrop-filter: blur(14px);
+    }
+    .nav-inner { display: flex; gap: 8px; align-items: center; overflow-x: auto; padding-block: 12px; }
+    .nav-inner a {
+      flex: 0 0 auto;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .84rem;
+    }
+    .nav-inner a:hover, .nav-inner a:focus-visible { color: var(--text); border-color: var(--cyan); }
+
+    main section { padding: 82px 0; border-bottom: 1px solid var(--line-soft); }
+    .section-intro { max-width: 820px; margin-bottom: 34px; font-size: 1.05rem; }
+
+    .decision-grid, .suggestion-grid, .acceptance-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .decision, .suggestion, .acceptance {
+      position: relative;
+      min-width: 0;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(145deg, rgba(18, 24, 39, .94), rgba(10, 14, 23, .95));
+    }
+    .decision::before {
+      content: attr(data-number);
+      display: block;
+      margin-bottom: 34px;
+      color: var(--cyan);
+      font: 800 .75rem var(--mono);
+    }
+    .decision p, .suggestion p, .acceptance p { margin-bottom: 0; }
+
+    .hld-card {
+      overflow: hidden;
+      border: 1px solid #315548;
+      border-radius: 20px;
+      background: #090d14;
+    }
+    .hld-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 20px 22px;
+      border-bottom: 1px solid var(--line);
+      background: var(--cyan-soft);
+    }
+    .hld-head h3 { margin: 0; }
+    .state { flex: 0 0 auto; color: var(--green); }
+    .hld-scroll { overflow-x: auto; }
+    .hld-svg { display: block; width: 100%; min-width: 1040px; height: auto; }
+    .hld-foot {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1px;
+      border-top: 1px solid var(--line);
+      background: var(--line);
+    }
+    .hld-note { padding: 17px; background: var(--surface); color: var(--muted); font-size: .86rem; }
+    .hld-note strong { display: block; margin-bottom: 5px; color: var(--text); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      counter-reset: step;
+    }
+    .flow-step {
+      counter-increment: step;
+      padding: 20px;
+      border-top: 2px solid var(--cyan);
+      border-radius: 0 0 14px 14px;
+      background: var(--surface);
+    }
+    .flow-step::before {
+      content: counter(step, decimal-leading-zero);
+      display: block;
+      margin-bottom: 26px;
+      color: var(--cyan);
+      font: 800 .76rem var(--mono);
+    }
+    .flow-step p { margin: 0; font-size: .9rem; }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; }
+    table { width: 100%; min-width: 880px; border-collapse: collapse; background: var(--surface); }
+    th, td { padding: 16px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--muted); background: #101522; font: 800 .72rem var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    td { color: #c8d0dc; font-size: .9rem; }
+    td:first-child { color: var(--text); font-weight: 750; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: var(--green); }
+    .adapt { color: var(--amber); }
+    .later { color: var(--blue); }
+
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; }
+    .filter {
+      padding: 8px 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: transparent;
+      cursor: pointer;
+    }
+    .filter[aria-pressed="true"] { color: #07110e; border-color: var(--cyan); background: var(--cyan); font-weight: 800; }
+    .priority { display: inline-block; margin-bottom: 18px; }
+    .priority.p0 { color: var(--red); }
+    .priority.p1 { color: var(--amber); }
+    .priority.p2 { color: var(--blue); }
+    .suggestion[data-priority="p0"] { border-color: #57313b; }
+    .suggestion[hidden] { display: none; }
+
+    .roadmap { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .phase { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    .phase-time { margin-bottom: 26px; color: var(--cyan); font: 800 .78rem var(--mono); text-transform: uppercase; }
+    .phase ol { margin: 0; padding-left: 1.2rem; color: var(--muted); }
+    .phase li + li { margin-top: 10px; }
+
+    .acceptance { border-top: 2px solid var(--green); }
+    .acceptance strong { display: block; margin-bottom: 8px; color: var(--green); font: 800 1.15rem var(--mono); }
+
+    footer { padding: 30px 0 50px; color: var(--muted); font-size: .84rem; }
+
+    @media (max-width: 900px) {
+      .targets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .target:last-child { grid-column: span 2; }
+      .decision-grid, .suggestion-grid, .acceptance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .roadmap { grid-template-columns: 1fr; }
+      .hld-foot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .hld-svg { min-width: 920px; }
+    }
+
+    @media (max-width: 620px) {
+      .shell { width: min(calc(100% - 22px), var(--max)); }
+      .hero { padding-top: 52px; }
+      h1 { font-size: clamp(2.6rem, 15vw, 4.5rem); }
+      main section { padding: 62px 0; }
+      .targets, .decision-grid, .suggestion-grid, .acceptance-grid, .flow, .hld-foot { grid-template-columns: 1fr; }
+      .target:last-child { grid-column: auto; }
+      .hld-head { display: block; }
+      .state { margin-top: 10px; }
+      .hld-svg { min-width: 900px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#conteudo">Pular para o conteúdo</a>
+
+  <header>
+    <div class="shell hero">
+      <div class="eyebrow">PlatinumCoin PIX · solução recomendada</div>
+      <h1>Correção monetária primeiro. Escala depois.</h1>
+      <p class="hero-copy">
+        Uma evolução pragmática para transformar o projeto atual em uma plataforma de pagamentos recuperável,
+        segura e operável — <strong>sem reescrever tudo antes de fechar as três janelas P0</strong>.
+      </p>
+      <div class="scope-note">
+        O HTML anexado é usado como proposta de arquitetura-alvo. As recomendações abaixo o confrontam com a
+        implementação atual: PostgreSQL e monólito modular são opções estratégicas, não pré-requisitos imediatos.
+      </div>
+      <div class="targets" aria-label="Metas de capacidade e serviço">
+        <div class="target"><strong>50 milhões</strong><span>de usuários</span></div>
+        <div class="target"><strong>5 milhões/dia</strong><span>de transações</span></div>
+        <div class="target"><strong>500+ TPS</strong><span>no pico</span></div>
+        <div class="target"><strong>p99 &lt; 2 s</strong><span>para aceitar um Pix</span></div>
+        <div class="target"><strong>99,99%</strong><span>como arquitetura-alvo</span></div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="sticky-nav" aria-label="Navegação da solução">
+    <div class="shell nav-inner">
+      <a href="#solucao">Solução</a>
+      <a href="#arquitetura">Arquitetura-alvo</a>
+      <a href="#fluxo">Fluxo crítico</a>
+      <a href="#decisoes">Decisões</a>
+      <a href="#sugestoes">Sugestões</a>
+      <a href="#roadmap">Plano de execução</a>
+      <a href="#aceite">Critérios de aceite</a>
+    </div>
+  </nav>
+
+  <main id="conteudo">
+    <section id="solucao">
+      <div class="shell">
+        <div class="section-kicker">01 · solução</div>
+        <h2>Evoluir o desenho existente com identidade durável e finalização cercada.</h2>
+        <p class="section-intro">
+          O ledger continua sendo a autoridade do dinheiro. O que muda é a coordenação em torno dele: toda operação
+          recebe uma identidade recuperável antes do primeiro débito; toda finalização conquista exclusividade antes
+          de movimentar saldo; e portas internas deixam de confiar no token do usuário.
+        </p>
+        <div class="decision-grid">
+          <article class="decision" data-number="01">
+            <h3>Identidade antes do dinheiro</h3>
+            <p>Persistir <code>operationId</code> e <code>txId</code> antes do ledger. Queda, timeout ou nova tentativa sempre retomam a mesma identidade.</p>
+          </article>
+          <article class="decision" data-number="02">
+            <h3>Outcome ambíguo é consultado</h3>
+            <p>Timeout HTTP não significa falha. Consultar ou repetir o lançamento com o mesmo <code>txId</code>; nunca criar uma segunda tentativa monetária.</p>
+          </article>
+          <article class="decision" data-number="03">
+            <h3>Fencing antes da finalização</h3>
+            <p><code>SETTLE</code> e <code>REVERSE</code> disputam um estado exclusivo antes de gerar <code>-rel</code> ou <code>-rev</code>.</p>
+          </article>
+          <article class="decision" data-number="04">
+            <h3>Identidade de workload</h3>
+            <p>Usuários acessam APIs públicas; serviços usam credenciais próprias com <code>aud</code>, <code>iss</code>, escopos e, em produção, mTLS.</p>
+          </article>
+          <article class="decision" data-number="05">
+            <h3>Assíncrono com prioridade</h3>
+            <p>Manter <code>202 Accepted</code>, outbox e SQS, mas separar filas de liquidação, particionar e escalar por idade da fila.</p>
+          </article>
+          <article class="decision" data-number="06">
+            <h3>Observabilidade de negócio</h3>
+            <p>Medir o funil aceite → ledger → outbox → SPI → estado terminal, além de atraso, DLQ, reconciliação e consumo do orçamento de erro.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="arquitetura">
+      <div class="shell">
+        <div class="section-kicker">02 · desenho de alto nível</div>
+        <h2>Arquitetura-alvo sem transação distribuída.</h2>
+        <p class="section-intro">
+          A solução mantém fronteiras especializadas, mas torna explícitos o direito de chamar, a identidade da operação
+          e o vencedor de cada estado terminal.
+        </p>
+
+        <div class="hld-card">
+          <div class="hld-head">
+            <div>
+              <div class="section-kicker">Arquitetura-alvo</div>
+              <h3>Operação recuperável, menor privilégio e liquidação cercada</h3>
+            </div>
+            <div class="state">Evolução recomendada</div>
+          </div>
+          <div class="hld-scroll" tabindex="0" aria-label="Diagrama com rolagem horizontal em telas pequenas">
+            <svg class="hld-svg" viewBox="0 0 1180 690" role="img" aria-labelledby="hld-title hld-desc" xmlns="http://www.w3.org/2000/svg">
+              <title id="hld-title">Arquitetura-alvo da plataforma PlatinumCoin PIX</title>
+              <desc id="hld-desc">O cliente passa por gateway e OIDC. O serviço de pagamentos cria uma operação durável antes de chamar contas, fraude e ledger. Serviços internos usam identidade própria. O outbox publica para filas particionadas. A liquidação conquista um token de fencing antes do posting final. A telemetria cobre todo o fluxo.</desc>
+              <defs>
+                <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#55d6be"/></marker>
+                <marker id="event" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#74a7ff"/></marker>
+                <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M28 0H0V28" fill="none" stroke="#1b2231" stroke-width="1"/></pattern>
+              </defs>
+              <rect width="1180" height="690" fill="#090d14"/>
+              <rect width="1180" height="690" fill="url(#grid)"/>
+
+              <g font-family="ui-monospace, monospace">
+                <text x="28" y="35" fill="#55d6be" font-size="12" font-weight="800" letter-spacing="2">EDGE SEGURO</text>
+                <text x="28" y="238" fill="#55d6be" font-size="12" font-weight="800" letter-spacing="2">ACEITAÇÃO RECUPERÁVEL</text>
+                <text x="28" y="464" fill="#55d6be" font-size="12" font-weight="800" letter-spacing="2">EVENTOS E FINALIZAÇÃO</text>
+
+                <g fill="#121827" stroke="#40516a">
+                  <rect x="28" y="68" width="145" height="72" rx="12"/>
+                  <rect x="225" y="68" width="170" height="72" rx="12"/>
+                  <rect x="450" y="68" width="170" height="72" rx="12"/>
+                  <rect x="675" y="68" width="170" height="72" rx="12"/>
+                  <rect x="900" y="68" width="210" height="72" rx="12"/>
+                </g>
+                <g fill="#f5f7fb" font-size="14" font-weight="800" text-anchor="middle">
+                  <text x="100" y="96">Cliente</text><text x="310" y="96">Gateway da API</text><text x="535" y="96">OIDC / JWKS</text><text x="760" y="96">API de pagamentos</text><text x="1005" y="96">Consulta / SSE</text>
+                </g>
+                <g fill="#9ba6b8" font-size="10" text-anchor="middle">
+                  <text x="100" y="117">token de usuário</text><text x="310" y="117">WAF · limite de taxa</text><text x="535" y="117">aud · iss · escopos</text><text x="760" y="117">superfície pública</text><text x="1005" y="117">status e notificações</text>
+                </g>
+                <g stroke="#55d6be" stroke-width="2" fill="none" marker-end="url(#arrow)">
+                  <path d="M173 104H215"/><path d="M395 104H440"/><path d="M620 104H665"/><path d="M845 104H890"/>
+                </g>
+
+                <g fill="#121827" stroke="#40516a">
+                  <rect x="28" y="270" width="210" height="96" rx="12" stroke="#55d6be" stroke-width="2"/>
+                  <rect x="292" y="270" width="185" height="96" rx="12"/>
+                  <rect x="531" y="270" width="150" height="96" rx="12"/>
+                  <rect x="735" y="270" width="150" height="96" rx="12"/>
+                  <rect x="939" y="270" width="200" height="96" rx="12" stroke="#b391ff"/>
+                </g>
+                <g fill="#f5f7fb" font-size="14" font-weight="800" text-anchor="middle">
+                  <text x="133" y="302">Coordenador</text><text x="384" y="302">Registro da operação</text><text x="606" y="302">Contas</text><text x="810" y="302">Fraude</text><text x="1039" y="302">Ledger</text>
+                </g>
+                <g fill="#9ba6b8" font-size="10" text-anchor="middle">
+                  <text x="133" y="324">operationId + txId estáveis</text><text x="133" y="340">recovery por fase</text>
+                  <text x="384" y="324">CLAIMED → POSTED</text><text x="384" y="340">→ RECORDED</text>
+                  <text x="606" y="324">chave + limite</text><text x="606" y="340">atômico</text>
+                  <text x="810" y="324">timeout 200 ms</text><text x="810" y="340">falha classificada</text>
+                  <text x="1039" y="324">partida dobrada atômica</text><text x="1039" y="340">consulta/retry: mesmo txId</text>
+                </g>
+                <g stroke="#55d6be" stroke-width="2" fill="none" marker-end="url(#arrow)">
+                  <path d="M760 140V206H133V260"/><path d="M238 318H282"/><path d="M477 318H521"/><path d="M681 318H725"/><path d="M885 318H929"/>
+                </g>
+
+                <g fill="#121827" stroke="#40516a">
+                  <rect x="28" y="500" width="175" height="92" rx="12"/>
+                  <rect x="249" y="500" width="160" height="92" rx="12"/>
+                  <rect x="455" y="500" width="175" height="92" rx="12"/>
+                  <rect x="676" y="500" width="185" height="92" rx="12" stroke="#f4be62" stroke-width="2"/>
+                  <rect x="907" y="500" width="200" height="92" rx="12" stroke="#b391ff"/>
+                </g>
+                <g fill="#f5f7fb" font-size="14" font-weight="800" text-anchor="middle">
+                  <text x="115" y="532">Outbox lanes</text><text x="329" y="532">SNS / SQS</text><text x="542" y="532">Workers</text><text x="768" y="532">Finalization fence</text><text x="1007" y="532">Ledger finalize</text>
+                </g>
+                <g fill="#9ba6b8" font-size="10" text-anchor="middle">
+                  <text x="115" y="554">liquidação prioritária</text><text x="115" y="570">particionado</text>
+                  <text x="329" y="554">deduplicação · DLQ</text><text x="329" y="570">ordenação por chave</text>
+                  <text x="542" y="554">escala automática por atraso</text><text x="542" y="570">consultar antes de repetir</text>
+                  <text x="768" y="554">SETTLE xor REVERSE</text><text x="768" y="570">CAS antes do dinheiro</text>
+                  <text x="1007" y="554">-rel ou -rev</text><text x="1007" y="570">estado terminal + outbox</text>
+                </g>
+                <g stroke="#74a7ff" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#event)">
+                  <path d="M384 366V432H115V490"/><path d="M203 546H239"/><path d="M409 546H445"/><path d="M630 546H666"/>
+                </g>
+                <path d="M861 546H897" stroke="#55d6be" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+                <g>
+                  <rect x="28" y="628" width="1079" height="38" rx="10" fill="#0d1718" stroke="#315548"/>
+                  <text x="52" y="652" fill="#72dda2" font-size="11" font-weight="800">OBSERVABILIDADE</text>
+                  <text x="195" y="652" fill="#9ba6b8" font-size="10">rastros por operationId · funil de negócio · idade da fila · DLQ · reconciliação · SLO/orçamento de erro · logs sem PII</text>
+                </g>
+
+                <g>
+                  <rect x="920" y="182" width="187" height="44" rx="10" fill="#17131c" stroke="#57466b"/>
+                  <text x="1013" y="200" fill="#b391ff" font-size="10" font-weight="800" text-anchor="middle">IDENTIDADE DE SERVIÇO</text>
+                  <text x="1013" y="216" fill="#9ba6b8" font-size="9" text-anchor="middle">mTLS · aud · escopo por serviço</text>
+                </g>
+              </g>
+            </svg>
+          </div>
+          <div class="hld-foot">
+            <div class="hld-note"><strong>1 · Retomada determinística</strong>Crash ou timeout retoma o mesmo <code>txId</code>.</div>
+            <div class="hld-note"><strong>2 · Least privilege</strong>Portas internas não aceitam bearer de usuário.</div>
+            <div class="hld-note"><strong>3 · Um vencedor terminal</strong>O fencing antecede qualquer lançamento final.</div>
+            <div class="hld-note"><strong>4 · Feedback operacional</strong>Lag e resultado de negócio dirigem escala e alertas.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="fluxo">
+      <div class="shell">
+        <div class="section-kicker">03 · caminho crítico</div>
+        <h2>Fluxo recomendado para enviar um Pix.</h2>
+        <p class="section-intro">A resposta HTTP confirma aceitação durável, não liquidação externa. Cada passo pode ser retomado sem duplicar dinheiro.</p>
+        <div class="flow">
+          <article class="flow-step"><h3>Autenticar</h3><p>O gateway valida OIDC/JWKS, audience, issuer e limite de taxa. A conta de origem vem do principal autenticado.</p></article>
+          <article class="flow-step"><h3>Fazer claim</h3><p>Criar <code>operationId</code>, <code>txId</code> e vínculo com a idempotency key antes de qualquer efeito monetário.</p></article>
+          <article class="flow-step"><h3>Classificar risco</h3><p>Fraude recebe até 200 ms. Só falhas transitórias elegíveis podem liberar a operação e sempre geram marcação para revisão.</p></article>
+          <article class="flow-step"><h3>Aplicar limites</h3><p>Chave, conta e limite diário são validados com atualização condicional, sem leitura e escrita separadas.</p></article>
+          <article class="flow-step"><h3>Postar no ledger</h3><p>Partida dobrada atômica com o <code>txId</code> persistido. Timeout significa resultado desconhecido, seguido de consulta ou repetição idempotente.</p></article>
+          <article class="flow-step"><h3>Registrar e publicar</h3><p>Estado da operação e outbox avançam idempotentemente para <code>RECORDED</code>; filas prioritárias alimentam a liquidação.</p></article>
+          <article class="flow-step"><h3>Responder 202</h3><p>Retornar status consultável e <code>Location</code>. A interface mostra “processando”, não “liquidado”, até o estado terminal.</p></article>
+          <article class="flow-step"><h3>Finalizar com fencing</h3><p>Liquidação ou reversão conquista exclusividade, faz um único lançamento final e conclui estado + evento de forma recuperável.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="decisoes">
+      <div class="shell">
+        <div class="section-kicker">04 · decisões do anexo</div>
+        <h2>O que adotar, adaptar e postergar.</h2>
+        <p class="section-intro">A proposta anexada contém boas direções, mas algumas implicam uma migração maior do que o risco atual exige.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Proposta</th><th>Decisão</th><th>Aplicação recomendada</th><th>Motivo</th></tr></thead>
+            <tbody>
+              <tr><td><code>202 Accepted</code> + liquidação assíncrona</td><td class="yes">Adotar</td><td>Manter status consultável, reconciliação e consulta antes de repetir.</td><td>Protege o p99 da latência externa do SPI.</td></tr>
+              <tr><td>Conta de origem derivada do JWT</td><td class="yes">Adotar e ampliar</td><td>Usuário nas APIs públicas; identidade própria para serviços internos.</td><td>O JWT do usuário não deve autorizar lançamentos internos.</td></tr>
+              <tr><td>Outbox transacional</td><td class="adapt">Adaptar</td><td>Preservar a garantia, separar lanes, particionar e escalar publishers.</td><td>O modelo é correto; a capacidade atual cria backlog estrutural.</td></tr>
+              <tr><td>Fraude fail-open</td><td class="adapt">Adaptar</td><td>Somente timeout/indisponibilidade transitória e com política por valor/risco.</td><td><code>RuntimeException</code> genérica também esconde erro de contrato e autenticação.</td></tr>
+              <tr><td>PostgreSQL no ledger</td><td class="later">Avaliar depois</td><td>Primeiro corrigir identidade e fencing no DynamoDB. Migrar apenas com benchmark, plano de dados e operação paralela.</td><td>Uma reescrita não elimina automaticamente falhas entre serviços e introduz risco de migração.</td></tr>
+              <tr><td>Monólito modular</td><td class="later">Evolução seletiva</td><td>Co-localizar a máquina de estados de pagamento/liquidação se necessário; evitar reescrita total.</td><td>Fronteiras atuais já existem. Consolidar deve reduzir uma falha concreta, não apenas implantações.</td></tr>
+              <tr><td>Redis para saldo</td><td class="adapt">Somente leitura</td><td>Cache-aside curto, invalidação e fallback; nunca decidir débito pelo cache.</td><td>Consistência monetária permanece no ledger.</td></tr>
+              <tr><td>99,99% de disponibilidade</td><td class="later">Arquitetura-alvo</td><td>Definir RTO/RPO, multi-AZ, failover testado, PITR e modo degradado.</td><td>Redundância desenhada não equivale a disponibilidade comprovada.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="sugestoes">
+      <div class="shell">
+        <div class="section-kicker">05 · sugestões priorizadas</div>
+        <h2>Fechar risco antes de ampliar escopo.</h2>
+        <div class="filters" role="group" aria-label="Filtrar sugestões por prioridade">
+          <button class="filter" type="button" data-filter="all" aria-pressed="true">Todas</button>
+          <button class="filter" type="button" data-filter="p0" aria-pressed="false">P0 · correção e segurança</button>
+          <button class="filter" type="button" data-filter="p1" aria-pressed="false">P1 · operação e escala</button>
+          <button class="filter" type="button" data-filter="p2" aria-pressed="false">P2/P3 · evolução</button>
+        </div>
+        <div class="suggestion-grid">
+          <article class="suggestion" data-priority="p0"><div class="priority p0">P0 · dinheiro</div><h3>Persistir identidade da operação antes do ledger</h3><p>Claim durável com fases, <code>operationId</code> e <code>txId</code> estáveis; TTL nunca recicla uma identidade já usada para dinheiro.</p></article>
+          <article class="suggestion" data-priority="p0"><div class="priority p0">P0 · concorrência</div><h3>Implementar fencing de finalização</h3><p>CAS para <code>FINALIZING_SETTLEMENT</code> ou <code>FINALIZING_REVERSAL</code> antes do lançamento; reconciliador conclui a fase vencedora.</p></article>
+          <article class="suggestion" data-priority="p0"><div class="priority p0">P0 · segurança</div><h3>Isolar portas internas</h3><p>Bloquear no gateway, usar tokens de serviço, escopos por operação, audience/issuer e testes negativos por endpoint.</p></article>
+          <article class="suggestion" data-priority="p0"><div class="priority p0">P0 · resiliência</div><h3>Corrigir a semântica de timeout</h3><p>Tratar timeout do ledger como resultado desconhecido e resolver pelo mesmo <code>txId</code>; nunca assumir “não debitou”.</p></article>
+
+          <article class="suggestion" data-priority="p1"><div class="priority p1">P1 · eventos</div><h3>Eliminar acúmulo do outbox</h3><p>Fila de liquidação prioritária, particionamento, processadores paralelos, controle de pressão e SLO de idade da fila.</p></article>
+          <article class="suggestion" data-priority="p1"><div class="priority p1">P1 · operação</div><h3>Entregar observabilidade acionável</h3><p>OpenTelemetry, painéis do funil, atraso, DLQ, transações presas, reconciliação, alertas por orçamento de erro e runbooks.</p></article>
+          <article class="suggestion" data-priority="p1"><div class="priority p1">P1 · capacidade</div><h3>Comprovar 500+ TPS</h3><p>Teste em infraestrutura representativa, orçamento de WCU/RCU e custo, p99 por dependência e cenário de degradação.</p></article>
+          <article class="suggestion" data-priority="p1"><div class="priority p1">P1 · fraude</div><h3>Classificar falhas de fraude</h3><p>Fail-open apenas para transitórias; 401/403, schema incompatível e bugs devem falhar visivelmente e acionar alerta.</p></article>
+
+          <article class="suggestion" data-priority="p2"><div class="priority p2">P2 · contratos</div><h3>Versionar eventos e DTOs internos</h3><p>Esquema versionado, compatibilidade retroativa/evolutiva e testes de contrato guiados pelo consumidor para evitar divergência de status.</p></article>
+          <article class="suggestion" data-priority="p2"><div class="priority p2">P2 · cadeia de software</div><h3>Fortalecer o build</h3><p>Maven Wrapper, limites de cobertura, análise estática, SCA, SBOM, varredura de segredos e imagens sem root fixadas por digest.</p></article>
+          <article class="suggestion" data-priority="p2"><div class="priority p2">P2 · privacidade</div><h3>Mascarar PII em logs</h3><p>CPF, e-mail, telefone e chaves Pix passam por um limite central de mascaramento com testes contra vazamento.</p></article>
+          <article class="suggestion" data-priority="p2"><div class="priority p2">P3 · disponibilidade</div><h3>Planejar produção multi-AZ</h3><p>RTO/RPO, PITR, simulação de recuperação, KMS, rotação de chaves, failover e capacidade degradada por dependência.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="shell">
+        <div class="section-kicker">06 · plano de execução</div>
+        <h2>Uma sequência de 90 dias orientada a risco.</h2>
+        <div class="roadmap">
+          <article class="phase">
+            <div class="phase-time">0–30 dias · fechar P0</div>
+            <ol><li>Registro da operação e <code>txId</code> estável.</li><li>Consulta/retry idempotente no ledger.</li><li>Fencing de liquidação/reversão.</li><li>Identidade de serviço e bloqueio de endpoints internos.</li><li>Testes de crash e corrida concorrente.</li></ol>
+          </article>
+          <article class="phase">
+            <div class="phase-time">31–60 dias · operar</div>
+            <ol><li>Particionar e priorizar outbox.</li><li>Escala automática por idade/profundidade da fila.</li><li>Rastreamento distribuído e funil de negócio.</li><li>Runbooks, alertas e injeção de falhas.</li><li>Política de fraude por classe de falha.</li></ol>
+          </article>
+          <article class="phase">
+            <div class="phase-time">61–90 dias · comprovar</div>
+            <ol><li>Teste representativo de 500+ TPS.</li><li>Contratos internos versionados.</li><li>Controles de qualidade e cadeia de software.</li><li>Plano RTO/RPO e simulação de recuperação.</li><li>ADR: manter DynamoDB ou iniciar migração controlada.</li></ol>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="aceite">
+      <div class="shell">
+        <div class="section-kicker">07 · pronto quando</div>
+        <h2>Critérios objetivos para considerar a solução segura.</h2>
+        <div class="acceptance-grid">
+          <article class="acceptance"><strong>0 duplicações</strong><p>Injeção de falha após o commit e antes do registro não cria segundo lançamento.</p></article>
+          <article class="acceptance"><strong>1 estado terminal</strong><p>Teste concorrente prova que settle e reverse nunca movimentam dinheiro juntos.</p></article>
+          <article class="acceptance"><strong>0 acesso lateral</strong><p>JWT de usuário recebe 403 em toda porta interna; escopo de serviço é mínimo.</p></article>
+          <article class="acceptance"><strong>p99 &lt; 2 s</strong><p>Aceitação em carga-alvo, com SPI lento e fraude dentro do orçamento.</p></article>
+          <article class="acceptance"><strong>atraso sob SLO</strong><p>Outbox e liquidação sustentam pico sem acúmulo crescente; DLQ gera alerta.</p></article>
+          <article class="acceptance"><strong>recovery &lt; 5 min</strong><p>Operações presas são detectadas e concluídas com a mesma identidade.</p></article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">PlatinumCoin PIX · solução e sugestões consolidadas em PT-BR · 22/08/2026</div>
+  </footer>
+
+  <script>
+    (() => {
+      const buttons = [...document.querySelectorAll('.filter')];
+      const cards = [...document.querySelectorAll('.suggestion')];
+
+      buttons.forEach((button) => {
+        button.addEventListener('click', () => {
+          const selected = button.dataset.filter;
+          buttons.forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+          cards.forEach((card) => {
+            card.hidden = selected !== 'all' && card.dataset.priority !== selected;
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
