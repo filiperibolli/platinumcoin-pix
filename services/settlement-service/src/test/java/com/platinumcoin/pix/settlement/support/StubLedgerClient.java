@@ -1,6 +1,6 @@
 package com.platinumcoin.pix.settlement.support;
 
-import com.platinumcoin.pix.settlement.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.settlement.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import java.util.List;
 import java.util.Map;
@@ -34,34 +34,37 @@ public class StubLedgerClient implements LedgerClient {
     private volatile boolean unavailable;
 
     @Override
-    public void releaseClearing(String txId, String clearingAccount, long amountCents, String description) {
-        apply(new Posting(txId, clearingAccount, SETTLED_ACCOUNT, amountCents));
+    public LedgerOutcome releaseClearing(String txId, String clearingAccount, long amountCents,
+            String description) {
+        return apply(new Posting(txId, clearingAccount, SETTLED_ACCOUNT, amountCents));
     }
 
     @Override
-    public void reverseToPayer(String txId, String clearingAccount, String payerAccount, long amountCents,
-            String description) {
-        apply(new Posting(txId, clearingAccount, payerAccount, amountCents));
+    public LedgerOutcome reverseToPayer(String txId, String clearingAccount, String payerAccount,
+            long amountCents, String description) {
+        return apply(new Posting(txId, clearingAccount, payerAccount, amountCents));
     }
 
     @Override
-    public void creditInbound(String txId, String clearingAccount, String payeeAccount, long amountCents,
-            String description) {
-        apply(new Posting(txId, clearingAccount, payeeAccount, amountCents));
+    public LedgerOutcome creditInbound(String txId, String clearingAccount, String payeeAccount,
+            long amountCents, String description) {
+        return apply(new Posting(txId, clearingAccount, payeeAccount, amountCents));
     }
 
-    private void apply(Posting posting) {
+    private LedgerOutcome apply(Posting posting) {
         if (unavailable) {
-            throw new LedgerUnavailableException("stub ledger unavailable", null);
+            // A ledger that answers and declines: nothing moves, and the caller must not transition.
+            return LedgerOutcome.REFUSED;
         }
         postings.add(posting);
-        // Idempotent by txId: a replay records the attempt (so a test can see it happened) but moves no
-        // money a second time — the ledger's own guard, modelled here.
+        // Idempotent by txId: a replay records the attempt (so a test can see it happened), moves no
+        // money a second time, and SAYS it was a replay — the ledger's own guard and flag, modelled here.
         if (!appliedTxIds.add(posting.txId())) {
-            return;
+            return LedgerOutcome.REPLAYED;
         }
         balances.merge(posting.debitAccount(), -posting.amountCents(), Long::sum);
         balances.merge(posting.creditAccount(), posting.amountCents(), Long::sum);
+        return LedgerOutcome.POSTED;
     }
 
     /** Arrange a starting balance for an account (e.g. the clearing account holding the parked money). */

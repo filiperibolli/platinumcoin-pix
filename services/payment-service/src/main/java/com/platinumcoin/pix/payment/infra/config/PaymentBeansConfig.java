@@ -18,6 +18,7 @@ import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
+import java.time.Duration;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -70,10 +71,16 @@ public class PaymentBeansConfig {
             EndToEndIdGenerator endToEndIds,
             PaymentFunnelMetrics funnel,
             @Value("${pix.clearing-account-id}") String clearingAccountId,
+            // How an ambiguous ledger outcome is resolved (step 66, ADR-0015): re-POST the SAME txId,
+            // at most this many times in total, pausing this long in between. Config rather than
+            // constants because the right bound is an operational judgement about how long a user's
+            // request may sit on a misbehaving dependency, not a property of the domain.
+            @Value("${pix.ledger.attempts:2}") int ledgerAttempts,
+            @Value("${pix.ledger.backoff:200ms}") Duration ledgerBackoff,
             Clock clock) {
         return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, funnel, clearingAccountId, clock);
+                endToEndIds, funnel, clearingAccountId, ledgerAttempts, ledgerBackoff, clock);
     }
 
     @Bean

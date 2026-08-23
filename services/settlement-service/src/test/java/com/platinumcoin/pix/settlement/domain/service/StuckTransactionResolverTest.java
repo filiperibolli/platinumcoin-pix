@@ -11,6 +11,7 @@ import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.model.StuckTransaction;
 import com.platinumcoin.pix.settlement.domain.model.TransactionStatus;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
+import com.platinumcoin.pix.settlement.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationMetrics;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationTransactionStore;
@@ -282,20 +283,22 @@ class StuckTransactionResolverTest {
         private final List<String> reversals = new ArrayList<>();
 
         @Override
-        public void releaseClearing(String txId, String clearingAccount, long amountCents,
+        public LedgerOutcome releaseClearing(String txId, String clearingAccount, long amountCents,
                 String description) {
             releases.add(txId);
+            return LedgerOutcome.POSTED;
         }
 
         @Override
-        public void reverseToPayer(String txId, String clearingAccount, String payerAccount,
+        public LedgerOutcome reverseToPayer(String txId, String clearingAccount, String payerAccount,
                 long amountCents, String description) {
             reversals.add(txId);
+            return LedgerOutcome.POSTED;
         }
 
         /** The reconciliation resolver never receives money — an inbound credit here would be a defect. */
         @Override
-        public void creditInbound(String txId, String clearingAccount, String payeeAccount,
+        public LedgerOutcome creditInbound(String txId, String clearingAccount, String payeeAccount,
                 long amountCents, String description) {
             throw new AssertionError("the stuck-transaction resolver must never post an inbound credit");
         }

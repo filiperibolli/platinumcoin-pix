@@ -90,6 +90,26 @@ The platform reached its halfway mark: **the full money path is built, tested an
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Fixed
+- A ledger timeout is now an unknown result resolved by re-posting the same txId, and the ledger's replayed flag is read instead of discarded — a committed-but-timed-out posting debits exactly once (step 66, ADR-0015)
+  - `LedgerClient` returns a `LedgerOutcome` (`POSTED · REPLAYED · INSUFFICIENT_FUNDS · REFUSED ·
+    UNKNOWN`) instead of `void`: a port whose only vocabulary is "returned" or "threw" cannot say
+    *unknown*, and that missing third word is what let the adapter assert "nothing debited" about an
+    outcome nobody knew. The resolution of an unknown is **the same call again** — the ledger's posting
+    API is idempotent by `txId`, so the re-POST either commits or answers `replayed: true`, which is why
+    no `GET /postings/{txId}` was added (ADR-0015 §2).
+  - Binding the response body instead of `toBodilessEntity()` moved where a **read** timeout surfaces:
+    it now arrives as a `RestClientException` during body extraction rather than a
+    `ResourceAccessException`, so both are classified `UNKNOWN` — caught by
+    `HttpLedgerClientTest#readTimeoutIsUnknownNotUnavailable`, which failed on the first run for exactly
+    that reason.
+  - An unresolved unknown never becomes an implicit "no": `503`, the claim stays pre-`POSTED` carrying
+    the same `txId`, and **no daily-limit release** — handing back headroom for a debit that may have
+    happened is the same error mirrored. Pinned by
+    `SendPixUseCaseTest#unresolvedUnknownDoesNotReleaseTheDailyLimit`.
+  - settlement-service classifies identically (ADR-0015 §5) and resolves differently *by mechanism*: its
+    postings are keyed by a deterministic `txId`, so the SQS redelivery **is** the resolving re-POST —
+    `LedgerOutcomes.requireMoneyMoved` simply refuses to let a status transition run on doubt.
+  AI: est 3h / actual 1h20 / ~90% generated / 0 issues caught in human review
 - Durable operation identity: txId and endToEndId are minted before the idempotency claim and persisted by it, so a crash-resume reuses the same identity instead of double-debiting (step 65, ADR-0014)
   - Making the resume reuse the identity exposed the other half of the same problem: the transaction
     write is guarded by `attribute_not_exists(pk)`, so a resume whose earlier attempt had already

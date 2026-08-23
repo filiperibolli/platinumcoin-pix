@@ -10,6 +10,7 @@ import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseExceptio
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
 import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
+import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
 import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
@@ -18,6 +19,7 @@ import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
 import com.platinumcoin.pix.payment.domain.model.KeyResolution;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
 import com.platinumcoin.pix.payment.domain.model.Money;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
@@ -42,6 +44,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -125,6 +128,19 @@ public class SendPixUseCase {
     private final EndToEndIdGenerator endToEndIds;
     private final PaymentFunnelMetrics funnel;
     private final String clearingAccountId;
+
+    /**
+     * How many times ONE operation may be POSTed to the ledger before the platform gives up and calls the
+     * outcome unresolved (ADR-0015 §4). The default is 2: the original call plus a single resolving
+     * re-POST under the same {@code txId}. It is a total, not a count of extra tries, because what is
+     * being bounded is how long a user's request may sit here — every attempt costs a full ledger
+     * round trip on a dependency that is already misbehaving.
+     */
+    private final int ledgerAttempts;
+
+    /** Pause between an ambiguous attempt and the re-POST that resolves it; zero in the unit tests. */
+    private final Duration ledgerBackoff;
+
     private final Clock clock;
 
     public SendPixUseCase(
@@ -138,6 +154,8 @@ public class SendPixUseCase {
             EndToEndIdGenerator endToEndIds,
             PaymentFunnelMetrics funnel,
             String clearingAccountId,
+            int ledgerAttempts,
+            Duration ledgerBackoff,
             Clock clock) {
         this.transactions = transactions;
         this.idempotency = idempotency;
@@ -149,6 +167,8 @@ public class SendPixUseCase {
         this.endToEndIds = endToEndIds;
         this.funnel = funnel;
         this.clearingAccountId = clearingAccountId;
+        this.ledgerAttempts = ledgerAttempts;
+        this.ledgerBackoff = ledgerBackoff;
         this.clock = clock;
     }
 
@@ -166,7 +186,10 @@ public class SendPixUseCase {
      * @throws LimitExceededException          the send would breach the debtor's daily Pix limit
      * @throws FraudDeniedException            the in-path fraud check returned {@code DENY} (limit released)
      * @throws InsufficientFundsException      the ledger refused the debit for lack of funds
-     * @throws com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException the ledger was unreachable
+     * @throws com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException the ledger refused
+     *                                                                    the posting, or its outcome could
+     *                                                                    not be resolved within the
+     *                                                                    bounded attempts (ADR-0015)
      */
     public SendPixOutcome execute(SendPixCommand command) {
         String key = command.idempotencyKey();
@@ -332,6 +355,123 @@ public class SendPixUseCase {
      * @param endToEndId minted at the same moment; the rail's idempotency key toward BACEN
      */
     private record ClaimedOperation(String accountId, String key, String txId, String endToEndId) {
+    }
+
+    /**
+     * Command one ledger posting and <b>resolve it to a fact</b> (step 66, ADR-0015). Both money paths go
+     * through here, so an internal send and an external one cannot end up holding different theories of
+     * the same timeout.
+     *
+     * <h2>Why the resolution of "I don't know" is the same call again</h2>
+     * The ledger's posting API is idempotent by {@code txId}: re-sending the identical posting either
+     * commits it (it had not committed) or answers {@code replayed: true} (it had). So one call resolves
+     * the ambiguity <i>and</i> completes the work — there is no query endpoint to add, no second round
+     * trip on the happy path, and no race between a read that says "absent" and a write that lands
+     * between the two (ADR-0015 §2). This is only safe because the {@code txId} is durable (ADR-0014):
+     * re-posting a <i>fresh</i> identity would resolve one ambiguity by creating a second debit.
+     *
+     * <h2>What each outcome means for the payment</h2>
+     * <ul>
+     *   <li>{@code POSTED} — the money moved on this call. Ordinary.</li>
+     *   <li>{@code REPLAYED} — the money moved on an <i>earlier</i> call under this {@code txId}. Still
+     *       success (the intent holds, and the payer was debited exactly once), but on a <b>first</b>
+     *       attempt it is a {@code WARN}: it means some previous attempt committed and its caller never
+     *       learned so.</li>
+     *   <li>{@code REFUSED} — the ledger answered and did not commit. Retry-safe, but re-posting an
+     *       identical request it just rejected would only burn the budget, so it fails fast as a
+     *       {@code 503}.</li>
+     *   <li>{@code UNKNOWN} — try again under the same {@code txId}, up to {@link #ledgerAttempts}
+     *       times. Still unknown afterwards ⇒ {@code 503} and an {@code ERROR} naming the {@code txId},
+     *       with the claim left in its pre-{@code POSTED} phase so the next resume picks up the same
+     *       identity and finishes the resolution. It never silently becomes a "no".</li>
+     * </ul>
+     *
+     * @param posting the call to make and, if its answer is ambiguous, to make again unchanged
+     */
+    private void commandPosting(ClaimedOperation operation, Supplier<LedgerOutcome> posting) {
+        String txId = operation.txId();
+        LedgerOutcome outcome = posting.get();
+        int attempt = 1;
+        while (outcome == LedgerOutcome.UNKNOWN && attempt < ledgerAttempts) {
+            log.warn("The ledger outcome is unknown — the posting may or may not have committed — so the "
+                            + "SAME txId is being re-posted to resolve it (the idempotent POST is the "
+                            + "query) | txId={} attempt={} of={} backoffMs={}",
+                    txId, attempt, ledgerAttempts, ledgerBackoff.toMillis());
+            if (!backOff()) {
+                // Interrupted mid-backoff: this thread is being shut down, so it does not start another
+                // remote call. The outcome stays UNKNOWN — the honest answer — and the txId survives on
+                // the claim, which is what makes stopping here safe rather than lossy.
+                break;
+            }
+            outcome = posting.get();
+            attempt++;
+        }
+
+        switch (outcome) {
+            case POSTED -> {
+                // The ordinary path: this call moved the money. Nothing to say the adapter has not said.
+            }
+            case REPLAYED -> {
+                if (attempt == 1) {
+                    log.warn("The ledger replayed this txId on the FIRST attempt: an earlier attempt "
+                                    + "under this identity had already committed the money and its "
+                                    + "caller never learned so — treating it as success and counting "
+                                    + "the debit once | txId={} idempotencyKey={} debtorAccountId={}",
+                            txId, operation.key(), operation.accountId());
+                } else {
+                    log.info("The ambiguous ledger outcome resolved to a replay: the earlier attempt HAD "
+                                    + "committed, so the money moved exactly once and the send proceeds "
+                                    + "| txId={} idempotencyKey={} attempts={}",
+                            txId, operation.key(), attempt);
+                }
+            }
+            case REFUSED -> {
+                log.warn("The ledger definitively refused the posting, nothing was debited and the same "
+                                + "txId stays safe to retry, returning 503 | txId={} "
+                                + "idempotencyKey={} debtorAccountId={}",
+                        txId, operation.key(), operation.accountId());
+                throw new LedgerUnavailableException("ledger refused the posting for txId " + txId);
+            }
+            case UNKNOWN -> {
+                // Deliberately NOT turned into "nothing happened". The claim stays pre-POSTED carrying
+                // this txId, no daily-limit headroom is handed back, and the next resume re-posts the
+                // same identity — which either commits it or is told it already was.
+                log.error("The ledger outcome is STILL unknown after the bounded attempts: the payer may "
+                                + "or may not have been debited under this txId. Answering 503 without "
+                                + "releasing the daily-limit reservation; the next attempt under this "
+                                + "idempotency key resolves it by re-posting the SAME txId | txId={} "
+                                + "idempotencyKey={} debtorAccountId={} attempts={}",
+                        txId, operation.key(), operation.accountId(), attempt);
+                throw new LedgerUnavailableException(
+                        "the ledger outcome for txId " + txId + " could not be resolved");
+            }
+            case INSUFFICIENT_FUNDS -> {
+                // The adapter translates this refusal into its own exception (it carries a 422 and a
+                // limit release), so it never arrives here as a value. Named anyway: an outcome the
+                // switch ignores is how a future constant silently falls through as success.
+                throw new InsufficientFundsException();
+            }
+        }
+    }
+
+    /**
+     * Pause before re-posting an ambiguous outcome; a zero backoff (the unit tests) never sleeps.
+     *
+     * @return {@code false} if the wait was interrupted, meaning the caller must stop resolving
+     */
+    private boolean backOff() {
+        if (ledgerBackoff.isZero() || ledgerBackoff.isNegative()) {
+            return true;
+        }
+        try {
+            Thread.sleep(ledgerBackoff.toMillis());
+            return true;
+        } catch (InterruptedException e) {
+            // Someone is shutting this thread down: restore the flag and stop trying to resolve, rather
+            // than firing one more ledger call on a thread that is on its way out.
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     /**
@@ -513,11 +653,14 @@ public class SendPixUseCase {
      *
      * <p>On {@link InsufficientFundsException} the ledger wrote nothing — the guard lives inside its
      * transaction — so the daily-limit reservation taken in step 2 is <b>released</b> before the failure
-     * propagates as a {@code 422}. A {@link com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException}
-     * is <i>not</i> released: nothing was debited and the client retries the same idempotency key, which
-     * re-drives this whole path (the reservation is honoured by that retry). Leaving the record
-     * non-terminal accepts the conservative over-count edge ADR-0007/step 20 already documents —
-     * never overspend, self-heals next calendar day.
+     * propagates as a {@code 422}. A {@link LedgerUnavailableException} is <i>not</i> released, and since
+     * step 66 that asymmetry has a second, stronger reason than the first: the send may have been
+     * refused (nothing debited) <i>or</i> its outcome may be unresolved (the payer may already have
+     * paid), and handing back headroom for a debit that possibly happened is the same error mirrored.
+     * The client retries the same idempotency key, which re-drives this whole path under the same
+     * {@code txId} (the reservation is honoured by that retry). Leaving the record non-terminal accepts
+     * the conservative over-count edge ADR-0007/step 20 already documents — never overspend, self-heals
+     * next calendar day.
      */
     private Transaction settleInternally(
             SendPixCommand command, String creditorAccountId, long amountCents,
@@ -533,7 +676,8 @@ public class SendPixUseCase {
                         + "endToEndId={} debtorAccountId={} creditorAccountId={} amountCents={}",
                 txId, endToEndId, accountId, creditorAccountId, amountCents);
         try {
-            ledger.postInternalTransfer(txId, accountId, creditorAccountId, amountCents, description);
+            commandPosting(operation, () -> ledger.postInternalTransfer(
+                    txId, accountId, creditorAccountId, amountCents, description));
         } catch (InsufficientFundsException e) {
             releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
             throw e;
@@ -593,10 +737,11 @@ public class SendPixUseCase {
      * dwells too long. Nothing is published yet: the outbox event that triggers settlement is written
      * atomically with this transaction in step 28.
      *
-     * <p>Failure handling is identical to the internal path — the guards live inside the ledger's
+     * <p>Failure handling is identical to the internal path — the guard lives inside the ledger's
      * transaction, so an {@link InsufficientFundsException} means nothing moved (release the
-     * reservation, {@code 422}) and a {@code LedgerUnavailableException} means nothing was debited
-     * ({@code 503}, retry-safe under the same idempotency key).
+     * reservation, {@code 422}), while a {@code LedgerUnavailableException} means the posting was
+     * refused <i>or</i> its outcome is unresolved ({@code 503}, retry-safe under the same idempotency
+     * key, no headroom handed back — step 66, ADR-0015).
      */
     private Transaction debitToClearing(
             SendPixCommand command, long amountCents, ClaimedOperation operation,
@@ -613,8 +758,8 @@ public class SendPixUseCase {
                         + "creditorKey={}",
                 txId, endToEndId, accountId, clearingAccountId, amountCents, command.pixKey());
         try {
-            ledger.postExternalDebitToClearing(
-                    txId, accountId, clearingAccountId, amountCents, description);
+            commandPosting(operation, () -> ledger.postExternalDebitToClearing(
+                    txId, accountId, clearingAccountId, amountCents, description));
         } catch (InsufficientFundsException e) {
             releaseAfterInsufficientFunds(txId, accountId, amountCents, now);
             throw e;

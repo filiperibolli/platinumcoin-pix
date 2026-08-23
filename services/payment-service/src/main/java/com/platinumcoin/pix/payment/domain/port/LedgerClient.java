@@ -4,6 +4,7 @@ import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
 
 /**
@@ -26,22 +27,34 @@ import com.platinumcoin.pix.payment.domain.model.StatementPage;
  * ({@code entryType=PIX_INTERNAL} / {@code PIX_OUT}) inside {@code infra/} while the domain states the
  * intent.
  *
+ * <p><b>A posting answers with a {@link LedgerOutcome}, not with {@code void}</b> (step 66, ADR-0015).
+ * A port whose only vocabulary is "returned" or "threw" cannot say <i>unknown</i>, and a timeout is
+ * precisely that: the response did not arrive, which is no evidence at all about whether the ledger
+ * committed. The missing third word is what let the old contract assert "nothing was debited" for an
+ * outcome nobody knew — so the word is now in the type, and the use case, not the adapter, decides
+ * what doubt means for the payment.
+ *
  * <p>Money is integer cents end to end — the port speaks {@code long} cents, never a decimal string.
  */
 public interface LedgerClient {
 
     /**
      * Post an internal transfer: debit {@code debtorAccountId}, credit {@code creditorAccountId},
-     * {@code amountCents}, {@code entryType=PIX_INTERNAL}, keyed by {@code txId}. Returns normally when
-     * the money has moved (a fresh posting or an idempotent replay of the same {@code txId}).
+     * {@code amountCents}, {@code entryType=PIX_INTERNAL}, keyed by {@code txId}.
      *
+     * @return {@link LedgerOutcome#POSTED} when this call committed the money, {@link
+     *         LedgerOutcome#REPLAYED} when the ledger recognised the {@code txId} and an earlier call
+     *         had already committed it, {@link LedgerOutcome#REFUSED} when the ledger answered and did
+     *         not commit, or {@link LedgerOutcome#UNKNOWN} when the call produced no usable answer —
+     *         the posting may or may not have committed, and only the caller may decide what to do
+     *         about that
      * @throws InsufficientFundsException the debtor was short — no money moved; the caller releases the
      *                                    daily-limit reservation it made for this send
-     * @throws LedgerUnavailableException the ledger was unreachable, timed out, or lost to contention
-     *                                    past its retry budget — nothing was debited, so the same
-     *                                    {@code txId} is safe to retry ({@code 503} to the client)
+     * @throws LedgerUnavailableException never raised by a posting any more: a definite refusal is
+     *                                    {@code REFUSED} and an ambiguous one is {@code UNKNOWN}. It
+     *                                    remains the failure of the two <i>read</i> methods below
      */
-    void postInternalTransfer(
+    LedgerOutcome postInternalTransfer(
             String txId,
             String debtorAccountId,
             String creditorAccountId,
@@ -60,11 +73,13 @@ public interface LedgerClient {
      * {@code SPI_CLEARING#00..#15} to spread a hot partition, and that must change only which id the
      * caller passes — never this contract or the ledger's.
      *
+     * @return the same vocabulary as {@link #postInternalTransfer} — {@code POSTED}, {@code REPLAYED},
+     *         {@code REFUSED} or {@code UNKNOWN}; the two operations are one posting with a different
+     *         credit leg, so they must not differ in what they can say about it
      * @throws InsufficientFundsException the debtor was short — no money moved; the caller releases the
      *                                    daily-limit reservation it made for this send
-     * @throws LedgerUnavailableException nothing was debited; the same {@code txId} is safe to retry
      */
-    void postExternalDebitToClearing(
+    LedgerOutcome postExternalDebitToClearing(
             String txId,
             String debtorAccountId,
             String clearingAccountId,

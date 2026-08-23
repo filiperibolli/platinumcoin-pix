@@ -84,9 +84,13 @@ public class SettlementFinalizer {
         // Draw the money out of the clearing account BEFORE recording the settlement (step 33, task 2):
         // debit clearing / credit SPI_SETTLED, keyed by <txId>-rel. Idempotent by that txId, so a crash
         // between this and markSettled is replayed harmlessly by the redelivery or the next recon cycle.
-        // A ledger outage here throws and leaves the message for redelivery (nothing recorded locally yet).
-        ledger.releaseClearing(clearingReleaseTxId(command.txId()), command.clearingAccountId(),
-                command.amountCents(), "Pix clearing release " + command.txId());
+        // A refused OR unknown outcome stops here (step 66): nothing is recorded locally, the message
+        // redelivers, and the same deterministic txId resolves whether the posting landed.
+        String releaseTxId = clearingReleaseTxId(command.txId());
+        LedgerOutcomes.requireMoneyMoved(
+                ledger.releaseClearing(releaseTxId, command.clearingAccountId(), command.amountCents(),
+                        "Pix clearing release " + command.txId()),
+                releaseTxId, "CLEARING_RELEASE");
 
         try {
             transactions.markSettled(command.txId(), confirmation, event);
@@ -134,8 +138,9 @@ public class SettlementFinalizer {
      * <ol>
      *   <li><b>Compensating posting first</b> ({@code debit clearing / credit payer}, keyed by
      *       {@code <txId>-rev}). Idempotent by that {@code txId}: a redelivery or a re-run replays it
-     *       rather than refunding twice. A ledger outage throws and propagates — nothing local recorded,
-     *       so the retry is clean.</li>
+     *       rather than refunding twice. A refusal <i>or</i> an unknown outcome throws and propagates
+     *       (step 66) — nothing local is recorded, so the redelivery re-posts the same identity and
+     *       learns what really happened.</li>
      *   <li><b>Guarded transition to {@code REVERSED} + {@code PixReversed}, in one atomic write.</b> If it
      *       refuses, the transaction was already reversed (a redelivery or a racing resolver finalized
      *       first) — we return {@code NOT_ELIGIBLE} without releasing the limit again.</li>
@@ -149,8 +154,12 @@ public class SettlementFinalizer {
      *         transaction was already terminal
      */
     public SettleOutcome reverse(SettlePixCommand command, String reason, Instant now) {
-        ledger.reverseToPayer(reversalTxId(command.txId()), command.clearingAccountId(),
-                command.debtorAccountId(), command.amountCents(), "Pix reversal " + command.txId());
+        String reversalTxId = reversalTxId(command.txId());
+        LedgerOutcomes.requireMoneyMoved(
+                ledger.reverseToPayer(reversalTxId, command.clearingAccountId(),
+                        command.debtorAccountId(), command.amountCents(),
+                        "Pix reversal " + command.txId()),
+                reversalTxId, "PIX_REVERSAL");
 
         OutboxEvent event = SettlementOutboxEvents.pixReversed(command, reason, now);
         try {

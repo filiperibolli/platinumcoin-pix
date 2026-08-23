@@ -469,6 +469,8 @@ sequenceDiagram
     PAY->>LED: POST /postings (debit payer, credit payee, the claim's txId)
     LED->>DDB: TransactWriteItems (atomic debit+credit+entries)
     DDB-->>LED: OK
+    LED-->>PAY: 200 {replayed: false} — POSTED
+    Note over PAY,LED: no answer (timeout/reset) ⇒ UNKNOWN, not "nothing debited" (ADR-0015):<br/>re-POST the SAME txId — it commits, or answers replayed:true. Still unknown ⇒ 503, no limit release
     PAY->>DDB: idempotency phase → POSTED (advisory)
     PAY->>DDB: TransactWriteItems: tx = SETTLED + outbox(PixSettled) — internal settles instantly, no SPI leg
     PAY->>DDB: idempotency phase → RECORDED (advisory)
@@ -497,6 +499,21 @@ the diagram: `status` is now the phase (`CLAIMED → POSTED → RECORDED → COM
 and the 24h TTL may only recycle a key whose operation actually reached `COMPLETED` — an expired record
 still unresolved answers `409 OPERATION_UNRESOLVED` and an `ERROR` log, because it needs a human, not a
 fresh identity.
+
+**Why a ledger timeout is an *unknown*, not a "no" (step 66, [ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md)).**
+The adapter used to map every timeout onto "nothing debited, safe to retry the same `txId`", and neither
+half held: a read timeout says the *response* did not arrive, which is no evidence at all about whether
+the `TransactWriteItems` committed — and the retry did not in fact reuse the `txId`. So the port now
+answers with an outcome (`POSTED` · `REPLAYED` · `REFUSED` · `UNKNOWN`) instead of `void`, because a
+vocabulary with only "returned" and "threw" cannot say *unknown*, and the missing third word was the
+defect. **The resolution of an unknown is the same call again**: the ledger's posting API is idempotent
+by `txId`, so re-POSTing the identical posting either commits it or answers `replayed: true` — one call
+resolves the ambiguity *and* finishes the work, which is why no `GET /postings/{txId}` was added (it
+would buy a second round trip and a fresh read-then-write race). This only works because the `txId` is
+durable (§6.4 above, ADR-0014): re-posting a *fresh* identity would resolve one ambiguity by creating a
+second debit. An unknown that survives the bounded attempts stays unknown — `503`, the claim keeps its
+`txId` in a pre-`POSTED` phase, and **no daily-limit headroom is handed back**, since releasing room for
+a debit that may have happened is the same error mirrored.
 
 **Question 1 (source account):** the debited account is derived **exclusively** from the JWT `accountId`
 claim — the request body has no source-account field at all (the safest way to enforce "never from the
@@ -570,12 +587,22 @@ sequenceDiagram
     SNS->>SET: settlement-queue
     SET->>SPI: POST /spi/settlements (endToEndId) — up to 10s
     SPI-->>SET: SETTLED
+    SET->>LED: POST /postings -rel (release clearing) — deterministic txId
+    Note over SET,LED: refused OR unknown ⇒ do NOT transition; the message redelivers<br/>and re-posts the same txId (ADR-0015 §5) — the queue IS the resolution loop
     SET->>DDB: tx = SETTLED (guarded) + outbox(PixSettled)
 ```
 
 **Question 4 (10s SPI latency — does the user wait?):** No. The synchronous part ends at `202` with
 status `PROCESSING`; the 10s window is absorbed by the SQS-buffered settlement flow. The app shows
 "processing" and gets the final state via SSE (Sprint 8) or polling `GET /v1/payments/{id}`.
+
+**One rule for every remote money call (step 66, ADR-0015 §5).** settlement-service's `-rel` and `-rev`
+postings classify a timeout exactly as the send path does, so the two services do not hold two theories
+of the same silence. They resolve it differently only in *who drives the retry*: payment-service is
+holding a user's HTTP request open, so it re-posts in-process under a bounded budget; settlement is
+driven by a queue and every posting is keyed by a **deterministic** `txId` (`<orig>-rel`, `<orig>-rev`,
+`in-<endToEndId>`), so the redelivery *is* the resolving re-POST — free, and with no thread held. In
+both, an unresolved outcome blocks the status write rather than becoming an implicit "nothing happened".
 
 **Why outbox + polling (ADR-0004):** writing the DB and publishing to SNS are two systems → the
 dual-write problem. The outbox item lives in the **same table/partition** as the transaction, so both

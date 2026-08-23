@@ -1,10 +1,8 @@
 package com.platinumcoin.pix.settlement.infra.client;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.platinumcoin.pix.settlement.domain.exception.LedgerUnavailableException;
+import com.platinumcoin.pix.settlement.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.settlement.infra.security.ServiceTokenIssuer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -26,8 +24,10 @@ import org.springframework.web.client.RestClient;
  * Spring, no LocalStack) — same harness as {@link HttpSpiSettlementClientTest}. What only shows here, at
  * the adapter: the CLEARING_RELEASE and PIX_REVERSAL postings carry the right accounts, entry types and
  * deterministic txIds; a self-minted service token rides on the {@code Authorization} header (settlement
- * has no user token to forward); and anything other than success becomes a retryable
- * {@link LedgerUnavailableException}.
+ * has no user token to forward); and — since step 66 — every answer is <b>classified</b> into a
+ * {@link LedgerOutcome} instead of being collapsed into one exception, so a definite refusal and an
+ * answer that never arrived stop being the same fact. What the caller does with each is
+ * {@code LedgerOutcomes}' job, and {@code SettlementLedgerTimeoutTest} pins it.
  */
 class HttpSettlementLedgerClientTest {
 
@@ -77,37 +77,39 @@ class HttpSettlementLedgerClientTest {
         assertThat(capturedAuth.get()).startsWith("Bearer ");
     }
 
-    /** A 200 (fresh or idempotent replay) is success — the finalization committed, nothing to retry. */
+    /** A 200 with {@code replayed: true} is success, and is now SAID to be a replay (step 66). */
     @Test
-    void aSuccessfulPostingDoesNotThrow() throws IOException {
+    void anIdempotentReplayIsReportedAsSuchRatherThanAsAFreshPosting() throws IOException {
         String baseUrl = startServer(200, "{\"txId\":\"tx-1-rel\",\"replayed\":true}");
 
-        assertThatCode(() ->
-                client(baseUrl).releaseClearing("tx-1-rel", "SPI_CLEARING", 20_000L, "release"))
-                .doesNotThrowAnyException();
+        assertThat(client(baseUrl).releaseClearing("tx-1-rel", "SPI_CLEARING", 20_000L, "release"))
+                .isEqualTo(LedgerOutcome.REPLAYED);
     }
 
-    /** Any non-2xx is "unavailable, retry": nothing posted, the idempotent txId makes the redelivery safe. */
+    /**
+     * The ledger's own {@code 503 LEDGER_CONFLICT}: it answered, so nothing committed. A definite
+     * refusal, which the caller turns into "do not transition, let the message redeliver" — the throw
+     * moved from this adapter to {@code LedgerOutcomes}, where the decision belongs (ADR-0015 §1).
+     */
     @Test
-    void aFailingLedgerBecomesAnUnavailableExceptionSoTheMessageRedelivers() throws IOException {
+    void aDefiniteRefusalIsRefusedNotUnknown() throws IOException {
         String baseUrl = startServer(503, "{\"status\":503,\"code\":\"LEDGER_CONFLICT\"}");
 
-        assertThatThrownBy(() ->
-                client(baseUrl).reverseToPayer("tx-1-rev", "SPI_CLEARING", "acc-001", 20_000L, "reversal"))
-                .isInstanceOf(LedgerUnavailableException.class);
+        assertThat(client(baseUrl)
+                .reverseToPayer("tx-1-rev", "SPI_CLEARING", "acc-001", 20_000L, "reversal"))
+                .isEqualTo(LedgerOutcome.REFUSED);
     }
 
-    /** An unreachable ledger is also unavailable — nothing was posted, retry the same txId. */
+    /** An unreachable ledger tells this service nothing at all about whether the posting landed. */
     @Test
-    void anUnreachableLedgerBecomesAnUnavailableException() {
-        // Nothing listening on this port: the connect fails fast into the same retryable exception.
+    void anUnreachableLedgerIsUnknown() {
+        // Nothing listening on this port: the connect fails fast, and fast is all it is — not informative.
         HttpSettlementLedgerClient client = new HttpSettlementLedgerClient(
                 RestClient.builder(), tokenIssuer(), "http://localhost:1", CONNECT_TIMEOUT_MS,
                 READ_TIMEOUT_MS, SETTLED_ACCOUNT);
 
-        assertThatThrownBy(() ->
-                client.releaseClearing("tx-1-rel", "SPI_CLEARING", 20_000L, "release"))
-                .isInstanceOf(LedgerUnavailableException.class);
+        assertThat(client.releaseClearing("tx-1-rel", "SPI_CLEARING", 20_000L, "release"))
+                .isEqualTo(LedgerOutcome.UNKNOWN);
     }
 
     private HttpSettlementLedgerClient client(String baseUrl) {
