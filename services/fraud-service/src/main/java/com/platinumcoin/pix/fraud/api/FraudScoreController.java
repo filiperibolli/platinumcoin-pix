@@ -15,10 +15,13 @@ import org.springframework.web.bind.annotation.RestController;
  * it binds + bean-validates the wire shape, times the call, calls exactly one use case, and returns the
  * domain {@link ScoreResult} straight to the wire (identical shape — no mirror DTO, ADR-0010).
  *
- * <p><b>Internal seam (ADR-0006).</b> {@code /internal/**} is not on the JWT allow-list, so the endpoint
- * sits behind the shared {@code JwtAuthFilter} and requires a valid token; payment-service forwards the
- * caller's bearer token when it calls with the 200ms budget (step 25). A deployed posture would gate it
- * with a service credential/mTLS rather than an end-user token (step-45 hardening).
+ * <p><b>Internal seam (ADR-0006, tightened by ADR-0017).</b> {@code /internal/**} is not on the public
+ * allow-list: the shared {@code JwtAuthFilter} requires a <b>service</b> token here — {@code typ=service},
+ * {@code aud=fraud-service}, {@code scope=fraud:score} — and refuses an end-user token with
+ * {@code 403 INTERNAL_PORT_FORBIDDEN}. payment-service mints that token itself for each call inside the
+ * 200ms budget (step 25); until step 68 it forwarded the caller's own bearer instead, which made any
+ * user's login a working credential on this port. mTLS would be the deployed complement, not a
+ * replacement (step-45 hardening).
  *
  * <p><b>The latency budget is a first-class metric.</b> A dedicated Micrometer {@link Timer}
  * ({@code pix.fraud.score}) records every scoring call so the p99 &lt; 150ms target is observable in

@@ -46,6 +46,11 @@ public class StubLedgerClient implements LedgerClient {
     private final Map<String, List<StatementLine>> statements = new ConcurrentHashMap<>();
     private final java.util.concurrent.atomic.AtomicBoolean loseTheAnswerOnce =
             new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean loseBeforeCommitOnce =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** How many times each {@code txId} actually moved money — the "0 duplicações" counter (step 69). */
+    private final Map<String, java.util.concurrent.atomic.AtomicInteger> committedPostings =
+            new ConcurrentHashMap<>();
 
     @Override
     public LedgerOutcome postInternalTransfer(
@@ -69,6 +74,12 @@ public class StubLedgerClient implements LedgerClient {
         if (postedTxIds.contains(txId)) {
             return LedgerOutcome.REPLAYED;
         }
+        if (loseBeforeCommitOnce.compareAndSet(true, false)) {
+            // The OTHER half of the step-66 ambiguity (step 69, scenario B): the request never reached
+            // the ledger, so nothing is written and no txId is remembered. Checked before the balance
+            // read on purpose — a request that never arrived cannot have consulted a balance.
+            return LedgerOutcome.UNKNOWN;
+        }
         long debtorBalance = balances.getOrDefault(debitAccount, DEFAULT_BALANCE_CENTS);
         if (debtorBalance < amountCents) {
             throw new InsufficientFundsException();
@@ -76,6 +87,8 @@ public class StubLedgerClient implements LedgerClient {
         balances.put(debitAccount, debtorBalance - amountCents);
         balances.merge(creditAccount, amountCents, Long::sum);
         postedTxIds.add(txId);
+        committedPostings.computeIfAbsent(txId, id -> new java.util.concurrent.atomic.AtomicInteger())
+                .incrementAndGet();
         if (loseTheAnswerOnce.compareAndSet(true, false)) {
             // The step-66 ambiguity, driven through the real web stack: the money HAS moved (both legs
             // above) and the caller is told nothing. The resolving re-POST lands on the branch at the
@@ -92,6 +105,29 @@ public class StubLedgerClient implements LedgerClient {
      */
     public void loseTheAnswerOfTheNextPosting() {
         loseTheAnswerOnce.set(true);
+    }
+
+    /**
+     * The inverse ambiguity (step 69, scenario B): the next posting <b>never reaches the ledger</b> and
+     * the caller is told {@link LedgerOutcome#UNKNOWN} — a connect timeout rather than a read timeout.
+     * One-shot, so the resolving re-POST is the first call that actually lands.
+     *
+     * <p>From payment-service's side this is byte-for-byte the same answer as
+     * {@link #loseTheAnswerOfTheNextPosting()}, which is precisely the property under test: the platform
+     * must not be able to tell the two apart, because the moment it thinks it can, it starts guessing.
+     */
+    public void loseTheNextPostingBeforeItCommits() {
+        loseBeforeCommitOnce.set(true);
+    }
+
+    /**
+     * How many times money actually moved under this {@code txId} — {@code 1} for a posting however many
+     * times it was attempted, {@code 0} for one that never landed. The direct reading of the review's
+     * "0 duplicações": a replay increments nothing.
+     */
+    public int postingsFor(String txId) {
+        var count = committedPostings.get(txId);
+        return count == null ? 0 : count.get();
     }
 
     /**

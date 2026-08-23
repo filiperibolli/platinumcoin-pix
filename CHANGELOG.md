@@ -318,6 +318,47 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Recovery & fencing invariant suite: crash-after-commit, ambiguous-timeout, concurrent settle×reverse and lateral-access drills proving the three P0 acceptance criteria from the external review (step 69)
+  AI: est 5h / actual 3.9h / ~90% generated / 3 issues caught in human review
+  Sprint 11.5's proof step. Steps 65-68 each shipped the test that drove their own mechanism; this is the
+  **adversarial pass over all four together**, where the interactions live — 41 new scenarios across five
+  classes, all inside a plain `mvn verify`, none behind a flag.
+  - **0 duplicações** — `RecoveryInvariantsIT` kills the send at **four** points in the window between the
+    ledger's commit and the client's answer (before the `POSTED` phase write, after it, after the
+    transaction+outbox write, before the memo), back-dates the orphaned claim past `STALE_SECONDS`, and
+    asserts the *same* invariant at every one: one posting, the **stored** `txId`, one debit, one
+    transaction item, Σ conserved. Plus both halves of an ambiguous ledger outcome — committed-then-lost
+    and never-arrived — asserted to be **indistinguishable from the outside**, and an 8-thread retry storm
+    on one `Idempotency-Key` across a timing-out ledger.
+  - **1 estado terminal** — `FencingInvariantsIT` repeats the settle×reverse latch race **20 times** (a
+    single green run proves nothing about a race) and adds the five states a crash *inside* the fence can
+    leave, including the two flips that must be refused: a stalled settlement fence against an `UNKNOWN`
+    rail is still settled, and a stalled reversal fence against a `SETTLED` rail is still reversed.
+  - **0 acesso lateral** — `LateralAccessIT` in account-, ledger- and fraud-service asserts what step 68's
+    403 matrix stops short of: **every refusal is side-effect-free**. Balances, the `TX#` posting guard and
+    the entry count for the ledger; the directory for account-service (in both directions — a service token
+    refused on `POST /v1/pix-keys` writes no key); and, the sharpest of the three, fraud-service's **Redis
+    velocity counters**, whose corruption would let anyone reaching the port inflate a victim's velocity
+    until their legitimate sends are denied — invisible to any conservation audit.
+  - **No production seam was added to make any of this testable.** The crash is a one-shot `Error` armed
+    inside two `@Primary` *test* decorators wrapping the real Dynamo repositories, so every write before
+    the kill point is genuine and nothing after it runs; the crash *inside the fence* is arranged as the
+    durable state a kill leaves, which is exactly equivalent because the finalizer holds no in-memory state
+    between the fence and the ending. Conservation (Σ balances, Σ entries = 0) lives in one shared helper
+    in common-lib's test-jar, `MoneyConservation`, whose javadoc states plainly that Σ is **necessary and
+    not sufficient** — the step-67 bug conserves Σ perfectly while creating money.
+  - **Findings — one residual window, asserted rather than hidden behind a green.** A crash-resume
+    re-enters the acceptance work and therefore **reserves the daily limit twice** for one payment: the
+    reservation is a bare counter increment keyed by account and calendar day, with nothing tying it to a
+    `txId`. This is not a money defect (the ledger moved one amount, Σ is conserved, the payer was debited
+    once — all asserted alongside it) and it is the conservative direction ADR-0007/step 20 already accept:
+    it can only ever refuse a later send, never allow one, and it self-heals at the next calendar-day
+    rollover. `aResumeDebitsOnceButReservesTheDailyLimitTwice` pins the doubled value on purpose, so a
+    future step that makes the reservation idempotent per `txId` fails loudly and must update the claim
+    rather than quietly widen it. Nothing else was found open.
+  - Step 69 **was** a ✍️ hand-written zone until 2026-08-23; the practice moved to step 73, which takes this
+    suite as its subject — so every kill point carries a comment naming *why that instant* and what moving
+    it would stop catching (`CrashPoint`'s four constants, and the class javadocs of the other two suites).
 - Prometheus + Grafana (technical + business-funnel dashboards as code), silence alerts and correlationId
   path tracing (step 44)
   Sprint 11's flow: **see the whole system**. Three layers — logs (what happened to *this* request),
