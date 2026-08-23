@@ -235,6 +235,30 @@ nothing to orchestrate on our side of an already-settled inbound payment.
 | `POST /v1/accounts/me/statement/exports` | Async cold-statement export | `202` + `statusUrl`; `Idempotency-Key` required (S14 — added to the OpenAPI contract-first in step 53) |
 | `GET /v1/statement-exports/{exportId}` | Export status / download | `PENDING → READY` with a presigned `downloadUrl` (S14, §6.14) |
 
+**Internal ports (`/internal/**`) are not part of this contract.** They are the seam services use to
+read and write each other's data (ADR-0006) — `POST /internal/ledger/postings`,
+`GET /internal/ledger/accounts/{id}/balance|entries`, `GET /internal/accounts/{id}`,
+`GET /internal/pix-keys/resolve`, `POST /internal/fraud/score` — and no client ever calls one, which is
+why they are deliberately absent from `docs/api/openapi.yaml`.
+
+**The two surfaces take different credentials, and are disjoint in both directions (ADR-0017, step 68).**
+Every token carries a `typ` claim: `user` (minted by auth-service on login) or `service` (minted by a
+calling service, per call). `/v1/**` accepts `typ=user` only; `/internal/**` accepts `typ=service` only,
+**and** validates `aud` = the service being called and `scope` = the operation the route declares
+(`ledger:post`, `ledger:read`, `fraud:score`, `accounts:read`, `keys:resolve`). Either mismatch is
+`403 application/problem+json` — `INTERNAL_PORT_FORBIDDEN` on an internal route,
+`PUBLIC_ROUTE_FORBIDDEN` on a public one. A `401` still means *we don't know who you are*; a `403` here
+means *we know exactly who you are, and this is not your door*.
+
+This is the answer to a specific defect, worth naming because it is easy to re-introduce: until step 68
+payment-service authenticated to every internal port by **forwarding the end user's bearer**, which made
+any user's login a valid credential on the platform's single money-moving endpoint. Domain Safety Rule #1
+("the debited account comes from the JWT") cannot protect that endpoint — its whole job is to be *told*
+both legs — so the only available control is refusing the wrong *kind* of caller. The user has not
+disappeared from an internal call; their **authority** has: their id travels as
+`X-PlatinumCoin-On-Behalf-Of`, evidence for the logs and the audit trail, read by no access decision
+anywhere and tested to stay that way.
+
 **Idempotency mechanism (Question 6):**
 
 1. Client generates a UUID `Idempotency-Key` per business operation and reuses it on retry.
@@ -992,6 +1016,7 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 
 ### 7.6 Security & audit
 - JWT on every request; **debited account only from token claims** — payload never names the source account (also enforced by API shape: the field does not exist).
+- **Service identity is not user identity (ADR-0017).** Internal ports accept only a scoped service token (`typ`/`iss`/`aud`/`scope`), minted per call by the shared `ServiceTokenIssuer` in common-lib; a user's token gets `403 INTERNAL_PORT_FORBIDDEN` and a service token gets `403 PUBLIC_ROUTE_FORBIDDEN` on `/v1/**`. The check lives in the one shared `JwtAuthFilter`, so no service grew its own authentication logic — the property ADR-0007 bought and this must not spend. Every internal route ships a four-case negative test (user token · wrong `aud` · wrong `scope` · correct token); `InternalPortForbiddenIT` additionally asserts the *money*: a refused posting leaves no `TX#` guard item and no balance change, because a 403 that still wrote an entry is not a refusal. Locally the signing key is still the shared HS256 secret — the identity is in the **claims**, not in a per-service key — and the claim shape is chosen so that the production swap (RS256 + JWKS, or mTLS) changes only the signature verification.
 - Daily limits reserved server-side before any money moves; above-limit ⇒ `422` (MFA seam documented, ADR-0007).
 - Any endpoint that can move money is never anonymous: the inbound settlement webhook is authenticated with a shared token locally (`SPI_WEBHOOK_TOKEN`; mTLS + BACEN message signing in production — §6.8, threat model boundary B4).
 - Immutable audit: every state transition emits an audit event → `audit-queue` → settlement-service writes JSON lines to S3, bucket documented with **Object Lock (compliance mode) + versioning** for the 5-year BACEN retention (LocalStack accepts the configuration; the guarantee is real in AWS). Statement pages older than the online window are archived to S3 too.

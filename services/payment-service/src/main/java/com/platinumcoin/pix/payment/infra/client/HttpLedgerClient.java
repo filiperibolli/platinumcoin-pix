@@ -1,5 +1,7 @@
 package com.platinumcoin.pix.payment.infra.client;
 
+import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
@@ -15,7 +17,6 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -25,8 +26,6 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * The only place HTTP touches the ledger (ADR-0010). Implements {@link LedgerClient} by calling
@@ -73,9 +72,18 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * <b>circuit breaker</b> after repeated failures instead of hammering a struggling ledger — that seam
  * is Sprint 7 / step 32 and is deferred here (Task 3).
  *
- * <p><b>Service-to-service auth.</b> The endpoint is behind the shared JWT filter, so the caller's
- * bearer token is forwarded (ADR-0007; a service credential is the deployed posture, step-45). The
- * correlation id is propagated by common-lib's {@code RestClient} customizer.
+ * <p><b>Service-to-service auth (step 68, ADR-0017).</b> Every call mints its <b>own</b> short-lived
+ * token, addressed to {@code ledger-service} and scoped to {@code ledger:post / ledger:read} alone, via the shared
+ * {@link ServiceTokenIssuer}. It used to forward the end user's bearer instead — which is why any
+ * user's login was a working credential on the ledger's posting endpoint. The user has not vanished
+ * from the call, only their <i>authority</i> has: their id rides along in
+ * {@code X-PlatinumCoin-On-Behalf-Of} as evidence for the logs and the audit trail, read by nothing.
+ * The correlation id is propagated by common-lib's {@code RestClient} customizer.
+ *
+ * <p>The two scopes are not interchangeable: the balance and statement reads mint {@code ledger:read},
+ * the posting mints {@code ledger:post}. Nothing forces that split at this end — it would be one
+ * constant either way — and that is precisely why it is worth writing down: a compromised read path
+ * holds a credential that cannot move money.
  */
 @Component
 public class HttpLedgerClient implements LedgerClient {
@@ -95,6 +103,7 @@ public class HttpLedgerClient implements LedgerClient {
     private static final String ENTRY_TYPE_PIX_OUT = "PIX_OUT";
 
     private final RestClient restClient;
+    private final ServiceTokenIssuer serviceTokens;
 
     /** Wire shape of a ledger posting request — mirrors ledger-service's {@code PostingRequest}. */
     record PostingRequest(
@@ -153,7 +162,9 @@ public class HttpLedgerClient implements LedgerClient {
             RestClient.Builder builder,
             @Value("${services.ledger-service.base-url}") String baseUrl,
             @Value("${services.ledger-service.connect-timeout-ms:2000}") long connectTimeoutMs,
-            @Value("${services.ledger-service.read-timeout-ms:3000}") long readTimeoutMs) {
+            @Value("${services.ledger-service.read-timeout-ms:3000}") long readTimeoutMs,
+            ServiceTokenIssuer serviceTokens) {
+        this.serviceTokens = serviceTokens;
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
         factory.setReadTimeout(Duration.ofMillis(readTimeoutMs));
@@ -202,7 +213,8 @@ public class HttpLedgerClient implements LedgerClient {
         try {
             BalanceView balance = restClient.get()
                     .uri("/internal/ledger/accounts/{accountId}/balance", accountId)
-                    .headers(this::forwardAuthorization)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_LEDGER,
+                            InternalApi.SCOPE_LEDGER_READ))
                     .retrieve()
                     .body(BalanceView.class);
             if (balance == null) {
@@ -257,7 +269,8 @@ public class HttpLedgerClient implements LedgerClient {
                                     .filter(StringUtils::hasText))
                             .queryParam("limit", limit)
                             .build(accountId))
-                    .headers(this::forwardAuthorization)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_LEDGER,
+                            InternalApi.SCOPE_LEDGER_READ))
                     .retrieve()
                     .body(EntriesView.class);
             if (view == null) {
@@ -313,7 +326,8 @@ public class HttpLedgerClient implements LedgerClient {
         try {
             PostingView view = restClient.post()
                     .uri("/internal/ledger/postings")
-                    .headers(this::forwardAuthorization)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_LEDGER,
+                            InternalApi.SCOPE_LEDGER_POST))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
@@ -411,16 +425,6 @@ public class HttpLedgerClient implements LedgerClient {
             return problem == null ? null : problem.code();
         } catch (RuntimeException ignored) {
             return null;
-        }
-    }
-
-    /** Copy the current request's Authorization header onto the outbound call, if present. */
-    private void forwardAuthorization(HttpHeaders headers) {
-        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
-            String authorization = attrs.getRequest().getHeader(HttpHeaders.AUTHORIZATION);
-            if (StringUtils.hasText(authorization)) {
-                headers.set(HttpHeaders.AUTHORIZATION, authorization);
-            }
         }
     }
 }

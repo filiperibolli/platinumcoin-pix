@@ -21,6 +21,16 @@ jwt:
   secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
   public-paths:
     - /actuator/**
+  # Workload identity + the per-route scope map (step 68, ADR-0017). See ledger-service's copy for
+  # the reasoning; the shape is identical everywhere on purpose.
+  service-name: account-service
+  internal-routes:
+    - method: GET
+      pattern: /internal/pix-keys/resolve
+      scope: keys:resolve
+    - method: GET
+      pattern: /internal/accounts/**
+      scope: accounts:read
 
 # AWS SDK → LocalStack (DynamoDB). Defaults target a locally-run LocalStack; compose overrides
 # AWS_ENDPOINT_URL to http://localstack:4566. Credentials are dummies LocalStack ignores but the SDK

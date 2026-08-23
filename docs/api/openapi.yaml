@@ -190,7 +190,8 @@ paths:
         the debited account in the send flow. Served by account-service (8082), distinct from the
         cache-backed `/accounts/me/balance` and `/accounts/me/statement` reads (payment-service, 8084).
         The internal service-to-service lookup `GET /internal/accounts/{accountId}` is intentionally
-        not part of this public contract.
+        not part of this public contract, and since step 68 it does not even accept the same
+        credential: it requires a service token scoped `accounts:read` (ADR-0017).
       responses:
         '200':
           description: The caller's account
@@ -428,6 +429,18 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: |
+        A **user** token from `POST /v1/auth/login` — a JWT carrying `sub` (userId), `accountId` and
+        `typ: user` (ADR-0007, amended by ADR-0017).
+
+        Every operation in this contract is customer-facing and accepts **only** `typ=user`. The
+        platform's other token type, `typ=service`, is minted by a service for one internal call and
+        is refused here with `403 PUBLIC_ROUTE_FORBIDDEN` — the two surfaces are deliberately disjoint
+        in both directions, so a leaked service credential cannot be replayed against the customer API.
+
+        The `/internal/**` service-to-service ports are **not part of this contract** (no client calls
+        one). They accept `typ=service` only, validating `aud` and an operation `scope`, and answer
+        `403 INTERNAL_PORT_FORBIDDEN` to anything else. See `SECURITY.md` and ADR-0017.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key

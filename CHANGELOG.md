@@ -89,6 +89,64 @@ The platform reached its halfway mark: **the full money path is built, tested an
   deterministic `txId` was considered as defense-in-depth and **rejected** (it collides with the 24h
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
+### Security
+- Internal ports no longer accept a user's JWT: every service-to-service call carries a scoped service token (typ/iss/aud/scope) and /internal/** returns 403 to a user token, closing lateral access to the ledger posting endpoint (step 68, ADR-0017)
+  AI: est 6h / actual 5h30 / ~90% generated / 1 issue caught in human review
+  - **The exploit, written as a test rather than described.** `InternalPortForbiddenIT#aUserTokenCannot`
+    `PostALedgerEntry` logs in as alice and presents that exact token to `POST /internal/ledger/postings`
+    with **bob** as debtor. Against `main` it returned `200` and moved R$ 2,500.00 of bob's money; it now
+    returns `403 INTERNAL_PORT_FORBIDDEN`. The assertion is in two halves on purpose — the status *and*
+    the money (both balances unchanged, no `TX#<txId>` guard item), because a refusal that leaves a trace
+    in the ledger is not a refusal.
+  - **Why Domain Safety Rule #1 could not protect that endpoint.** "The debited account comes from the
+    JWT" works at the public edge because the send API has no source-account field to tamper with. The
+    internal posting API's whole job is to be *told* both legs, so it derives nothing from the token —
+    and the only available control is refusing the wrong *kind* of caller. Authentication ("this token is
+    real") and authorization ("this caller may do this here") are different questions; the filter asked
+    only the first.
+  - **Two token types, two surfaces, disjoint in both directions.** auth-service stamps `typ=user`;
+    common-lib's shared `ServiceTokenIssuer` mints `typ=service` with `iss`/`aud`/`scope` per call.
+    `/internal/**` takes service tokens only, validating `aud` = this service and `scope` = the scope the
+    route declares (five scopes, one per operation); `/v1/**` takes user tokens only. The reverse
+    direction is not symmetry for its own sake: service tokens are minted constantly and live everywhere
+    a heap dump can reach, so a leak must not be replayable against the customer API.
+  - **The four `forwardAuthorization` helpers were deleted, not adapted** (ADR-0017 decision 5) — leaving
+    one working example invites the next adapter to copy it. settlement-service's private issuer was
+    deleted too and it became the first consumer of the shared one: it already minted its own token
+    (step 33), but nothing rejected a user token anywhere, so its correctness was a convention rather
+    than a control.
+  - **The user travels as evidence, never as authority.** `X-PlatinumCoin-On-Behalf-Of` carries the
+    caller's id so a log line and the audit trail still say *whose* payment caused a posting.
+    `OnBehalfOfNeverAuthorizesTest` walks every service's `src/main`, strips comments, and fails the build
+    if the header ever appears in an `if`/ternary/comparison — reading it is the feature, branching on it
+    is the bug.
+  - **Fail closed twice.** A token with no `typ` is read as `user` (only user tokens predate this step),
+    and an `/internal/**` route matching no declared scope is refused — an unscoped internal port is a
+    configuration mistake, and the safe reading of a mistake on a money path is "no".
+  - **The churn in the test suite was the point** (ADR-0017 consequences): seven existing ITs across
+    ledger-, account- and fraud-service minted a user token and called an internal route. Each one that
+    had to change was a test exercising the hole. `KeyResolutionIT` is the clearest — it used *one* token
+    to register a key and then resolve it, and now needs two, because registering is a customer action
+    and resolving is a service action.
+  - **Found in review, fixed in the same change:** a `typ=service` token carrying no `aud` claim NPE'd the
+    filter (`Claims.getAudience()` returns `null`, not an empty set) and surfaced as a bare `500` with no
+    `code` and no `correlationId` — telling an operator the *service* was broken when the *credential*
+    was malformed. Money never moved (the filter throws before the controller), but the refusal had the
+    wrong shape. Now null-safe in both directions, including a callee that never set `jwt.service-name`.
+  - **The local tooling grew a way to mint one**, because the runbook, Postman and the API explorer all
+    drove `/internal/**` with a login: `scripts/service-token.sh <aud> <scope>` for the shell, a
+    collection-level pre-request script for Postman, and WebCrypto in the explorer (which overrides the
+    session token on any internal path, so the page has no code path that can still present a user's
+    credential to a service port). `ServiceTokenScriptParityTest` runs the shell script and verifies its
+    output with the real parser — a reimplemented JWT drifts silently, and the symptom points at the
+    service rather than at the tool. **None of the three can exist in a deployment**, and each says so.
+  - Negative-test matrix green for all six internal routes (user token · wrong `aud` · wrong `scope` ·
+    correct token), plus `PublicRouteIT` for the reverse direction. `mvn verify` green across all ten
+    modules. Docs updated in the same change: `SECURITY.md` (a new trust-model section), ARCHITECTURE §5
+    and §7.6, `docs/api/openapi.yaml`, `docs/threat-model.md` (the "impersonating an internal service"
+    row was still "local trust = network isolation only"), `docs/local-dev.md` §3.1 + the runbook curls,
+    and the five affected service READMEs.
+
 ### Fixed
 - Finalization fencing: settle and reverse now win a conditional FINALIZING_* transition before any ledger posting, so a race between the settlement consumer and the reconciliation resolver can no longer move money twice (step 67, ADR-0016)
   - The mechanism was already in the codebase and applied one state too late. `markSentToSpi` has always

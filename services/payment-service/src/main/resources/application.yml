@@ -42,6 +42,14 @@ jwt:
   secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
   public-paths:
     - /actuator/**
+  # Workload identity (step 68, ADR-0017). payment-service exposes no /internal/** route of its own,
+  # so this name is used purely as the `iss` of the tokens it mints for ledger-, account- and
+  # fraud-service. Until this step it minted nothing and forwarded the caller's bearer instead —
+  # which made any user's login a valid credential on POST /internal/ledger/postings.
+  service-name: payment-service
+  # A minute is generous for a call whose own timeout budget is measured in milliseconds; it exists
+  # to absorb clock skew between containers, not to let a token outlive its call.
+  service-token-ttl: 60s
 
 # Pix participant identifier (ISPB — 8 digits) baked into every endToEndId this service mints
 # (E<ISPB><yyyyMMddHHmm-UTC><random>). One place to change PlatinumCoin's participant code; the

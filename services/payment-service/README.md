@@ -293,7 +293,8 @@ infra/persistence/ DynamoTransactionRepository (the only place a transaction is 
 infra/client/      HttpAccountLimitClient + HttpPixKeyResolver (RestClient → account-service),
                    HttpLedgerClient (RestClient → ledger-service, timeouts),
                    HttpFraudScorer (RestClient → fraud-service, 200ms budget, fail-open → SKIPPED)
-                   — all forward the bearer token —,
+                   — each mints its OWN scoped service token per call (ADR-0017); none
+                   forwards the caller's bearer —,
                    SnsEventPublisher (envelope + eventType/eventId/correlationId attributes → SNS)
 infra/config/      DynamoConfig, SnsConfig (client + topic ARN), SchedulingConfig (@EnableScheduling,
                    guarded by pix.schedulers.enabled), PaymentBeansConfig (composition root: Clock,
@@ -316,6 +317,8 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | -------------- | ------------- | ------- |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/v1/payments/**` is **not** here — every send requires a token. |
+| `jwt.service-name` | `payment-service` | **This service's workload identity (step 68, ADR-0017)** — the `iss` stamped on every service token it mints for an outbound `/internal/**` call. Until step 68 it minted nothing and forwarded the caller's bearer instead, which made any user's login a credential on the ledger's posting endpoint. |
+| `SERVICE_TOKEN_TTL_SECONDS` / `jwt.service-token-ttl` | `60s` | Lifetime of a minted service token. Generous for a call whose own timeout budget is milliseconds; it absorbs clock skew between containers, not a token outliving its call. |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
 | `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup **and** key resolution (step 21); compose overrides to `http://account-service:8082`. |
 | `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | The ledger account an **external** send parks its debited money in (step 27) — money in flight to BACEN, exempt from the ledger's non-negative rule. Config, not a constant, because step 52 shards it into `SPI_CLEARING#00..#15`. |
@@ -441,6 +444,9 @@ curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
 
 ## Related decisions
 
+- [ADR-0017](../../docs/adr/0017-workload-identity-for-internal-ports.md) — **workload identity for internal ports** (step 68, amends ADR-0007): this service calls four internal ports and now mints its own scoped token for
+  each one instead of forwarding the caller's bearer — the finding that made any user's login a valid
+  credential on the ledger's posting endpoint.
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — the three-layer idempotency strategy
   (API `Idempotency-Key`, ledger `txId`, SPI `endToEndId`); step 18 mints the `endToEndId`, step 19
   adds the API layer.

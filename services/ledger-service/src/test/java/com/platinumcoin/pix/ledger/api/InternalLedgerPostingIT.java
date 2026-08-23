@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.ledger.api;
 
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.ledger.LedgerAccountFixture;
 import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
@@ -61,7 +62,8 @@ class InternalLedgerPostingIT extends LocalStackTestBase {
         payer = LedgerAccountFixture.uniqueAccountId("api-payer");
         payee = LedgerAccountFixture.uniqueAccountId("api-payee");
         txId = LedgerAccountFixture.uniqueAccountId("api-tx");
-        token = TestTokens.forUser("u-alice", "acc-001");
+        token = TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                InternalApi.SCOPE_LEDGER_POST);
         LedgerAccountFixture.openAccount(dynamo, payer, OPENING_BALANCE);
         LedgerAccountFixture.openAccount(dynamo, payee, 0L);
     }

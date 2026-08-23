@@ -1,30 +1,33 @@
 package com.platinumcoin.pix.payment.infra.client;
 
+import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.security.OnBehalfOf;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.model.KeyResolution;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * The only place HTTP touches key resolution (ADR-0010). Implements {@link PixKeyResolver} by calling
  * account-service's DICT seam {@code GET /internal/pix-keys/resolve?key=…} (ADR-0006: services read
  * each other's data over HTTP, never by sharing {@code pix_keys}).
  *
- * <p><b>Service-to-service auth.</b> That endpoint sits behind the shared JWT filter, so this client
- * forwards the caller's bearer token from the in-flight request — the local-dev posture (ADR-0007); a
- * deployed build would present a service credential / mTLS scope (step-45 hardening). The correlation
- * id is propagated automatically by common-lib's {@code RestClient} customizer, so one {@code grep}
- * still stitches the two services' logs together.
+ * <p><b>Service-to-service auth (step 68, ADR-0017).</b> That endpoint sits behind the shared JWT
+ * filter, and this client mints its <b>own</b> short-lived token for it — addressed to
+ * {@code account-service}, scoped to {@code keys:resolve} alone — via the shared
+ * {@link ServiceTokenIssuer}. It used to forward the in-flight caller's bearer instead. The user is
+ * still named on the call, but only as <i>evidence</i>: {@code X-PlatinumCoin-On-Behalf-Of} carries
+ * their id for the logs and the audit trail and is read by no authorization decision anywhere
+ * ({@link OnBehalfOf}). The correlation id is propagated automatically by common-lib's
+ * {@code RestClient} customizer, so one {@code grep} still stitches the two services' logs together.
  *
  * <p><b>Internal or external (step 27).</b> account-service answers with {@code {internal, accountId,
  * externalBank, keyType}} and this adapter passes that verdict through as a {@link KeyResolution} — the
@@ -51,6 +54,7 @@ public class HttpPixKeyResolver implements PixKeyResolver {
     private static final Logger log = LoggerFactory.getLogger(HttpPixKeyResolver.class);
 
     private final RestClient restClient;
+    private final ServiceTokenIssuer serviceTokens;
 
     /** Service-to-service view of a key resolution; mirrors account-service's {@code KeyResolution}. */
     record KeyResolutionView(boolean internal, String accountId, String externalBank, String keyType) {
@@ -58,8 +62,10 @@ public class HttpPixKeyResolver implements PixKeyResolver {
 
     public HttpPixKeyResolver(
             RestClient.Builder builder,
-            @Value("${services.account-service.base-url}") String baseUrl) {
+            @Value("${services.account-service.base-url}") String baseUrl,
+            ServiceTokenIssuer serviceTokens) {
         this.restClient = builder.baseUrl(baseUrl).build();
+        this.serviceTokens = serviceTokens;
     }
 
     @Override
@@ -69,7 +75,8 @@ public class HttpPixKeyResolver implements PixKeyResolver {
         try {
             view = restClient.get()
                     .uri(uriBuilder -> uriBuilder.path("/internal/pix-keys/resolve").queryParam("key", key).build())
-                    .headers(this::forwardAuthorization)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_ACCOUNT,
+                            InternalApi.SCOPE_KEYS_RESOLVE))
                     .retrieve()
                     .body(KeyResolutionView.class);
         } catch (RestClientResponseException e) {
@@ -109,15 +116,5 @@ public class HttpPixKeyResolver implements PixKeyResolver {
         log.info("Destination Pix key resolved to an internal creditor account | keyValue={} "
                 + "creditorAccountId={} keyType={}", key, view.accountId(), view.keyType());
         return KeyResolution.internal(view.accountId());
-    }
-
-    /** Copy the current request's Authorization header onto the outbound call, if present. */
-    private void forwardAuthorization(HttpHeaders headers) {
-        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
-            String authorization = attrs.getRequest().getHeader(HttpHeaders.AUTHORIZATION);
-            if (StringUtils.hasText(authorization)) {
-                headers.set(HttpHeaders.AUTHORIZATION, authorization);
-            }
-        }
     }
 }

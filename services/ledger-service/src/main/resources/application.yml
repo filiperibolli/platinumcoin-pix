@@ -38,6 +38,21 @@ jwt:
   secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
   public-paths:
     - /actuator/**
+  # This service's workload identity (step 68, ADR-0017): the `aud` a caller must address, and the
+  # `iss` it would stamp if it called anyone (it does not). One property because it is one fact.
+  service-name: ledger-service
+  # The internal attack surface, in one screen: every /internal/** route and the single scope it
+  # requires. First match wins, so order matters — hence a list, not a map. A route that matches
+  # nothing here is REFUSED (fail-closed): an internal port nobody scoped is a mistake, and the safe
+  # reading of a mistake on the money path is "no". Note ledger:post and ledger:read are separate:
+  # a token that may read a balance may not move money, which is what "escopo mínimo" means here.
+  internal-routes:
+    - method: POST
+      pattern: /internal/ledger/postings
+      scope: ledger:post
+    - method: GET
+      pattern: /internal/ledger/accounts/**
+      scope: ledger:read
 
 # The statement cold archive (step 43, ARCHITECTURE §6.10). ledger-service owns pix_ledger, so it is the
 # service that archives it: no other service may read the table (ADR-0006), and archiving needs no

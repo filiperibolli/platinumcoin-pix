@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -113,7 +114,8 @@ class ExternalDictIT extends LocalStackTestBase {
         // BACEN's DICT existed that meant 404. Now it means "another PSP holds it" — which is what makes the
         // external send branch (debit to clearing, settle asynchronously) reachable over HTTP at last.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "bob@otherbank.com")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.internal", is(false)))
                 .andExpect(jsonPath("$.externalBank", is("99999999")))
@@ -129,7 +131,8 @@ class ExternalDictIT extends LocalStackTestBase {
         // A payer typing mixed case must reach the DICT with the same value the local table was searched
         // for; otherwise the two directories would disagree about what "the same key" means.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "  Bob@OtherBank.com  ")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.externalBank", is("99999999")));
 
@@ -139,7 +142,8 @@ class ExternalDictIT extends LocalStackTestBase {
     @Test
     void aForeignKeyKindDoesNotSinkAnOtherwisePayableResolution() throws Exception {
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "dana@otherbank.com")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.internal", is(false)))
                 .andExpect(jsonPath("$.externalBank", is("77777777")))
@@ -150,7 +154,8 @@ class ExternalDictIT extends LocalStackTestBase {
     void unknownInBothDirectoriesIsStill404KeyNotFound() throws Exception {
         // With the DICT up and answering 404, "not found" is finally the truth rather than a placeholder.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "nobody@nowhere.com")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code", is("KEY_NOT_FOUND")));
@@ -168,7 +173,8 @@ class ExternalDictIT extends LocalStackTestBase {
         REQUESTED_PATHS.clear();
 
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "heidi@platinum.com")
-                        .header("Authorization", token))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.internal", is(true)))
                 .andExpect(jsonPath("$.accountId", is("acc-heidi")));

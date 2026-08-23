@@ -3,6 +3,7 @@ package com.platinumcoin.pix.auth.infra.security;
 import com.platinumcoin.pix.auth.domain.model.IssuedToken;
 import com.platinumcoin.pix.auth.domain.port.TokenIssuer;
 import com.platinumcoin.pix.auth.infra.config.JwtProperties;
+import com.platinumcoin.pix.common.security.ServiceToken;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import java.time.Instant;
@@ -16,7 +17,13 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * HS256 adapter for {@link TokenIssuer}. Mints exactly the claim set the contract promises —
- * {@code sub}, {@code accountId}, {@code jti}, {@code iat}, {@code exp} — and nothing else.
+ * {@code sub}, {@code accountId}, {@code typ}, {@code jti}, {@code iat}, {@code exp} — and nothing else.
+ *
+ * <p>{@code typ=user} is the claim that says <b>a person is behind this token</b> (step 68, ADR-0017).
+ * The shared filter reads it to keep the two surfaces disjoint: a token stamped {@code user} is accepted
+ * on {@code /v1/**} and refused on every {@code /internal/**} port, so a customer's login can no longer
+ * be replayed against the ledger's posting endpoint. It is stamped here, at the only place a user token
+ * is ever born, rather than inferred downstream from the shape of the other claims.
  *
  * <p>{@code iat} and {@code exp} are both derived from a single captured instant so their
  * difference is exactly the configured TTL (JWT timestamps are whole seconds; deriving both from
@@ -44,6 +51,7 @@ public class JwtIssuer implements TokenIssuer {
         String token = Jwts.builder()
                 .subject(userId)
                 .claim("accountId", accountId)
+                .claim(ServiceToken.TYP_CLAIM, ServiceToken.TYP_USER)
                 .id(jti)
                 .issuedAt(Date.from(issuedAt))
                 .expiration(Date.from(expiresAt))
@@ -54,8 +62,8 @@ public class JwtIssuer implements TokenIssuer {
         // ADR-0012's "log the values" licence stops at secrets. jti is what ties this issuance to a
         // later request if token revocation/introspection ever lands.
         log.debug("Signed an HS256 access token, claims only (the token string is never logged) "
-                        + "| jti={} sub={} accountId={} issuedAt={} expiresAt={} ttlSeconds={}",
-                jti, userId, accountId, issuedAt, expiresAt, ttlSeconds);
+                        + "| jti={} sub={} accountId={} typ={} issuedAt={} expiresAt={} ttlSeconds={}",
+                jti, userId, accountId, ServiceToken.TYP_USER, issuedAt, expiresAt, ttlSeconds);
         return new IssuedToken(token, ttlSeconds);
     }
 }

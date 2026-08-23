@@ -28,17 +28,17 @@ jwt:
   public-paths:
     - /actuator/**
     - /v1/inbound/**
+  # Workload identity (step 68, ADR-0017). settlement-service runs off a queue and has no user token
+  # to forward even if it wanted to, so it has minted its own since step 33 — this step moves that
+  # issuer to common-lib and adds the typ/aud/scope claims that make it checkable rather than merely
+  # conventional.
+  service-name: settlement-service
+  service-token-ttl: ${SERVICE_TOKEN_TTL_SECONDS:60}s
 
 # Pix participant identifier (ISPB — 8 digits), sent to the rail as the debtor participant. Same value
 # payment-service bakes into every endToEndId; one place to change PlatinumCoin's participant code.
 pix:
   ispb: ${PIX_ISPB:12345678}
-  # Service-to-service auth (step 33). settlement runs off a queue, so it has no user token to forward to
-  # ledger-service's JWT-protected /internal endpoint — it mints its own short-lived token signed with the
-  # shared jwt.secret above. A sandbox stand-in for a real service credential; the production posture
-  # (ambient IAM role / mTLS) is the step-45 sweep (ADR-0013).
-  service-auth:
-    token-ttl-seconds: ${SERVICE_TOKEN_TTL_SECONDS:60}
   # Where an EXTERNAL send parks the money it debits (step 27) and, symmetrically, where an INBOUND Pix
   # draws the money it credits from (step 37). It MUST be the same id payment-service uses — both
   # directions net against one clearing balance, and step 52 shards it into SPI_CLEARING#00..#15, which is

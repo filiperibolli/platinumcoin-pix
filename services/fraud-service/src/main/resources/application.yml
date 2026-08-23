@@ -29,6 +29,12 @@ jwt:
   secret: ${JWT_SECRET:dev-only-hs256-secret-change-me-please-32b}
   public-paths:
     - /actuator/**
+  # Workload identity + the per-route scope map (step 68, ADR-0017).
+  service-name: fraud-service
+  internal-routes:
+    - method: POST
+      pattern: /internal/fraud/score
+      scope: fraud:score
 
 # Actuator: expose only what compose healthchecks and the runbook rely on.
 management:
