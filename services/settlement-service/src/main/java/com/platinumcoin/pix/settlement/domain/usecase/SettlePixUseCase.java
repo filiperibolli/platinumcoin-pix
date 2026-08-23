@@ -5,6 +5,7 @@ import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.settlement.domain.exception.SpiCallFailedException;
 import com.platinumcoin.pix.settlement.domain.exception.SpiSettlementRejectedException;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.ProcessedEvents;
 import com.platinumcoin.pix.settlement.domain.port.SettlementFunnelMetrics;
@@ -130,8 +131,9 @@ public class SettlePixUseCase {
      * normal attempt, which is itself safe because {@code endToEndId} is the idempotency key.
      *
      * <p>The transaction is already {@code SENT_TO_SPI} on this path (the prior attempt claimed it before
-     * the timeout), so a settled answer needs no {@code markSentToSpi} — the finalizer guards strictly on
-     * {@code SENT_TO_SPI} and commits the settlement plus its event in one atomic write.
+     * the timeout), so a settled answer needs no {@code markSentToSpi} — the finalizer takes the
+     * settlement fence from there (step 67) and commits the settlement plus its event in one atomic
+     * write.
      */
     private SettleOutcome settleAfterRedelivery(SettlePixCommand command) {
         Optional<SpiSettlement> alreadySettled = spi.findSettlement(command.endToEndId());
@@ -146,7 +148,8 @@ public class SettlePixUseCase {
                         + "had in fact moved the money, finalizing without re-sending | txId={} "
                         + "endToEndId={} amountCents={}",
                 command.txId(), command.endToEndId(), command.amountCents());
-        return finalizer.finalizeSettled(command, alreadySettled.get(), clock.instant());
+        return finalizer.finalizeSettled(command, alreadySettled.get(), clock.instant(),
+                FinalizationActor.SETTLEMENT_CONSUMER);
     }
 
     private SettleOutcome settle(SettlePixCommand command) {
@@ -190,7 +193,7 @@ public class SettlePixUseCase {
                             + "in clearing is returned to the payer | txId={} endToEndId={} amountCents={} "
                             + "reason={}",
                     command.txId(), command.endToEndId(), command.amountCents(), e.reason());
-            return finalizer.reverse(command, e.reason(), now);
+            return finalizer.reverse(command, e.reason(), now, FinalizationActor.SETTLEMENT_CONSUMER);
         } catch (SpiCallFailedException e) {
             // Unknown, NOT failed: the transfer may well have happened. Nothing local is decided; the
             // transaction rests at SENT_TO_SPI, which is what tells step 32 to ask before retrying.
@@ -201,6 +204,7 @@ public class SettlePixUseCase {
             return SettleOutcome.SPI_CALL_FAILED;
         }
 
-        return finalizer.finalizeSettled(command, settlement, now);
+        return finalizer.finalizeSettled(command, settlement, now,
+                FinalizationActor.SETTLEMENT_CONSUMER);
     }
 }

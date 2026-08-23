@@ -48,6 +48,12 @@ public record PaymentResponse(
      * is given its external face — the mapping cannot silently fall through to a wrong default. It did
      * exactly that when step 27 added {@code DEBITED}.
      *
+     * <p><b>Step 67 is the third time this worked.</b> Adding {@code FINALIZING_SETTLEMENT}/
+     * {@code FINALIZING_REVERSAL} to the enum broke this switch until each was given an external face —
+     * and both got {@code PROCESSING}, because a fence is a mechanism, not an outcome. A payer polling
+     * mid-finalization sees the same word they saw a second earlier; the internal state machine grew two
+     * states and the contract grew none.
+     *
      * <p>{@code DEBITED} and {@code SENT_TO_SPI} map to {@code PROCESSING} rather than to names of their
      * own: the payer has been debited but the payee has not been paid, and "the money is parked in our
      * clearing account" / "we are waiting on BACEN" are internal facts a client can neither use nor act
@@ -59,7 +65,8 @@ public record PaymentResponse(
      */
     private static String externalStatusOf(TransactionStatus status) {
         return switch (status) {
-            case RECEIVED, DEBITED, SENT_TO_SPI -> "PROCESSING";
+            case RECEIVED, DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL
+                    -> "PROCESSING";
             case SETTLED -> "SETTLED";
             // Terminal and visible, unlike DEBITED/SENT_TO_SPI: a reversal is something the payer must be
             // able to see and act on — their money came back, and failureReason says why.

@@ -99,7 +99,9 @@ class SettlePixUseCaseTest {
         useCase.execute(command(), false);
 
         assertThat(trace).containsExactly(
-                "claim", "markSentToSpi", "spi.settle", "ledger.releaseClearing", "markSettled");
+                "claim", "markSentToSpi", "spi.settle",
+                // step 67: the fence is won BEFORE the ledger is touched — that ordering is the invariant.
+                "fenceForSettlement", "ledger.releaseClearing", "markSettled");
     }
 
     /**
@@ -182,7 +184,8 @@ class SettlePixUseCaseTest {
         // No markSentToSpi: the transaction was already claimed by the attempt that timed out. The query,
         // then the atomic settle — nothing re-sent.
         assertThat(trace).containsExactly(
-                "claim", "spi.findSettlement", "ledger.releaseClearing", "markSettled");
+                "claim", "spi.findSettlement", "fenceForSettlement", "ledger.releaseClearing",
+                "markSettled");
     }
 
     /**
@@ -198,7 +201,7 @@ class SettlePixUseCaseTest {
         assertThat(spi.calls()).as("the retry POST ran because the rail reported nothing settled")
                 .isEqualTo(1);
         assertThat(trace).containsExactly("claim", "spi.findSettlement", "markSentToSpi", "spi.settle",
-                "ledger.releaseClearing", "markSettled");
+                "fenceForSettlement", "ledger.releaseClearing", "markSettled");
     }
 
     /**
@@ -230,7 +233,11 @@ class SettlePixUseCaseTest {
         assertThat(ledger.releases()).as("a reversal never releases the clearing to SPI_SETTLED").isEmpty();
     }
 
-    /** The order is the design: refund the payer, record REVERSED, then release the limit — once. */
+    /**
+     * The order is the design: <b>win the reversal fence</b> (step 67), refund the payer, record REVERSED,
+     * then release the limit — once. The fence sitting ahead of {@code ledger.reverseToPayer} is what makes
+     * "a losing path moves no money" true rather than merely likely.
+     */
     @Test
     void aReversalPostsBeforeTheTransitionAndReleasesTheLimitAfterItWins() {
         spi.failWith(new SpiSettlementRejectedException("CREDITOR_KEY_NOT_IN_DICT", null));
@@ -238,7 +245,27 @@ class SettlePixUseCaseTest {
         useCase.execute(command(), false);
 
         assertThat(trace).containsExactly("claim", "markSentToSpi", "spi.settle",
-                "ledger.reverseToPayer", "markReversed", "dailyLimits.release");
+                "fenceForReversal", "ledger.reverseToPayer", "markReversed", "dailyLimits.release");
+    }
+
+    /**
+     * <b>A lost fence costs nothing</b> (step 67): a reversal already owns this transaction's ending, so
+     * the queue-driven settle stops at the fence — the trace ends there, with no ledger call at all — and
+     * the message is acked as {@code NOT_ELIGIBLE} rather than retried into the same refusal.
+     */
+    @Test
+    void losingTheSettlementFenceStopsBeforeTheLedger() {
+        transactions.refuseSettlementFence();
+
+        SettleOutcome outcome = useCase.execute(command(), false);
+
+        assertThat(outcome).isEqualTo(SettleOutcome.NOT_ELIGIBLE);
+        // "release" is the eventId claim being handed back: NOT_ELIGIBLE is not a terminal outcome, so the
+        // claim does not outlive the attempt (an existing rule, unchanged by the fence).
+        assertThat(trace).containsExactly("claim", "markSentToSpi", "spi.settle", "fenceForSettlement",
+                "release");
+        assertThat(ledger.releases()).as("no money moved by the path that lost the fence").isEmpty();
+        assertThat(transactions.settledCalls()).isZero();
     }
 
     /**

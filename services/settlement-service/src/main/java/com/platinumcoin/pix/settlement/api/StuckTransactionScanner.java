@@ -50,8 +50,9 @@ public class StuckTransactionScanner {
         this.scanStuckTransactions = scanStuckTransactions;
         this.sloAlert = sloAlert;
         Gauge.builder("pix.reconciliation.oldest.seconds", oldestAgeSeconds, AtomicLong::doubleValue)
-                .description("Age of the oldest DEBITED/SENT_TO_SPI transaction — the leading indicator of "
-                        + "the <5-min reconciliation SLO (step 34, ADR-0003)")
+                .description("Age of the oldest non-terminal transaction (DEBITED, SENT_TO_SPI and, since "
+                        + "step 67, the two FINALIZING_* fences) — the leading indicator of the <5-min "
+                        + "reconciliation SLO (step 34, ADR-0003)")
                 .baseUnit("seconds")
                 .register(meterRegistry);
         log.info("Stuck-transaction scanner ready, it will scan the reconciliation index on a schedule, "

@@ -62,6 +62,8 @@ class StuckScannerIT extends LocalStackTestBase {
         // failsafe runs IT classes sequentially, so this never races another IT's in-flight transaction.
         deleteAllUnder("STATUS#DEBITED");
         deleteAllUnder("STATUS#SENT_TO_SPI");
+        deleteAllUnder("STATUS#FINALIZING_SETTLEMENT");
+        deleteAllUnder("STATUS#FINALIZING_REVERSAL");
     }
 
     @Test
@@ -92,6 +94,28 @@ class StuckScannerIT extends LocalStackTestBase {
         assertThat(gaugeValue())
                 .as("the gauge mirrors the scan outcome")
                 .isEqualTo((double) outcome.oldestAgeSeconds());
+    }
+
+    /**
+     * <b>Step 67's fencing states are scanned, or a stalled fence is invisible forever.</b> The fence moves
+     * {@code gsi2pk} onto {@code STATUS#FINALIZING_*}, so a process that died between winning its fence and
+     * recording the ending leaves a transaction that no longer appears under either stuck status. If the
+     * scan did not query these two partitions, that payment would sit with the payer's money parked in
+     * clearing and nothing would ever look at it again — the exact failure the &lt;5-min SLO forbids.
+     */
+    @Test
+    void fencingStatesAreScanned() {
+        String stalledSettlementFence = seed("FINALIZING_SETTLEMENT", Instant.now().minusSeconds(300));
+        String stalledReversalFence = seed("FINALIZING_REVERSAL", Instant.now().minusSeconds(400));
+        String freshFence = seed("FINALIZING_SETTLEMENT", Instant.now().minusSeconds(20));
+
+        ScanOutcome outcome = scanner.scanOnce();
+
+        assertThat(reconciler.handedOffTxIds())
+                .as("both stalled fences are found; the one still mid-finalization is left alone")
+                .containsExactlyInAnyOrder(stalledSettlementFence, stalledReversalFence)
+                .doesNotContain(freshFence);
+        assertThat(outcome.found()).isEqualTo(2);
     }
 
     @Test

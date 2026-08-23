@@ -50,8 +50,10 @@ class ScanStuckTransactionsUseCaseTest {
         useCase.execute();
 
         assertThat(store.queryTrace())
-                .as("only DEBITED and SENT_TO_SPI are queried — SETTLED/REVERSED can never be stuck")
-                .containsExactly("DEBITED", "SENT_TO_SPI");
+                .as("the four non-terminal states are queried — including the step-67 fences, since a "
+                        + "fence that stalls leaves the SENT_TO_SPI partition and would otherwise be "
+                        + "invisible to every future scan — and never a terminal one")
+                .containsExactly("DEBITED", "SENT_TO_SPI", "FINALIZING_SETTLEMENT", "FINALIZING_REVERSAL");
     }
 
     @Test

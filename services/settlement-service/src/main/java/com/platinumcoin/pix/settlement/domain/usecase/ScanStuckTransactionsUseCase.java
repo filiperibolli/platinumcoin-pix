@@ -16,14 +16,21 @@ import org.slf4j.LoggerFactory;
  * Find the transactions that fell through the cracks of the send flow and hand each to the reconciliation
  * path — the <b>scanner</b> half of reconciliation (step 34; ARCHITECTURE §6.7).
  *
- * <h2>What "stuck" means and why exactly these two statuses</h2>
- * An external send lives at {@link TransactionStatus#DEBITED} (money parked in clearing, not yet sent) or
- * {@link TransactionStatus#SENT_TO_SPI} (asked BACEN, no definitive answer) only transiently — a healthy
- * settlement walks it to {@code SETTLED}/{@code REVERSED} within seconds. A transaction that has sat in one
- * of these for longer than {@code stuckThreshold} is a symptom that something was lost: a consumer crashed
- * after the debit, an SPI response never arrived, a message rode into the DLQ. Neither terminal status
+ * <h2>What "stuck" means and why exactly these statuses</h2>
+ * An external send lives at {@link TransactionStatus#DEBITED} (money parked in clearing, not yet sent),
+ * {@link TransactionStatus#SENT_TO_SPI} (asked BACEN, no definitive answer) or — since step 67 — one of
+ * the two {@code FINALIZING_*} fences (a finalization that won the right to finish and is mid-flight) only
+ * transiently: a healthy settlement walks it to {@code SETTLED}/{@code REVERSED} within seconds. A
+ * transaction that has sat in one of these for longer than {@code stuckThreshold} is a symptom that
+ * something was lost: a consumer crashed after the debit, an SPI response never arrived, a message rode
+ * into the DLQ, a process died between its fence and its posting. Neither terminal status
  * ({@code SETTLED}, {@code REVERSED}) can be stuck — there is nothing left to do — which is why the scan
- * queries exactly {@code DEBITED} and {@code SENT_TO_SPI}.
+ * queries exactly the four non-terminal ones.
+ *
+ * <p><b>Omitting the fencing states here would be the worst possible bug in step 67:</b> the fence moves
+ * {@code gsi2pk} onto {@code STATUS#FINALIZING_*}, so a transaction that stalled between its fence and its
+ * posting would leave the {@code DEBITED}/{@code SENT_TO_SPI} partitions and never appear in any scan
+ * again — invisible forever, with the payer's money still parked in clearing.
  *
  * <h2>The clock lives here</h2>
  * The cutoff is {@code now − stuckThreshold}, computed from the injected {@link Clock} (never
@@ -47,9 +54,12 @@ public class ScanStuckTransactionsUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(ScanStuckTransactionsUseCase.class);
 
-    /** The only two states an external send can be legitimately stuck in — see the class javadoc. */
-    private static final List<TransactionStatus> STUCK_STATUSES =
-            List.of(TransactionStatus.DEBITED, TransactionStatus.SENT_TO_SPI);
+    /** The states an external send can be legitimately stuck in — see the class javadoc. */
+    private static final List<TransactionStatus> STUCK_STATUSES = List.of(
+            TransactionStatus.DEBITED,
+            TransactionStatus.SENT_TO_SPI,
+            TransactionStatus.FINALIZING_SETTLEMENT,
+            TransactionStatus.FINALIZING_REVERSAL);
 
     private final StuckTransactionStore store;
     private final StuckTransactionReconciler reconciler;

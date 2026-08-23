@@ -4,6 +4,7 @@ import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
 import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.port.DailyLimitRelease;
@@ -31,12 +32,25 @@ import org.slf4j.LoggerFactory;
  * ordering that keeps money from moving twice — could silently drift from the other. Money-correctness
  * logic lives once; both callers get it identically.
  *
- * <h2>The order is the design (unchanged from step 33)</h2>
- * Each method posts the ledger entry <b>before</b> the guarded status transition, and relies on the
- * posting being idempotent by a deterministic {@code txId} ({@code -rel}, {@code -rev}). A crash between
- * the posting and the transition is harmless: the redelivery — or the next reconciliation cycle — replays
- * the same {@code txId}, which the ledger turns into a no-op, and then records the status. Doing the
- * transition first would instead risk announcing a settlement or reversal whose money never moved.
+ * <h2>The order is the design — and step 67 put a third step at the front</h2>
+ * Each method now runs <b>fence → post → record</b>:
+ * <ol>
+ *   <li><b>Win the fence</b> ({@code FINALIZING_SETTLEMENT} / {@code FINALIZING_REVERSAL}), a conditional
+ *       transition that no other direction can take. <b>Losing it returns {@link SettleOutcome#NOT_ELIGIBLE}
+ *       before a single ledger call</b> — that line is the entire step.</li>
+ *   <li><b>Post the money</b>, idempotent by a deterministic {@code txId} ({@code -rel}, {@code -rev}).</li>
+ *   <li><b>Record the ending</b>, conditional on still holding that fence.</li>
+ * </ol>
+ * Steps 2 and 3 keep their step-33 order and their step-33 reason: the posting is idempotent, so a crash
+ * between them is replayed harmlessly by the redelivery or the next reconciliation cycle, whereas doing
+ * the transition first would risk announcing a settlement whose money never moved.
+ *
+ * <p><b>What step 1 fixed.</b> Before it, exclusivity was decided by step 3 — <i>after</i> the money had
+ * moved. Two different paths (the queue consumer and the reconciliation resolver) post under different
+ * {@code txId}s, so posting idempotency does not relate them: a settle racing a reverse drew the clearing
+ * account down twice against one credit and created money, and only then did one of them lose a race it
+ * had already paid for. Re-acquiring the fence you already hold is still allowed, which is what keeps a
+ * crash mid-finalization recoverable (ADR-0016 §4).
  *
  * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): a concrete domain service, not a port — it is
  * a single-impl internal collaborator, not a boundary to infrastructure, so it is a class both callers
@@ -74,10 +88,24 @@ public class SettlementFinalizer {
      * {@link SpiSettlement}, because the money moved <i>there</i> and reconciliation compares the two
      * systems on exactly that fact.
      *
-     * @return {@link SettleOutcome#SETTLED} on success, or {@link SettleOutcome#NOT_ELIGIBLE} if the
-     *         transaction moved out from under us (a racing reconciliation, a reversal)
+     * @param by the path performing this finalization — stamped on the fence as {@code fencedBy} so a
+     *           stalled finalization says which path stalled (step 67)
+     * @return {@link SettleOutcome#SETTLED} on success, or {@link SettleOutcome#NOT_ELIGIBLE} if the fence
+     *         was lost or the transaction moved out from under us
      */
-    public SettleOutcome finalizeSettled(SettlePixCommand command, SpiSettlement settlement, Instant now) {
+    public SettleOutcome finalizeSettled(SettlePixCommand command, SpiSettlement settlement, Instant now,
+            FinalizationActor by) {
+        // THE fence (step 67, ADR-0016). Everything below this line spends money; nothing below it runs
+        // unless this transaction's ending belongs to a settlement. A reversal that fenced first owns it,
+        // and this path leaves without touching the ledger.
+        if (!transactions.fenceForSettlement(command.txId(), by, now)) {
+            log.warn("Refusing to settle, another path owns this transaction's ending (or it is already "
+                            + "terminal), so NOTHING was posted to the ledger by this path | txId={} "
+                            + "endToEndId={} amountCents={} finalizedBy={}",
+                    command.txId(), command.endToEndId(), command.amountCents(), by.stamp());
+            return SettleOutcome.NOT_ELIGIBLE;
+        }
+
         SettlementConfirmation confirmation = SettlementConfirmation.of(settlement);
         OutboxEvent event = SettlementOutboxEvents.pixSettled(command, confirmation, now);
 
@@ -100,9 +128,9 @@ public class SettlementFinalizer {
             log.error("BACEN settled this Pix but the local transaction could no longer be moved to "
                             + "SETTLED, the money HAS left the clearing account and the local state does "
                             + "not say so | txId={} endToEndId={} amountCents={} expectedStatus={} "
-                            + "settledAt={}",
+                            + "settledAt={} finalizedBy={}",
                     command.txId(), command.endToEndId(), command.amountCents(), e.expectedStatus(),
-                    confirmation.settledAt());
+                    confirmation.settledAt(), by.stamp());
             return SettleOutcome.NOT_ELIGIBLE;
         }
 
@@ -136,24 +164,41 @@ public class SettlementFinalizer {
      *
      * <h2>The order, and why it is idempotent</h2>
      * <ol>
-     *   <li><b>Compensating posting first</b> ({@code debit clearing / credit payer}, keyed by
+     *   <li><b>Win the reversal fence first</b> ({@code FINALIZING_REVERSAL}, step 67). Losing it means a
+     *       settlement owns this transaction's ending, and this path returns having posted nothing. The
+     *       breadth that used to live on {@code markReversed} — either stuck state is reversible — moved
+     *       here, because that is the decision that has to happen before the compensating posting.</li>
+     *   <li><b>Compensating posting</b> ({@code debit clearing / credit payer}, keyed by
      *       {@code <txId>-rev}). Idempotent by that {@code txId}: a redelivery or a re-run replays it
      *       rather than refunding twice. A refusal <i>or</i> an unknown outcome throws and propagates
      *       (step 66) — nothing local is recorded, so the redelivery re-posts the same identity and
      *       learns what really happened.</li>
      *   <li><b>Guarded transition to {@code REVERSED} + {@code PixReversed}, in one atomic write.</b> If it
-     *       refuses, the transaction was already reversed (a redelivery or a racing resolver finalized
-     *       first) — we return {@code NOT_ELIGIBLE} without releasing the limit again.</li>
+     *       refuses, the transaction was already reversed (a redelivery or a racing resolver that shared
+     *       this same fence finalized first) — we return {@code NOT_ELIGIBLE} without releasing the limit
+     *       again.</li>
      *   <li><b>Release the daily limit</b>, reached only when the transition <i>won on this invocation</i>
      *       — so a non-idempotent counter decrement runs exactly once per reversal.</li>
      * </ol>
      * The residual window (a crash between the transition and the release) leaves the reservation
      * standing: a conservative over-count that never overspends and self-heals next day (ADR-0007).
      *
+     * @param by the path performing this reversal, stamped on the fence as {@code fencedBy} (step 67)
      * @return {@link SettleOutcome#REVERSED} on success, or {@link SettleOutcome#NOT_ELIGIBLE} if the
-     *         transaction was already terminal
+     *         fence was lost or the transaction was already terminal
      */
-    public SettleOutcome reverse(SettlePixCommand command, String reason, Instant now) {
+    public SettleOutcome reverse(SettlePixCommand command, String reason, Instant now,
+            FinalizationActor by) {
+        // The mirror of the settlement fence, and the same rule: no fence, no posting. A settlement in
+        // FINALIZING_SETTLEMENT is not a legal source, so a reversal can never be laid over one.
+        if (!transactions.fenceForReversal(command.txId(), by, now)) {
+            log.warn("Refusing to reverse, another path owns this transaction's ending (or it is already "
+                            + "terminal), so the payer was NOT refunded by this path and nothing was "
+                            + "posted | txId={} endToEndId={} amountCents={} reason={} finalizedBy={}",
+                    command.txId(), command.endToEndId(), command.amountCents(), reason, by.stamp());
+            return SettleOutcome.NOT_ELIGIBLE;
+        }
+
         String reversalTxId = reversalTxId(command.txId());
         LedgerOutcomes.requireMoneyMoved(
                 ledger.reverseToPayer(reversalTxId, command.clearingAccountId(),

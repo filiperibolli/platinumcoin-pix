@@ -43,6 +43,30 @@ public enum TransactionStatus {
     SENT_TO_SPI,
 
     /**
+     * <b>A settlement has won the exclusive right to finish this external send</b> (step 67, ADR-0016) —
+     * settlement-service's fencing state, written before it posts the clearing release.
+     *
+     * <p><b>Why it exists in this enum, which never writes it.</b> Same reason {@link #REVERSED} does, and
+     * this time the lesson was applied <i>before</i> the outage instead of after: the repository rebuilds
+     * {@code status} with {@code valueOf}, so a state settlement-service can write and this enum does not
+     * know is a {@code 500} on {@code GET /v1/payments/&#123;id&#125;} — here, for every payment in the
+     * few milliseconds it is being finalized. The two enums agree by contract, not by construction, and
+     * step 67 shipped both sides in one commit for exactly that reason.
+     *
+     * <p>Non-terminal, and it stays invisible to clients: {@code PaymentResponse} maps it to
+     * {@code PROCESSING}, like {@code DEBITED} and {@link #SENT_TO_SPI}. "We are mid-finalization" is an
+     * internal mechanic, not a payment outcome.
+     */
+    FINALIZING_SETTLEMENT,
+
+    /**
+     * The reversal counterpart of {@link #FINALIZING_SETTLEMENT} (step 67): a reversal owns this
+     * transaction's ending. Also non-terminal, also read-only here, also {@code PROCESSING} on the wire —
+     * announcing "we are about to reverse" would be telling the payer an outcome that has not committed.
+     */
+    FINALIZING_REVERSAL,
+
+    /**
      * The money has moved and, for an internal transfer, nothing is left to settle: the atomic ledger
      * posting debited the payer and credited the payee in one transaction. The terminal state of an
      * internal send (step 21), and — via the SPI confirmation — of an external one (step 31).
