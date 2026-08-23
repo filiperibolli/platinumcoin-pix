@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,8 +46,12 @@ class KeyResolutionIT extends LocalStackTestBase {
                         .content("{\"keyType\":\"EMAIL\",\"keyValue\":\"frank@platinum.com\"}"))
                 .andExpect(status().isCreated());
 
+        // Registration is a customer action (a user token); resolution is a service action
+        // (payment-service asking the DICT). Since step 68 those are different credentials, and this
+        // test having to split them is the finding showing up in the suite.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "frank@platinum.com")
-                        .header("Authorization", token))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.internal", is(true)))
                 .andExpect(jsonPath("$.accountId", is("acc-frank")))
@@ -63,7 +68,8 @@ class KeyResolutionIT extends LocalStackTestBase {
 
         // The payer types a mixed-case e-mail; it must still hit the lowercased registration.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "Grace@Platinum.com")
-                        .header("Authorization", token))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId", is("acc-grace")));
     }
@@ -77,7 +83,8 @@ class KeyResolutionIT extends LocalStackTestBase {
         // an honesty decision, not a money-safety one — and the deliberate opposite of the fraud fail-open
         // (ADR-0005), where proceeding without an answer carries bounded risk and blocking would be worse.
         mvc.perform(get("/internal/pix-keys/resolve").param("key", "someone@otherbank.com")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_KEYS_RESOLVE)))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code", is("DIRECTORY_UNAVAILABLE")))

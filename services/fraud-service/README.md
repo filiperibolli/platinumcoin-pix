@@ -20,11 +20,16 @@ rolling `INCR`/`EXPIRE` windows); Sprint 9's balance cache reuses the **same** c
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `POST` | `/internal/fraud/score` | Bearer (internal) | Rule-based score → `{decision, score, reasons[]}` under a p99 < 150ms budget |
+| `POST` | `/internal/fraud/score` | Service `fraud:score` | Rule-based score → `{decision, score, reasons[]}` under a p99 < 150ms budget |
 | `GET`  | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
 ### `POST /internal/fraud/score`
+
+**Auth (step 68, ADR-0017):** a **service** token only — `typ=service`, `aud=fraud-service`,
+`scope=fraud:score`. payment-service mints one per call; a customer's login gets
+`403 INTERNAL_PORT_FORBIDDEN`, and a `fraud:score` token is refused by every other service. To call it
+by hand: `scripts/service-token.sh fraud-service fraud:score` (`docs/local-dev.md` §3.1).
 
 Body `{accountId, pixKey, amountCents, timestamp?}` (integer cents; `timestamp` optional — falls back
 to the server clock for the odd-hours rule). Returns `{decision: APPROVE|REVIEW|DENY, score, reasons[]}`.
@@ -51,6 +56,8 @@ forwards the caller's token with the 200ms timeout + fail-open flag in **step 25
 | `REDIS_HOST` / `spring.data.redis.host` | `localhost` (compose: `redis`) | Redis host — the velocity-counter store |
 | `REDIS_PORT` / `spring.data.redis.port` | `6379` | Redis port |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must match auth-service. This service only **validates** tokens. |
+| `jwt.service-name` | `fraud-service` | **This service's workload identity (step 68, ADR-0017)** — the `aud` an inbound service token must be addressed to. |
+| `jwt.internal-routes` | see `application.yml` | The per-route scope map: `POST /internal/fraud/score` → `fraud:score`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
 | `web.cors.allowed-origin-patterns` | `*` | Local-dev CORS for the from-disk API explorer; a deployed posture pins origins (step 45) |
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
@@ -100,6 +107,8 @@ curl -s -X POST localhost:8083/internal/fraud/score \
 
 ## Related decisions
 
+- [ADR-0017](../../docs/adr/0017-workload-identity-for-internal-ports.md) — **workload identity for internal ports** (step 68, amends ADR-0007): `POST /internal/fraud/score` requires a service token addressed to
+  `fraud-service` and scoped `fraud:score`; a user's login gets `403` (`InternalPortMatrixIT`).
 - [ADR-0005](../../docs/adr/0005-fraud-latency-budget-fail-open.md) — fraud on a latency budget, fail-open.
 - [ADR-0008](../../docs/adr/0008-redis-balance-cache.md) — Redis as its own container, the local
   ElastiCache stand-in (velocity counters here, balance cache in Sprint 9).

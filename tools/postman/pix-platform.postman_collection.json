@@ -277,7 +277,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -436,7 +436,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -480,7 +480,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1495,7 +1495,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1536,7 +1536,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1579,7 +1579,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1635,7 +1635,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               },
               {
                 "key": "Content-Type",
@@ -1687,7 +1687,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               },
               {
                 "key": "Content-Type",
@@ -1738,7 +1738,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               },
               {
                 "key": "Content-Type",
@@ -1798,7 +1798,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               },
               {
                 "key": "Content-Type",
@@ -1858,7 +1858,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1910,7 +1910,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               }
             ],
             "url": {
@@ -1980,7 +1980,7 @@
             "header": [
               {
                 "key": "Authorization",
-                "value": "Bearer {{accessToken}}"
+                "value": "Bearer {{serviceToken}}"
               },
               {
                 "key": "Content-Type",
@@ -2654,6 +2654,84 @@
     {
       "key": "statementCursor",
       "value": ""
+    },
+    {
+      "key": "serviceToken",
+      "value": "",
+      "description": "Minted per request by the collection pre-request script for every /internal/** call (step 68, ADR-0017). Never set it by hand."
+    },
+    {
+      "key": "jwtSecret",
+      "value": "dev-only-hs256-secret-change-me-please-32b",
+      "description": "The shared HS256 secret the sandbox signs every token with (ADR-0007). Only used to mint service tokens locally; there is no production equivalent."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// ---------------------------------------------------------------------------------------------",
+          "// Service tokens for /internal/** (step 68, ADR-0017)",
+          "//",
+          "// Internal ports stopped accepting a user's login token: they require typ=service, addressed to",
+          "// the target service (aud) and scoped to one operation (scope). {{accessToken}} now correctly gets",
+          "// 403 INTERNAL_PORT_FORBIDDEN there. So this script mints, per request, exactly the token the",
+          "// calling service would mint — same claims, same shared HS256 secret — and drops it in",
+          "// {{serviceToken}}, which every /internal/** request below sends.",
+          "//",
+          "// The route -> (aud, scope) table is the SAME mapping each service declares in its application.yml",
+          "// under jwt.internal-routes. Reading them side by side is the point: this is what 'escopo de",
+          "// servico e minimo' looks like from the caller's side.",
+          "//",
+          "// THIS ONLY WORKS BECAUSE THE SANDBOX SHARES ONE SECRET (ADR-0007). A real deployment gives each",
+          "// workload its own credential (RS256+JWKS or mTLS), and no client-side script can forge one.",
+          "// ---------------------------------------------------------------------------------------------",
+          "const path = '/' + pm.request.url.path.join('/');",
+          "",
+          "if (path.indexOf('/internal/') === 0 || path.indexOf('/internal/') > -1) {",
+          "    const ROUTES = [",
+          "        { match: '/internal/ledger/postings',  aud: 'ledger-service',  scope: 'ledger:post' },",
+          "        { match: '/internal/ledger/accounts',  aud: 'ledger-service',  scope: 'ledger:read' },",
+          "        { match: '/internal/pix-keys/resolve', aud: 'account-service', scope: 'keys:resolve' },",
+          "        { match: '/internal/accounts',         aud: 'account-service', scope: 'accounts:read' },",
+          "        { match: '/internal/fraud/score',      aud: 'fraud-service',   scope: 'fraud:score' }",
+          "    ];",
+          "    const route = ROUTES.find(r => path.indexOf(r.match) > -1);",
+          "    if (!route) {",
+          "        console.warn('No scope mapped for ' + path + ' — the service will 403 (it fails closed).');",
+          "    } else {",
+          "        pm.collectionVariables.set('serviceToken', mintServiceToken(route.aud, route.scope));",
+          "        console.log('Minted a service token | aud=' + route.aud + ' scope=' + route.scope);",
+          "    }",
+          "}",
+          "",
+          "function mintServiceToken(audience, scope) {",
+          "    const CryptoJS = require('crypto-js');",
+          "    const secret = pm.collectionVariables.get('jwtSecret')",
+          "        || 'dev-only-hs256-secret-change-me-please-32b';",
+          "    const issuer = 'postman';",
+          "    const now = Math.floor(Date.now() / 1000);",
+          "    const header = { alg: 'HS256' };",
+          "    // aud is an ARRAY, matching what jjwt writes on the Java side. The verifier accepts either",
+          "    // shape, but a tool that produces a different one hides shape bugs instead of surfacing them.",
+          "    const payload = {",
+          "        sub: issuer, typ: 'service', iss: issuer, aud: [audience], scope: scope,",
+          "        jti: '' + now + '-' + Math.random().toString(36).slice(2), iat: now, exp: now + 300",
+          "    };",
+          "    const signingInput = b64url(JSON.stringify(header)) + '.' + b64url(JSON.stringify(payload));",
+          "    const signature = CryptoJS.HmacSHA256(signingInput, secret)",
+          "        .toString(CryptoJS.enc.Base64).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+          "    return signingInput + '.' + signature;",
+          "",
+          "    function b64url(text) {",
+          "        return CryptoJS.enc.Base64.stringify(CryptoJS.enc.Utf8.parse(text))",
+          "            .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+          "    }",
+          "}"
+        ]
+      }
     }
   ]
 }

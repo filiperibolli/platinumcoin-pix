@@ -2,13 +2,13 @@ package com.platinumcoin.pix.settlement.infra.client;
 
 import com.platinumcoin.pix.settlement.domain.exception.DirectoryUnavailableException;
 import com.platinumcoin.pix.settlement.domain.port.PixKeyResolver;
-import com.platinumcoin.pix.settlement.infra.security.ServiceTokenIssuer;
+import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import java.time.Duration;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -82,7 +82,8 @@ public class HttpPixKeyResolver implements PixKeyResolver {
             view = restClient.get()
                     .uri(uriBuilder -> uriBuilder.path("/internal/pix-keys/resolve")
                             .queryParam("key", keyValue).build())
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + serviceTokens.issue())
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_ACCOUNT,
+                            InternalApi.SCOPE_KEYS_RESOLVE))
                     .retrieve()
                     .body(KeyResolutionView.class);
         } catch (RestClientResponseException e) {

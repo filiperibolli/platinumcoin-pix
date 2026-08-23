@@ -465,12 +465,68 @@
       } catch (_) { return text; }
     }
 
+
+    // ---- Service tokens for /internal/** (step 68, ADR-0017) -----------------------------------
+    // Until step 68 these cards reached the ledger, the DICT and the fraud engine with the LOGGED-IN
+    // USER'S token, because that is what the services accepted — which was the finding: a customer's
+    // login was a working credential on POST /internal/ledger/postings, the platform's one
+    // money-moving operation. Now those ports take only a SERVICE token: typ=service, addressed to
+    // the target service (aud), scoped to one operation (scope).
+    //
+    // So the explorer mints one, per call, exactly as payment-service does. Two consequences worth
+    // noticing while you click around: (1) you are no longer logged in "as the ledger" — the internal
+    // cards work whether or not you have a session, because a service call has no user; and (2) a
+    // ledger:read token cannot post, so the scope split is visible from here, not just in a config file.
+    //
+    // THIS IS ONLY POSSIBLE BECAUSE THE SANDBOX SHARES ONE HS256 SECRET (ADR-0007). A browser that can
+    // forge a service credential is the opposite of a production posture; there each workload holds its
+    // own key (RS256+JWKS) or a client certificate, and nothing running on this page could mint one.
+    const SERVICE_TOKEN_SECRET = 'dev-only-hs256-secret-change-me-please-32b';
+    const INTERNAL_ROUTES = [
+      { match: '/internal/ledger/postings',  aud: 'ledger-service',  scope: 'ledger:post' },
+      { match: '/internal/ledger/accounts',  aud: 'ledger-service',  scope: 'ledger:read' },
+      { match: '/internal/pix-keys/resolve', aud: 'account-service', scope: 'keys:resolve' },
+      { match: '/internal/accounts',         aud: 'account-service', scope: 'accounts:read' },
+      { match: '/internal/fraud/score',      aud: 'fraud-service',   scope: 'fraud:score' },
+    ];
+
+    const b64urlBytes = (bytes) => btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const b64urlText = (text) => b64urlBytes(new TextEncoder().encode(text));
+
+    /** The scoped service token for this path, or null when the path is not an internal port. */
+    async function serviceTokenFor(path) {
+      const route = INTERNAL_ROUTES.find((r) => path.indexOf(r.match) > -1);
+      if (!route) return null;
+      const now = Math.floor(Date.now() / 1000);
+      // aud is an ARRAY, matching what jjwt writes on the Java side. The verifier accepts either
+      // shape; producing the same one keeps this tool honest about what production sends.
+      const payload = {
+        sub: 'api-explorer', typ: 'service', iss: 'api-explorer', aud: [route.aud],
+        scope: route.scope, jti: crypto.randomUUID(), iat: now, exp: now + 300,
+      };
+      const signingInput = b64urlText(JSON.stringify({ alg: 'HS256' })) + '.'
+        + b64urlText(JSON.stringify(payload));
+      const key = await crypto.subtle.importKey('raw',
+        new TextEncoder().encode(SERVICE_TOKEN_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signingInput));
+      return signingInput + '.' + b64urlBytes(new Uint8Array(signature));
+    }
+
     // ---- Core request helper ------------------------------------------------------------------
     async function send({ method, path, headers = {}, body = null, auth = false, base = null, token = null }) {
       const h = { ...headers };
-      // An explicit token wins over the session: a journey routinely acts as TWO users (bob registers
-      // the key that alice then pays), and it must not have to log in and out to do it.
-      if (token) h['Authorization'] = 'Bearer ' + token;
+      // An /internal/** path ALWAYS gets a freshly minted service token, overriding both the session
+      // and any explicitly passed one. Not a convenience: presenting a user's token here is precisely
+      // the defect step 68 removed, so the explorer must not have a code path that can still do it —
+      // the journeys below pass a user token to helpers like balanceCents(), and this is what makes
+      // that harmless instead of a working exploit.
+      const minted = await serviceTokenFor(path);
+      if (minted) h['Authorization'] = 'Bearer ' + minted;
+      // Otherwise an explicit token wins over the session: a journey routinely acts as TWO users (bob
+      // registers the key that alice then pays), and it must not log in and out to do it.
+      else if (token) h['Authorization'] = 'Bearer ' + token;
       else if (auth && accessToken) h['Authorization'] = 'Bearer ' + accessToken;
       const target = (base || authBase()) + path;
       let res;
@@ -621,7 +677,7 @@
           },
           {
             method: 'GET', path: '/internal/accounts/acc-001', title: 'Internal lookup (by id)', auth: true, capturesToken: false,
-            desc: 'Service-to-service lookup by account id (ADR-0006). Returns integer dailyLimitCents (500000) for callers that do integer math on the limit — the internal counterpart to the decimal string on /me. Requires a valid token but is not account-scoped (an internal seam). Unknown id ⇒ 404 (code: ACCOUNT_NOT_FOUND).',
+            desc: 'Service-to-service lookup by account id (ADR-0006). Returns integer dailyLimitCents (500000) for callers that do integer math on the limit — the internal counterpart to the decimal string on /me. Since step 68 this port takes a SERVICE token only — typ=service, aud=account-service, scope=accounts:read, minted per call by this page and never your login (a user token here now gets 403 INTERNAL_PORT_FORBIDDEN). It is still not account-scoped: the token names no account, because a service asserts no authority to spend anyone\'s money — the account comes from the path, and nothing here moves money. Unknown id ⇒ 404 (code: ACCOUNT_NOT_FOUND).',
             headers: {}, body: null,
           },
           {
@@ -642,7 +698,7 @@
           },
           {
             method: 'GET', path: '/internal/pix-keys/resolve?key=alice@platinum.com', title: 'Resolve a Pix key (internal / DICT)', auth: true, capturesToken: false,
-            desc: 'account-service\'s DICT role: resolve a Pix key to its destination. An internal key ⇒ {internal:true, accountId, keyType} — register alice@platinum.com first (Register a Pix key) so it resolves. The local pix_keys table is tried FIRST and BACEN\'s DICT is not consulted at all for a key we already hold: this is the hottest read on the send path, so it must not pay a network hop. Requires a valid token (/internal/** is not public); the key is lowercase-normalized to mirror registration. Edit the ?key= value to try another — and see the next card for a key held at another bank.',
+            desc: 'account-service\'s DICT role: resolve a Pix key to its destination. An internal key ⇒ {internal:true, accountId, keyType} — register alice@platinum.com first (Register a Pix key) so it resolves. The local pix_keys table is tried FIRST and BACEN\'s DICT is not consulted at all for a key we already hold: this is the hottest read on the send path, so it must not pay a network hop. Requires a keys:resolve SERVICE token (step 68) — minted per call by this page, addressed to account-service. Notice the split the finding forced: registering a key above is a CUSTOMER action and uses your login; resolving one is a SERVICE action and does not. The key is lowercase-normalized to mirror registration. Edit the ?key= value to try another — and see the next card for a key held at another bank.',
             headers: {}, body: null,
           },
           {
@@ -780,11 +836,11 @@
       },
       {
         id: 'ledger', name: 'ledger-service', port: 8085, baseUrl: 'http://localhost:8085',
-        blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 shipped the read half (a strongly consistent balance read, because the ledger must read its own writes); step 14 adds the write half \u2014 the atomic double-entry posting, one TransactWriteItems in which every guard is a condition, so a refusal writes nothing at all. No /v1 surface: no end user talks to the ledger, payment-service does on their behalf, so every endpoint is internal and authenticated.',
+        blurb: 'The heart: the only writer of pix_ledger (ADR-0006). Step 13 shipped the read half (a strongly consistent balance read, because the ledger must read its own writes); step 14 adds the write half \u2014 the atomic double-entry posting, one TransactWriteItems in which every guard is a condition, so a refusal writes nothing at all. No /v1 surface: no end user talks to the ledger, payment-service does on their behalf — so every endpoint is internal and, since step 68 (ADR-0017), authenticated by a SCOPED SERVICE TOKEN this page mints per call (typ=service, aud=ledger-service, scope=ledger:read or ledger:post). A customer\'s login is refused here with 403: the posting endpoint names both accounts explicitly, so “the debited account comes from the JWT” cannot protect it — only refusing the wrong KIND of caller can.',
         endpoints: [
           {
             method: 'GET', path: '/internal/ledger/accounts/acc-001/balance', title: 'Balance (alice)', auth: true, capturesToken: false,
-            desc: 'Balance of one ledger account, read with ConsistentRead=true (an eventually-consistent read could show money that is already spent). Returns {accountId, balance, balanceCents, version}: "10000.00" as a decimal string for you, 1000000 as integer cents for the services that do arithmetic on it \u2014 the same number twice, formatted once at the API edge. version is the posting counter (audit aid, never a lock), still 0 because nothing has posted yet. Not account-scoped on purpose: edit the path to acc-002 and alice\'s token still reads bob\'s balance \u2014 this is an internal seam, and nothing here moves money.',
+            desc: 'Balance of one ledger account, read with ConsistentRead=true (an eventually-consistent read could show money that is already spent). Returns {accountId, balance, balanceCents, version}: "10000.00" as a decimal string for you, 1000000 as integer cents for the services that do arithmetic on it \u2014 the same number twice, formatted once at the API edge. version is the posting counter (audit aid, never a lock), still 0 because nothing has posted yet. Not account-scoped on purpose: edit the path to acc-002 and it reads bob\'s balance \u2014 this is an internal seam and nothing here moves money. What CHANGED in step 68 is WHO MAY ASK: the credential attached is a minted service token scoped ledger:read, not alice\'s login, which now gets 403 INTERNAL_PORT_FORBIDDEN. And ledger:read is not ledger:post \u2014 the same service, two scopes, so a credential that may look at money still may not move it.',
             headers: {}, body: null,
           },
           {
@@ -794,7 +850,7 @@
           },
           {
             method: 'GET', path: '/internal/ledger/accounts/acc-999/balance', title: 'Balance \u2014 unknown account (404)', auth: true, capturesToken: false,
-            desc: 'An account with no BALANCE item \u21d2 404 problem+json (code: LEDGER_ACCOUNT_NOT_FOUND), never a balance of zero: in a ledger "no such account" and "no money" are opposite facts and must not look alike on the wire. Log out and re-send to see the other failure mode \u2014 401 UNAUTHORIZED, because /internal/** is not public here either.',
+            desc: 'An account with no BALANCE item \u21d2 404 problem+json (code: LEDGER_ACCOUNT_NOT_FOUND), never a balance of zero: in a ledger "no such account" and "no money" are opposite facts and must not look alike on the wire. Logging out does NOT produce a 401 here any more: since step 68 this card mints its OWN service token, so it works with no session at all \u2014 the honest shape of a service-to-service call, which has no user. To see a refusal instead, run the probe in docs/local-dev.md \u00a73.1: present a real user login to this port and read the 403 INTERNAL_PORT_FORBIDDEN.',
             headers: {}, body: null,
           },
           {
@@ -838,7 +894,7 @@
         endpoints: [
           {
             method: 'POST', path: '/internal/fraud/score', title: 'Score a transfer (APPROVE)', auth: true, capturesToken: false,
-            desc: 'Rule-based in-path score → {decision, score, reasons[]} under a p99 < 150ms budget. Four cheap rules read pre-computed Redis features — no model, no DB, no hop beyond Redis (heavy/ML scoring runs async off the event stream and feeds block-lists this check reads): HIGH_AMOUNT (single value over R$5,000), VELOCITY_COUNT / VELOCITY_AMOUNT (rolling per-minute / per-hour INCR+EXPIRE windows), NEW_PAYEE (persistent SADD set — first time this account pays this key) and ODD_HOURS (00:00–05:00 São Paulo). Each fired reason adds its weight to a 0–100 score; ≥70 → DENY, ≥40 → REVIEW, else APPROVE. This first small daytime transfer scores only NEW_PAYEE (15) → APPROVE. Try DENY: set amountCents to 5000000 (HIGH_AMOUNT alone hits the deny band). Try REVIEW: Send this 5+ times quickly with the same accountId (VELOCITY_COUNT crosses the threshold). accountId is a body field here — this is an internal service-to-service seam, and payment-service (which took the account from ITS token) forwards it as data; /internal/** is still authenticated, so a token is attached. timestamp is optional (server clock used if omitted).',
+            desc: 'Rule-based in-path score → {decision, score, reasons[]} under a p99 < 150ms budget. Four cheap rules read pre-computed Redis features — no model, no DB, no hop beyond Redis (heavy/ML scoring runs async off the event stream and feeds block-lists this check reads): HIGH_AMOUNT (single value over R$5,000), VELOCITY_COUNT / VELOCITY_AMOUNT (rolling per-minute / per-hour INCR+EXPIRE windows), NEW_PAYEE (persistent SADD set — first time this account pays this key) and ODD_HOURS (00:00–05:00 São Paulo). Each fired reason adds its weight to a 0–100 score; ≥70 → DENY, ≥40 → REVIEW, else APPROVE. This first small daytime transfer scores only NEW_PAYEE (15) → APPROVE. Try DENY: set amountCents to 5000000 (HIGH_AMOUNT alone hits the deny band). Try REVIEW: Send this 5+ times quickly with the same accountId (VELOCITY_COUNT crosses the threshold). accountId is a body field here — this is an internal service-to-service seam, and payment-service (which took the account from ITS OWN caller\'s token) passes it as data. Since step 68 the token attached is a minted SERVICE token (aud=fraud-service, scope=fraud:score), never the payer\'s login: fraud-service has no business accepting a customer credential, and a fraud:score token is refused by ledger-service and by every other operation here. timestamp is optional (server clock used if omitted).',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ accountId: 'acc-001', pixKey: 'bob@platinum.com', amountCents: 12550, timestamp: '2026-07-07T12:00:00Z' }, null, 2),
           },
@@ -1372,14 +1428,25 @@
         const prev = $('prev-' + key); if (!prev) return;
         const base = ep.capturesToken ? authBase() : currentServiceBase(svc);
         const lines = [`<span class="rp-method">${ep.method}</span> ${escapeHtml(base + effPath())}`];
-        if (ep.auth) lines.push(accessToken
-          ? `Authorization: Bearer …  (session: ${identity ? identity.accountId : 'logged in'})`
-          : `Authorization: —  (not logged in; this endpoint will 401)`);
+        // An internal port is authenticated by a MINTED service token, not by your session — so the
+        // preview must say so, or the lock icon would keep implying "log in first" for a call that has
+        // no user at all. Getting this line wrong is how a tool teaches the wrong mental model.
+        const internalRoute = INTERNAL_ROUTES.find((r) => effPath().indexOf(r.match) > -1);
+        if (internalRoute) {
+          lines.push(`Authorization: Bearer …  (service token · aud=${internalRoute.aud}`
+            + ` scope=${internalRoute.scope} — minted per call, not your login)`);
+        } else if (ep.auth) {
+          lines.push(accessToken
+            ? `Authorization: Bearer …  (session: ${identity ? identity.accountId : 'logged in'})`
+            : `Authorization: —  (not logged in; this endpoint will 401)`);
+        }
         Object.entries(effHeaders()).forEach(([k, v]) => lines.push(`${escapeHtml(k)}: ${escapeHtml(v)}`));
         if (hasBody && bodyEl()) { lines.push(''); lines.push(escapeHtml(bodyEl().value)); }
         prev.innerHTML = lines.join('\n');
         const authEl = $('auth-' + key);
-        if (authEl) authEl.className = 'authnote ' + (accessToken ? 'muted' : 'status bad');
+        // An internal card is never "blocked on login": it mints its own credential.
+        if (authEl) authEl.className = 'authnote '
+          + (internalRoute || accessToken ? 'muted' : 'status bad');
       }
       // Recompute the preview as the user edits any field, and once now.
       ['input', 'change'].forEach((evt) => card.querySelector('.body').addEventListener(evt, refreshPreview));

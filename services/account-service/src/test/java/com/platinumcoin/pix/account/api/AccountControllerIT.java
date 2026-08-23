@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.account.api;
 
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -64,7 +65,8 @@ class AccountControllerIT extends LocalStackTestBase {
     @Test
     void internalLookupReturnsIntegerCents() throws Exception {
         mvc.perform(get("/internal/accounts/acc-001")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_ACCOUNTS_READ)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId", is("acc-001")))
                 .andExpect(jsonPath("$.userId", is("u-alice")))
@@ -75,7 +77,8 @@ class AccountControllerIT extends LocalStackTestBase {
     @Test
     void internalLookupOfUnknownAccountIs404ProblemJson() throws Exception {
         mvc.perform(get("/internal/accounts/acc-999")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_ACCOUNT,
+                                InternalApi.SCOPE_ACCOUNTS_READ)))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code", is("ACCOUNT_NOT_FOUND")));

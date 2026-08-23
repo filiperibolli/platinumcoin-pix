@@ -1,5 +1,7 @@
 package com.platinumcoin.pix.payment.infra.client;
 
+import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import java.time.Duration;
@@ -7,14 +9,11 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * The only place HTTP touches fraud scoring (ADR-0010). Implements {@link FraudScorer} by calling
@@ -37,10 +36,13 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * availability argument applies, and we skip rather than reject legitimate payments. The wire never
  * carries {@code SKIPPED}; it is minted only on this side.
  *
- * <p><b>Service-to-service auth.</b> The endpoint is behind the shared JWT filter, so the caller's
- * bearer token is forwarded (ADR-0007; a service credential is the deployed posture, step-45). The
- * correlation id is propagated by common-lib's {@code RestClient} customizer, so one {@code grep}
- * stitches the payment and fraud logs together.
+ * <p><b>Service-to-service auth (step 68, ADR-0017).</b> This call mints its <b>own</b> short-lived
+ * token, addressed to {@code AUD_FRAUD} and scoped to {@code SCOPE_FRAUD_SCORE} alone, via the shared
+ * {@link ServiceTokenIssuer} — it used to forward the end user's bearer, which made any user's login
+ * a working credential on this platform's internal ports. The user travels as <i>evidence</i> only:
+ * their id rides along in {@code X-PlatinumCoin-On-Behalf-Of}, read by logs and the audit trail and
+ * by no authorization decision anywhere. The correlation id is propagated by common-lib's
+ * {@code RestClient} customizer, so one {@code grep} stitches both services' logs together.
  */
 @Component
 public class HttpFraudScorer implements FraudScorer {
@@ -48,6 +50,7 @@ public class HttpFraudScorer implements FraudScorer {
     private static final Logger log = LoggerFactory.getLogger(HttpFraudScorer.class);
 
     private final RestClient restClient;
+    private final ServiceTokenIssuer serviceTokens;
 
     /** Wire shape of the score request — mirrors fraud-service's {@code ScoreRequest}. */
     record ScoreRequest(String accountId, String pixKey, long amountCents, Instant timestamp) {
@@ -65,7 +68,9 @@ public class HttpFraudScorer implements FraudScorer {
             RestClient.Builder builder,
             @Value("${services.fraud-service.base-url}") String baseUrl,
             @Value("${services.fraud-service.connect-timeout-ms:50}") long connectTimeoutMs,
-            @Value("${services.fraud-service.read-timeout-ms:150}") long readTimeoutMs) {
+            @Value("${services.fraud-service.read-timeout-ms:150}") long readTimeoutMs,
+            ServiceTokenIssuer serviceTokens) {
+        this.serviceTokens = serviceTokens;
         // connect 50ms + read 150ms = the 200ms hard budget (ADR-0005). A hung fraud-service surfaces as
         // a timeout the catch-all below turns into SKIPPED, never as a pinned request thread.
         var factory = new SimpleClientHttpRequestFactory();
@@ -82,7 +87,8 @@ public class HttpFraudScorer implements FraudScorer {
         try {
             ScoreResultView result = restClient.post()
                     .uri("/internal/fraud/score")
-                    .headers(this::forwardAuthorization)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_FRAUD,
+                            InternalApi.SCOPE_FRAUD_SCORE))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
@@ -105,16 +111,6 @@ public class HttpFraudScorer implements FraudScorer {
                             + "unscored | accountId={} pixKey={} amountCents={} error={}",
                     accountId, pixKey, amountCents, e.toString());
             return FraudDecision.SKIPPED;
-        }
-    }
-
-    /** Copy the current request's Authorization header onto the outbound call, if present. */
-    private void forwardAuthorization(HttpHeaders headers) {
-        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs) {
-            String authorization = attrs.getRequest().getHeader(HttpHeaders.AUTHORIZATION);
-            if (StringUtils.hasText(authorization)) {
-                headers.set(HttpHeaders.AUTHORIZATION, authorization);
-            }
         }
     }
 }

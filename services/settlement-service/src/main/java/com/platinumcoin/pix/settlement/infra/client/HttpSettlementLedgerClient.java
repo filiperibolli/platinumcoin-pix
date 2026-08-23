@@ -3,12 +3,12 @@ package com.platinumcoin.pix.settlement.infra.client;
 import com.platinumcoin.pix.settlement.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.settlement.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
-import com.platinumcoin.pix.settlement.infra.security.ServiceTokenIssuer;
+import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -155,7 +155,8 @@ public class HttpSettlementLedgerClient implements LedgerClient {
         try {
             PostingView view = restClient.post()
                     .uri("/internal/ledger/postings")
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + serviceTokens.issue())
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_LEDGER,
+                            InternalApi.SCOPE_LEDGER_POST))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()

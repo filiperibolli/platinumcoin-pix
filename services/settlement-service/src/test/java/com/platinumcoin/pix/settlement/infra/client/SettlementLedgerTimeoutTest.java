@@ -3,7 +3,7 @@ package com.platinumcoin.pix.settlement.infra.client;
 import com.platinumcoin.pix.settlement.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.settlement.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.settlement.domain.service.LedgerOutcomes;
-import com.platinumcoin.pix.settlement.infra.security.ServiceTokenIssuer;
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -109,7 +109,7 @@ class SettlementLedgerTimeoutTest {
     }
 
     private static ServiceTokenIssuer tokenIssuer() {
-        return new ServiceTokenIssuer(SECRET, 60L,
+        return new ServiceTokenIssuer(SECRET, "settlement-service", 60L,
                 Clock.fixed(Instant.parse("2026-08-23T10:15:00Z"), ZoneOffset.UTC));
     }
 

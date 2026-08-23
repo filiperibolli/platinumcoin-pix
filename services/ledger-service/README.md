@@ -27,9 +27,9 @@ table proves the model against real items while nothing is at stake, so step 14'
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `GET` | `/internal/ledger/accounts/{accountId}/balance` | Bearer | Balance of one ledger account → `{accountId, balance, balanceCents, version}`. Strongly consistent read. |
-| `POST` | `/internal/ledger/postings` | Bearer | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
-| `GET` | `/internal/ledger/accounts/{accountId}/entries?cursor=&limit=` | Bearer | Statement page, newest first → `{entries:[...], nextCursor}`. Opaque base64 `LastEvaluatedKey` cursor; `limit` clamped (default 20, max 100). |
+| `GET` | `/internal/ledger/accounts/{accountId}/balance` | Service `ledger:read` | Balance of one ledger account → `{accountId, balance, balanceCents, version}`. Strongly consistent read. |
+| `POST` | `/internal/ledger/postings` | Service `ledger:post` | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
+| `GET` | `/internal/ledger/accounts/{accountId}/entries?cursor=&limit=` | Service `ledger:read` | Statement page, newest first → `{entries:[...], nextCursor}`. Opaque base64 `LastEvaluatedKey` cursor; `limit` clamped (default 20, max 100). |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
@@ -43,10 +43,19 @@ table proves the model against real items while nothing is at stake, so step 14'
 | lost to concurrent writers past the retry budget | `503` | `LEDGER_CONFLICT` |
 | body fails bean validation | `400` | `VALIDATION_ERROR` |
 | statement cursor malformed or from another account | `400` | `INVALID_CURSOR` |
+| a **user's** token, a token addressed elsewhere, or one scoped for the other operation | `403` | `INTERNAL_PORT_FORBIDDEN` |
 
 No token ⇒ `401` (`code: UNAUTHORIZED`) — this service has **no public surface at all**:
 `/internal/**` is deliberately absent from `jwt.public-paths`, and there is no `/v1` API because no
 end user talks to the ledger; payment-service does, on their behalf.
+
+**Since step 68 (ADR-0017), a valid token is not enough here.** These ports accept only a **service**
+token: `typ=service`, `aud=ledger-service`, and the `scope` the route declares. A customer's login gets
+`403 INTERNAL_PORT_FORBIDDEN`, which closes the platform's sharpest hole — the posting endpoint names
+both accounts explicitly and derives nothing from the token, so Domain Safety Rule #1 cannot protect it
+and only refusing the wrong *kind* of caller can. The read and write scopes are separate on purpose: a
+`ledger:read` credential may look at money it may not move. To call these by hand:
+`scripts/service-token.sh ledger-service ledger:read` (see `docs/local-dev.md` §3.1).
 
 ### The balance read (step 13)
 
@@ -209,7 +218,9 @@ mechanical rather than a review habit.
 | Property / env | Default (dev) | Meaning |
 | -------------- | ------------- | ------- |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
-| `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — every balance read requires a token. |
+| `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — and since step 68 it requires a **service** token, not just any token (see below). |
+| `jwt.service-name` | `ledger-service` | **This service's workload identity (step 68, ADR-0017)** — the `aud` an inbound service token must be addressed to. |
+| `jwt.internal-routes` | see `application.yml` | The per-route scope map: `POST /internal/ledger/postings` → `ledger:post`, `GET /internal/ledger/accounts/**` → `ledger:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge (**S3**, for the cold archive — DynamoDB has its own endpoint below); compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
@@ -324,6 +335,9 @@ curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=50" \
 
 ## Related decisions
 
+- [ADR-0017](../../docs/adr/0017-workload-identity-for-internal-ports.md) — **workload identity for internal ports** (step 68, amends ADR-0007): every `/internal/**` route here requires a service token addressed to
+  `ledger-service` and scoped `ledger:post` or `ledger:read`; a user's login gets `403`. The negative
+  matrix lives in `InternalPortMatrixIT`, and `InternalPortForbiddenIT` proves the refusal moves no money.
 - [ADR-0001](../../docs/adr/0001-dynamodb-for-the-ledger.md) — DynamoDB for the ledger: the posting is
   one `TransactWriteItems`, and the guards are conditions inside it.
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition; the ledger

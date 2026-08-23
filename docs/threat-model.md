@@ -90,7 +90,8 @@ are marked ⚠️.
 | Attacker calls `POST /payments/pix` as another user | JWT required; `accountId` taken from signed `sub`/`accountId` claim, never the body (ADR-0007) ✅ | Depends on secret secrecy (A6) |
 | Forged JWT | HS256 signature verified in `common-lib` filter on every service ✅ | HS256 shared secret is weaker than RS256 — **prod uses RS256+JWKS** ⚠️ |
 | Replayed stolen token | 15-min `exp`, `jti`, `iat` claims ✅ | No token revocation list locally ⚠️ |
-| Impersonating an internal service | Local trust = network isolation only | **Prod: mTLS between services** ⚠️ |
+| Impersonating an internal service | **Scoped service tokens** (ADR-0017): `/internal/**` accepts `typ=service` only, with `aud` = the service called and `scope` = the operation the route declares; a user's token gets `403`, and a service token gets `403` on `/v1/**`. Every internal route ships a four-case negative test ✅ | Still one shared HS256 secret, so anything holding it can mint any service identity — **prod: per-workload key (RS256+JWKS) or mTLS**, plus a gateway blocking `/internal/**` from outside ⚠️ |
+| A user's own token used as a service credential on the ledger's posting endpoint | **Closed in step 68.** Was reachable: payment-service forwarded the caller's bearer, so any login could post an arbitrary double entry between arbitrary accounts. The four `forwardAuthorization` helpers are deleted, and `InternalPortForbiddenIT` keeps the exploit as a failing-if-reintroduced test that also asserts no ledger entry was written ✅ | — |
 | Forged inbound settlement webhook (`POST /v1/inbound/pix`) credits an account with fake money | Shared-token header (`SPI_WEBHOOK_TOKEN`) validated by settlement-service before any posting; dedupe by `endToEndId` ✅ | Local token is a stand-in — **prod: mTLS + BACEN message signing** ⚠️ |
 
 ### T — Tampering (integrity)

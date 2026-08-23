@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.infra;
 
+import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.infra.client.HttpFraudScorer;
 import com.sun.net.httpserver.HttpExchange;
@@ -8,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.time.Clock;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -103,7 +105,9 @@ class HttpFraudScorerTest {
 
     /** A {@link HttpFraudScorer} pointed at {@code baseUrl} with the test's tight connect/read budget. */
     private static HttpFraudScorer scorer(String baseUrl) {
-        return new HttpFraudScorer(RestClient.builder(), baseUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
+        return new HttpFraudScorer(RestClient.builder(), baseUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS,
+                new ServiceTokenIssuer("test-only-hs256-secret-change-me-please-32b",
+                        "payment-service", 60L, Clock.systemUTC()));
     }
 
     /**

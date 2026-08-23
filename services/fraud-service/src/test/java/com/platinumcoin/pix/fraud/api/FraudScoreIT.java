@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.fraud.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.RedisTestBase;
 import java.util.ArrayList;
 import java.util.List;
@@ -112,7 +113,8 @@ class FraudScoreIT extends RedisTestBase {
     @Test
     void warmP99IsUnder150ms() throws Exception {
         String account = "acc-" + UUID.randomUUID();
-        String token = "Bearer " + TestTokens.forUser("u-load", account);
+        String token = "Bearer " + TestTokens.forService(
+                "payment-service", InternalApi.AUD_FRAUD, InternalApi.SCOPE_FRAUD_SCORE);
         String payload = body(account, payee(), 1_000L, NOON);
 
         for (int i = 0; i < 50; i++) { // warm up JIT + connection pool
@@ -136,10 +138,17 @@ class FraudScoreIT extends RedisTestBase {
 
     // --- helpers ---------------------------------------------------------------------------------
 
+    /**
+     * The scoring call as payment-service actually makes it since step 68 (ADR-0017): a service token
+     * addressed to fraud-service and scoped to {@code fraud:score}, not the payer's login. The
+     * {@code userId} parameter survives only because the callers below read as a story about a person;
+     * it names nobody the token asserts. The negative matrix lives in {@link InternalPortMatrixIT}.
+     */
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder score(
             String userId, String accountId, String payee, long amountCents, String timestamp) {
         return post("/internal/fraud/score")
-                .header("Authorization", "Bearer " + TestTokens.forUser(userId, accountId))
+                .header("Authorization", "Bearer " + TestTokens.forService(
+                        "payment-service", InternalApi.AUD_FRAUD, InternalApi.SCOPE_FRAUD_SCORE))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body(accountId, payee, amountCents, timestamp));
     }

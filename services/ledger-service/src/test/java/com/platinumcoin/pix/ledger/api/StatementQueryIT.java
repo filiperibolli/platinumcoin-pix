@@ -2,6 +2,7 @@ package com.platinumcoin.pix.ledger.api;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.ledger.LedgerAccountFixture;
 import com.platinumcoin.pix.ledger.domain.model.PostingCommand;
@@ -71,7 +72,8 @@ class StatementQueryIT extends LocalStackTestBase {
         // Unique per test run: every *IT shares one container, so a fixed txId would collide across
         // test methods (a different posting under the same identity ⇒ POSTING_TXID_MISMATCH).
         txPrefix = LedgerAccountFixture.uniqueAccountId("it-stmt-tx") + "-";
-        token = TestTokens.forUser("u-alice", "acc-001");
+        token = TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                InternalApi.SCOPE_LEDGER_READ);
         LedgerAccountFixture.openAccount(dynamo, payer, 1_000_000L);
         LedgerAccountFixture.openAccount(dynamo, payee, 0L);
 

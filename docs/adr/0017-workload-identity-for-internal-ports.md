@@ -47,6 +47,20 @@ They are neighbours and are often confused; step 45 owns the second and step 68 
    claims (never the token — ADR-0012). Public `/v1/**` routes are unchanged and continue to accept
    `typ=user` only, so the two surfaces are disjoint in both directions: a service token is equally
    useless on a public endpoint.
+   - **The reverse direction has its own code, `PUBLIC_ROUTE_FORBIDDEN`** (added while implementing
+     step 68; this ADR originally named only the first). Two codes rather than one because they are
+     two different diagnoses for an operator reading a log — *a person's credential reached a service
+     port* is a different incident from *a service credential reached the customer API* — and
+     because reusing `INTERNAL_PORT_FORBIDDEN` on a route that is not an internal port would be
+     simply false. Both stay coarse in their `detail`: neither says which claim was wrong.
+   - **An internal route that matches no declared scope is refused**, with the same code. There is no
+     scope such a caller *could* present, so the alternative is to let it through — and an internal
+     port nobody remembered to scope is exactly the kind of gap this ADR exists to close. Fail closed;
+     the missing entry surfaces immediately as a 403 with a WARN naming the route.
+   - **A bad signature, a missing token or an expired one stays `401`.** The distinction is worth
+     keeping sharp: `401` means *we do not know who you are*, `403` means *we know exactly who you
+     are and this is not your door*. Collapsing them would tell a caller holding a perfectly good
+     token to go re-authenticate, and would hand an attacker a signal about which check failed.
 3. **Service tokens are scoped and addressed.** `iss` = the calling service, `aud` = the target
    service, `scope` = the operation being exercised (`ledger:post`, `ledger:read`, `fraud:score`,
    `accounts:read`, `keys:resolve`). The filter validates all three. A payment-service token minted
@@ -108,6 +122,16 @@ They are neighbours and are often confused; step 45 owns the second and step 68 
   the hole.
 - The audit trail becomes strictly more informative: a posting now records both the acting service
   and the on-behalf-of user, where today it records a user token that could have come from anywhere.
+- **The local tooling had to grow a way to mint a service token**, because the runbook, the Postman
+  collection and the API explorer all drove `/internal/**` with a user's login and now get `403`.
+  `scripts/service-token.sh <aud> <scope>` does it for the shell; Postman mints one in a
+  collection-level pre-request script; the API explorer mints one in the browser via WebCrypto for
+  any `/internal/**` path, overriding the session token so the page has no code path that can present
+  a user's credential to a service port. `ServiceTokenScriptParityTest` runs the shell script and
+  verifies its output with the real parser, because a reimplemented JWT drifts silently and the
+  symptom (`401` at the far end) points at the service rather than at the tool. **None of these three
+  can exist in a deployment** — they work only because the sandbox shares one HS256 secret — and each
+  says so at the top of its own file.
 - mock-bacen-spi is unaffected — it is outside the trust domain, holds no PlatinumCoin token, and its
   inbound webhook keeps its shared-secret header (`InboundPixController`). That asymmetry is correct
   and stays.

@@ -22,12 +22,12 @@ flow (Domain Safety Rule #1).
 
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
-| `GET` | `/v1/accounts/me` | Bearer | The caller's own account → `{accountId, status, dailyLimit}`; `dailyLimit` is a decimal BRL string ("5000.00"). Account derived from the token. |
-| `GET` | `/internal/accounts/{accountId}` | Bearer | Service-to-service lookup by id → `{accountId, userId, status, dailyLimitCents, createdAt}`; money as **integer cents**. |
-| `POST` | `/v1/pix-keys` | Bearer | Register a Pix key (`CPF`/`EMAIL`/`PHONE`/`EVP`). EVP ⇒ server-generated UUID. `201` → `{keyType, keyValue, createdAt}`. Owner from the JWT. |
-| `GET` | `/v1/pix-keys` | Bearer | List the caller's Pix keys (scoped to the JWT account) → `[{keyType, keyValue, createdAt}]`. |
-| `DELETE` | `/v1/pix-keys/{keyValue}` | Bearer | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
-| `GET` | `/internal/pix-keys/resolve?key=…` | Bearer | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key, `{internal:false, externalBank:<ispb>}` for one held at another PSP (delegated to mock-bacen, step 30); unknown in **both** ⇒ `404 KEY_NOT_FOUND`; DICT unreachable ⇒ `503 DIRECTORY_UNAVAILABLE`. |
+| `GET` | `/v1/accounts/me` | User | The caller's own account → `{accountId, status, dailyLimit}`; `dailyLimit` is a decimal BRL string ("5000.00"). Account derived from the token. |
+| `GET` | `/internal/accounts/{accountId}` | Service `accounts:read` | Service-to-service lookup by id → `{accountId, userId, status, dailyLimitCents, createdAt}`; money as **integer cents**. |
+| `POST` | `/v1/pix-keys` | User | Register a Pix key (`CPF`/`EMAIL`/`PHONE`/`EVP`). EVP ⇒ server-generated UUID. `201` → `{keyType, keyValue, createdAt}`. Owner from the JWT. |
+| `GET` | `/v1/pix-keys` | User | List the caller's Pix keys (scoped to the JWT account) → `[{keyType, keyValue, createdAt}]`. |
+| `DELETE` | `/v1/pix-keys/{keyValue}` | User | Delete an **owned** key → `204`. Another account's key ⇒ `403`; absent ⇒ `404`. |
+| `GET` | `/internal/pix-keys/resolve?key=…` | Service `keys:resolve` | Service-to-service **DICT** lookup → `{internal:true, accountId, keyType}` for an internal key, `{internal:false, externalBank:<ispb>}` for one held at another PSP (delegated to mock-bacen, step 30); unknown in **both** ⇒ `404 KEY_NOT_FOUND`; DICT unreachable ⇒ `503 DIRECTORY_UNAVAILABLE`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
@@ -80,9 +80,13 @@ it is a no-op for CPF/PHONE and the server-minted (lowercase) EVP.
 decimal string at the API edge. `/internal/accounts/{id}` is a **service-to-service seam** (ADR-0006):
 it takes the account id from the path (the caller is asking about *some* account, e.g. payment-service
 resolving a payee's limit), and keeps `dailyLimitCents` as an integer because its consumers do integer
-arithmetic on the limit (step-20 daily-limit reservation). It is **not** on the public allow-list, so
-it still requires a valid JWT — but it is deliberately not account-scoped. A deployed posture would
-gate it with a service credential/scope or mTLS rather than an end-user token (step-45 hardening).
+arithmetic on the limit (step-20 daily-limit reservation). It is **not** on the public allow-list, and
+since **step 68 (ADR-0017)** it does not take the same credential either: it requires a **service**
+token (`typ=service`, `aud=account-service`, `scope=accounts:read`; key resolution needs
+`keys:resolve`), and a customer's login gets `403 INTERNAL_PORT_FORBIDDEN`. It remains deliberately
+not account-scoped — a service token names no account, because a service asserts no authority to spend
+anyone's money; the account comes from the path and nothing here moves money. The deployed posture
+keeps this shape and swaps the shared HS256 secret for a per-workload credential (RS256+JWKS or mTLS).
 
 Contract source of truth: [`docs/api/openapi.yaml`](../../docs/api/openapi.yaml) `/accounts/me`. The
 internal seam is intentionally left out of the *public* OpenAPI contract and documented here instead.
@@ -122,7 +126,9 @@ interface in `domain/` — which is what makes "a controller may not reach a rep
 | Property / env | Default (dev) | Meaning |
 | -------------- | ------------- | ------- |
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
-| `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — it requires a token. |
+| `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — and since step 68 it requires a **service** token, not just any token (see below). |
+| `jwt.service-name` | `account-service` | **This service's workload identity (step 68, ADR-0017)** — the `aud` an inbound service token must be addressed to. |
+| `jwt.internal-routes` | see `application.yml` | The per-route scope map: `GET /internal/pix-keys/resolve` → `keys:resolve`, `GET /internal/accounts/**` → `accounts:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
@@ -182,6 +188,9 @@ curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorizatio
 
 ## Related decisions
 
+- [ADR-0017](../../docs/adr/0017-workload-identity-for-internal-ports.md) — **workload identity for internal ports** (step 68, amends ADR-0007): both `/internal/**` routes here require a service token addressed to
+  `account-service`, scoped `accounts:read` or `keys:resolve`; a user's login gets `403`, and a service
+  token gets `403 PUBLIC_ROUTE_FORBIDDEN` on the `/v1/**` key-management routes (`PublicRouteIT`).
 - [ADR-0006](../../docs/adr/0006-microservices-decomposition.md) — service decomposition; each service
   owns its tables, so cross-service reads go through an API (the internal lookup), not a shared table.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.

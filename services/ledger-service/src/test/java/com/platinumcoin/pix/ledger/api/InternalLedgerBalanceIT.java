@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.ledger.api;
 
+import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,7 +44,8 @@ class InternalLedgerBalanceIT extends LocalStackTestBase {
     @Test
     void returnsTheSeededBalanceOfAlice() throws Exception {
         mvc.perform(get("/internal/ledger/accounts/acc-001/balance")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                        InternalApi.SCOPE_LEDGER_READ)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId", is("acc-001")))
                 // Decimal string for the human reading the runbook curl…
@@ -57,7 +59,8 @@ class InternalLedgerBalanceIT extends LocalStackTestBase {
     void readsAnyAccountBecauseItIsAnInternalSeamNotAnAccountScopedRead() throws Exception {
         // Alice's token, bob's account: allowed on purpose (see the class javadoc).
         mvc.perform(get("/internal/ledger/accounts/acc-002/balance")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                        InternalApi.SCOPE_LEDGER_READ)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId", is("acc-002")))
                 .andExpect(jsonPath("$.balanceCents", is(1000000)));
@@ -65,7 +68,8 @@ class InternalLedgerBalanceIT extends LocalStackTestBase {
 
     @Test
     void readsTheSystemAccountsIncludingTheNegativeOne() throws Exception {
-        String token = TestTokens.forUser("u-alice", "acc-001");
+        String token = TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                InternalApi.SCOPE_LEDGER_READ);
 
         mvc.perform(get("/internal/ledger/accounts/SPI_CLEARING/balance")
                         .header("Authorization", "Bearer " + token))
@@ -83,7 +87,8 @@ class InternalLedgerBalanceIT extends LocalStackTestBase {
     @Test
     void unknownAccountIs404ProblemJson() throws Exception {
         mvc.perform(get("/internal/ledger/accounts/acc-999/balance")
-                        .header("Authorization", "Bearer " + TestTokens.forUser("u-alice", "acc-001")))
+                        .header("Authorization", "Bearer " + TestTokens.forService("payment-service", InternalApi.AUD_LEDGER,
+                        InternalApi.SCOPE_LEDGER_READ)))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.code", is("LEDGER_ACCOUNT_NOT_FOUND")))

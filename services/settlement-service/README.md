@@ -84,8 +84,11 @@ and announces `PixReversed`. Both postings are **idempotent by their determinist
 before the terminal status transition without ever double-moving money *on the same path* — and since step
 67 a **fence** won ahead of either posting is what stops the *other* path from moving money at the same
 time. The ledger stays append-only — a reversal is a new posting, never an edit. Σ balances is invariant on both branches. settlement has no user
-token to forward off a queue, so it mints its own short-lived service token (shared secret) for the ledger
-call — a sandbox stand-in for a real service credential (ADR-0013; step-45 hardening).
+token to forward off a queue, so it has minted its own short-lived service token for the ledger call since
+step 33 — and since **step 68** that token carries `typ`/`iss`/`aud`/`scope` and comes from common-lib's
+shared `ServiceTokenIssuer` (ADR-0017), which turned its correctness from a convention into a control the
+ledger actually checks. A sandbox stand-in for a real service credential; the production posture is a
+per-workload key or mTLS.
 
 **Finding what fell through the cracks (step 34).** SQS retries and the DLQ catch messages that keep
 failing, but a transaction can go stuck without a live message behind it — a consumer that crashed after
@@ -162,6 +165,8 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | Property / env | Default (dev) | Meaning |
 | -------------- | ------------- | ------- |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's participant id, sent to the rail as the debtor participant |
+| `jwt.service-name` | `settlement-service` | **This service's workload identity (step 68, ADR-0017)** — the `iss` stamped on every service token it mints for `POST /internal/ledger/postings` (`ledger:post`) and `GET /internal/pix-keys/resolve` (`keys:resolve`). This service already minted its own token before step 68 (it runs off a queue and has no user token to forward); what step 68 added is the `typ`/`aud`/`scope` claims the callee now checks. |
+| `SERVICE_TOKEN_TTL_SECONDS` / `jwt.service-token-ttl` | `60s` | Lifetime of a minted service token. Generous for a call whose own timeout budget is milliseconds; it absorbs clock skew between containers, not a token outliving its call. |
 | `SETTLEMENT_QUEUE_NAME` / `pix.settlement.queue-name` | `settlement-queue` | Queue consumed; its URL is resolved at startup (booting healthy while consuming nothing would be the worst failure mode) |
 | `SETTLEMENT_WAIT_TIME_SECONDS` | `20` | Long-poll wait — the SQS maximum, so an idle system costs one request per 20s |
 | `SETTLEMENT_BATCH_SIZE` | `5` | Messages per receive, handled sequentially |
@@ -361,8 +366,13 @@ awsl s3api head-object --bucket pix-audit-log --key <key> \
   production by mTLS + BACEN message signing.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) / [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md)
   — hexagonal-lite; the queue consumer is an inbound adapter with no policy of its own.
-- [ADR-0013](../../docs/adr/0013-aws-credentials-and-iam-posture.md) — service-to-service auth posture; the
-  self-minted service token for the ledger call (step 33) is the sandbox stand-in until the step-45 sweep.
+- [ADR-0013](../../docs/adr/0013-aws-credentials-and-iam-posture.md) — **AWS credentials and IAM**. Its
+  neighbour and often confused with it: ADR-0013 owns how this service authenticates to *AWS*, ADR-0017
+  owns how it authenticates to *other PlatinumCoin services* over HTTP.
+- [ADR-0017](../../docs/adr/0017-workload-identity-for-internal-ports.md) — **workload identity for internal ports** (step 68, amends ADR-0007): this service was the one that already did it right (it runs off a queue and has no user
+  token to forward), and step 68 promoted its issuer to common-lib and added the `typ`/`aud`/`scope`
+  claims the ledger now checks — a convention became a control.
+
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — the `correlationId` is carried in
   the event and restored into the MDC around every message, so one `grep` still reconstructs a payment's
   whole path after the flow leaves the request thread.

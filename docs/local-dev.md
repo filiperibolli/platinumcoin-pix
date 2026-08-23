@@ -88,6 +88,39 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `STATEMENT_ARCHIVE_MAX_ACCOUNTS` | `500` | Per-run bound on the account **scan**. A larger ledger degrades into more runs rather than one enormous one |
 | `NOTIFICATION_BATCH_SIZE` / `NOTIFICATION_WAIT_TIME_SECONDS` / `NOTIFICATION_CONSUMER_DELAY_MS` | `10` / `20` / `500` | notification-queue long-poll tuning. Batch is larger than settlement's 5 because handling one message is a map lookup and a socket write, not a 12s call to BACEN |
 
+### 3.1 Calling an internal port by hand (service tokens — step 68, ADR-0017)
+
+`/internal/**` is where services talk to each other, and since step 68 it accepts **only a service
+token**. A token from `POST /v1/auth/login` gets `403 INTERNAL_PORT_FORBIDDEN` there, and a service
+token gets `403 PUBLIC_ROUTE_FORBIDDEN` on `/v1/**` — the two surfaces are disjoint in both directions.
+
+`scripts/service-token.sh <audience> <scope>` mints what the services themselves mint:
+
+```bash
+scripts/service-token.sh ledger-service ledger:read
+# eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsb2NhbC1jbGkiLCJ0eXAiOiJzZXJ2aWNlIiwi…
+```
+
+| Audience (`aud`) | Scope | Opens |
+|---|---|---|
+| `ledger-service` | `ledger:post` | `POST /internal/ledger/postings` |
+| `ledger-service` | `ledger:read` | `GET /internal/ledger/accounts/{id}/balance` · `…/entries` |
+| `account-service` | `accounts:read` | `GET /internal/accounts/{id}` |
+| `account-service` | `keys:resolve` | `GET /internal/pix-keys/resolve` |
+| `fraud-service` | `fraud:score` | `POST /internal/fraud/score` |
+
+The pairs are not decoration: `aud` and `scope` are both checked, so a `ledger:read` token cannot post
+and a `ledger-service` token is refused by fraud-service. If a call 403s, the service log says which of
+the three checks (`typ`, `aud`, `scope`) refused it and with what claims — that WARN line is the fastest
+way to the answer, and it never prints the token.
+
+> **This script cannot exist in a real deployment, and that is the point.** It works only because the
+> local build signs every token with one shared HS256 secret (ADR-0007), so a human at a terminal can
+> impersonate any service. In production the identity is the workload's own credential — RS256 + JWKS
+> or mTLS, per ADR-0017's rejected alternatives — and there is no equivalent of this file. The claim
+> shape (`typ`/`iss`/`aud`/`scope`) is the part chosen to survive that swap.
+
+
 ## 4. Bring it up
 
 ```bash
@@ -150,7 +183,8 @@ Tear down: `docker compose -f infra/docker-compose.yml down -v` (`-v` wipes Loca
 > curl -s localhost:9090/spi/dict/bob@otherbank.com | jq           # ispb 99999999, Banco OtherBank S.A.
 > curl -s localhost:9090/admin/config | jq                         # what is armed right now
 > curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" \
->   -H "Authorization: Bearer $TOKEN" | jq                         # {internal:false, externalBank:"99999999"}
+>   -H "Authorization: Bearer $(scripts/service-token.sh account-service keys:resolve)" \
+>   | jq                                                           # {internal:false, externalBank:"99999999"}
 > ```
 >
 > Nothing consumes `POST /spi/settlements` yet — settlement-service is step 31 — so the rail comes up idle
@@ -366,25 +400,49 @@ aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_ledger 
 
 **Step 13 — the same money supply through ledger-service** (`:8085`), which is how every other
 service is allowed to read it (ADR-0006: the ledger owns the table). The read is strongly consistent
-(`ConsistentRead=true`) because the ledger must read its own writes; `/internal/**` is not public, so
-a token is required:
+(`ConsistentRead=true`) because the ledger must read its own writes.
+
+> **Since step 68 (ADR-0017), `/internal/**` refuses a user's login token.** Internal ports accept
+> only a **service** token: `typ=service`, addressed to the target service (`aud`) and scoped to one
+> operation (`scope`). A token from `/v1/auth/login` now gets **`403 INTERNAL_PORT_FORBIDDEN`** here —
+> that is the control working, not a broken runbook. `scripts/service-token.sh <aud> <scope>` mints
+> exactly what payment-service mints; see §3.1 for the pairs and for why this script cannot exist in a
+> real deployment.
 
 ```bash
-TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
-  -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+# ledger:read opens the balance and statement reads — and nothing else. Posting needs ledger:post.
+LEDGER_READ=$(scripts/service-token.sh ledger-service ledger:read)
+LEDGER_POST=$(scripts/service-token.sh ledger-service ledger:post)
 
 # {"accountId":"acc-001","balance":"10000.00","balanceCents":1000000,"version":0}
-curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorization: Bearer $TOKEN" | jq
+curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorization: Bearer $LEDGER_READ" | jq
 
 # the same Σ = 0 as the raw get-item loop above, now through the service
 for a in acc-001 acc-002 SPI_CLEARING SEED; do
   curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
-    -H "Authorization: Bearer $TOKEN" | jq -r .balanceCents
+    -H "Authorization: Bearer $LEDGER_READ" | jq -r .balanceCents
 done | paste -sd+ | bc                                          # 0 — conservation baseline
 
 curl -s localhost:8085/internal/ledger/accounts/acc-999/balance \
-  -H "Authorization: Bearer $TOKEN" | jq   # 404 LEDGER_ACCOUNT_NOT_FOUND — never a zero balance
+  -H "Authorization: Bearer $LEDGER_READ" | jq   # 404 LEDGER_ACCOUNT_NOT_FOUND — never a zero balance
 curl -si localhost:8085/internal/ledger/accounts/acc-001/balance | head -1   # 401 without a token
+
+# The step-68 control, from the outside. A REAL user token — alice's own login — on the ledger's
+# money-moving endpoint. Before step 68 this returned 200 and moved bob's money.
+USER_TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $USER_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-probe","debitAccount":"acc-002","creditAccount":"acc-001","amountCents":100,"entryType":"PIX_INTERNAL","description":"probe"}' \
+  | jq .code    # INTERNAL_PORT_FORBIDDEN (403)
+# …and the reverse direction: a service token on a customer-facing route.
+curl -s localhost:8082/v1/accounts/me -H "Authorization: Bearer $(scripts/service-token.sh account-service accounts:read)" \
+  | jq .code    # PUBLIC_ROUTE_FORBIDDEN (403)
+# …and a token scoped for the wrong operation: ledger:read cannot post.
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_READ" \
+  -H 'Content-Type: application/json' \
+  -d '{"txId":"tx-probe-2","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":100,"entryType":"PIX_INTERNAL"}' \
+  | jq .code    # INTERNAL_PORT_FORBIDDEN (403) — same service, wrong scope
 ```
 
 **Step 14 — moving money: the atomic double-entry posting.** One `TransactWriteItems` of five items
@@ -395,21 +453,21 @@ POSTING='{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002
           "amountCents":12550,"entryType":"PIX_INTERNAL","description":"manual test"}'
 
 # 200 — {"txId":"tx-manual-1",…,"amount":"125.50","amountCents":12550,"replayed":false,…}
-curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
   -H 'Content-Type: application/json' -d "$POSTING" | jq
 
 # alice 10000.00 → 9874.50, bob 10000.00 → 10125.50, and Σ over the four accounts is still 0
 for a in acc-001 acc-002 SPI_CLEARING SEED; do
   curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
-    -H "Authorization: Bearer $TOKEN" | jq -r .balanceCents
+    -H "Authorization: Bearer $LEDGER_READ" | jq -r .balanceCents
 done | paste -sd+ | bc                                          # 0 — money moved, none created
 
 # IDEMPOTENCY: send the identical request again ⇒ 200 "replayed": true, balance unchanged.
 # Note the *postedAt* it returns is the first posting's instant, not now.
-curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
   -H 'Content-Type: application/json' -d "$POSTING" | jq '{replayed, postedAt}'
 curl -s localhost:8085/internal/ledger/accounts/acc-001/balance \
-  -H "Authorization: Bearer $TOKEN" | jq -r .balance          # 9874.50 — once, not twice
+  -H "Authorization: Bearer $LEDGER_READ" | jq -r .balance     # 9874.50 — once, not twice
 
 # the guard item behind that: keyed by txId alone, so the clock is not part of a posting's identity
 aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
@@ -420,15 +478,15 @@ aws --endpoint-url=http://localhost:8000 dynamodb query --table-name pix_ledger 
   --expression-attribute-values '{":t":{"S":"TX#tx-manual-1"}}' | jq '.Count'   # 2
 
 # the refusals — each returns problem+json and writes NOTHING
-curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
   -H 'Content-Type: application/json' \
   -d '{"txId":"tx-manual-1","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99,"entryType":"PIX_INTERNAL"}' \
   | jq .code    # POSTING_TXID_MISMATCH (409) — same identity, different money
-curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
   -H 'Content-Type: application/json' \
   -d '{"txId":"tx-manual-2","debitAccount":"acc-001","creditAccount":"acc-002","amountCents":99999999,"entryType":"PIX_INTERNAL"}' \
   | jq .code    # INSUFFICIENT_FUNDS (422) — the condition failed inside the transaction
-curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
   -H 'Content-Type: application/json' \
   -d '{"txId":"tx-manual-3","debitAccount":"acc-001","creditAccount":"acc-001","amountCents":100,"entryType":"PIX_INTERNAL"}' \
   | jq .code    # INVALID_POSTING (422) — both legs on one account moves no money
@@ -810,7 +868,8 @@ aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_tran
   | jq '.Item | {status:.status.S, settledAt:.settledAt.S, creditorAccountId:.creditorAccountId.S}'
 
 # bob (acc-002) was credited — read it through the ledger
-curl -s localhost:8085/internal/ledger/accounts/acc-002/balance -H "Authorization: Bearer $TOKEN" | jq
+curl -s localhost:8085/internal/ledger/accounts/acc-002/balance \
+  -H "Authorization: Bearer $(scripts/service-token.sh ledger-service ledger:read)" | jq
 
 # the failure mappings
 curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
@@ -911,16 +970,20 @@ curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
 **Resolution — the DICT role, and its four answers (steps 11 + 30).** The interesting one is the last:
 
 ```bash
+# Resolution is a SERVICE operation (payment-service asking the DICT), so it needs a keys:resolve
+# service token — registration and listing above are CUSTOMER operations and keep the user token.
+RESOLVE=$(scripts/service-token.sh account-service keys:resolve)
+
 # 1. held here (local table first — no network hop for a key we already own)
-curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $TOKEN" | jq
+curl -s "localhost:8082/internal/pix-keys/resolve?key=alice@platinum.com" -H "Authorization: Bearer $RESOLVE" | jq
 # 2. held at another PSP — delegated to mock-bacen's DICT ⇒ the external send branch
-curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | jq
+curl -s "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $RESOLVE" | jq
 # 3. nowhere at all ⇒ 404 KEY_NOT_FOUND (the only honest not-found)
-curl -si "localhost:8082/internal/pix-keys/resolve?key=nobody@nowhere.com" -H "Authorization: Bearer $TOKEN" | head -1
+curl -si "localhost:8082/internal/pix-keys/resolve?key=nobody@nowhere.com" -H "Authorization: Bearer $RESOLVE" | head -1
 # 4. FAIL CLOSED: with the DICT unreachable the answer is 503 DIRECTORY_UNAVAILABLE + Retry-After —
 #    NOT a 404, which would tell the payer their payee's key is invalid because OUR dependency is down.
 docker compose -f infra/docker-compose.yml stop mock-bacen-spi
-curl -si "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $TOKEN" | head -3
+curl -si "localhost:8082/internal/pix-keys/resolve?key=bob@otherbank.com" -H "Authorization: Bearer $RESOLVE" | head -3
 docker compose -f infra/docker-compose.yml start mock-bacen-spi
 ```
 
@@ -948,7 +1011,8 @@ curl -si -X POST localhost:8084/v1/payments/pix \
   -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1     # 202
 curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
-  -H "Authorization: Bearer $TOKEN" | jq   # credited by exactly the amount in flight
+  -H "Authorization: Bearer $(scripts/service-token.sh ledger-service ledger:read)" \
+  | jq   # credited by exactly the amount in flight
 ```
 
 ### 5.4 Status + settlement observation
@@ -1172,7 +1236,7 @@ step 47's job.
 > $RC SET balance:acc-001 '{"balanceCents":99999999,"asOf":"2026-01-01T00:00:00Z"}'
 > curl -s localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN" | jq -r .balance
 > #   999999.99   ← the lie, served to the screen
-> curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $TOKEN" \
+> curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Bearer $LEDGER_POST" \
 >   -H 'Content-Type: application/json' -d '{"txId":"tx-stale-drill-1","debitAccount":"acc-001",
 >   "creditAccount":"acc-002","amountCents":5000000,"entryType":"PIX_INTERNAL","description":"drill"}' | jq
 > #   422 INSUFFICIENT_FUNDS — "Account acc-001 has 999300 cents, which is short of the 5000000 requested."
@@ -1335,6 +1399,8 @@ Integration tests do **not** need the compose stack running — Testcontainers m
 |---|---|
 | A single-module IT run fails with `501 Service 's3' is not enabled`, `QueueDoesNotExist`, or hangs on the readiness wait | A **stale `common-lib` test-jar** in `~/.m2`: `LocalStackTestBase` came from there instead of the reactor. Re-run with `-am` (or `mvn install -DskipTests` once) — see §6. Never debug the init scripts first; they are mounted from disk and are fine |
 | ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Pinned in the parent POM (`docker.api.version`, default 1.44); on an older engine run `mvn verify -Ddocker.api.version=1.41` — see §6 |
+| `403 INTERNAL_PORT_FORBIDDEN` on an `/internal/**` curl that used to work | You are presenting a **user** token to a service port (step 68, ADR-0017). Mint the right one: `scripts/service-token.sh <aud> <scope>` — see §3.1. The service's WARN line names which of `typ`/`aud`/`scope` refused it |
+| `403 PUBLIC_ROUTE_FORBIDDEN` on a `/v1/**` call | The reverse: a **service** token on a customer-facing route. Log in and use the user token — the two surfaces are deliberately disjoint |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |
 | Outbox events not flowing | Polling publisher in payment-service — check its logs and the `pix.outbox.lag` metric; query GSI3 for stuck unpublished items |
