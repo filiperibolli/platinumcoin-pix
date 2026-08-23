@@ -1,7 +1,7 @@
 # docs/concepts — own-words design defense (Sprint 15)
 
-This folder is the deliverable of **Sprint 15 — Concept mastery & design defense** (steps 54–63 in
-[`PLAN.md`](../../PLAN.md)). One file per core concept of the platform. Each file is written **by hand,
+This folder is the deliverable of **Sprint 15 — Concept mastery & design defense** (steps 54–63 and
+**73** in [`PLAN.md`](../../PLAN.md); 73 was added later and took the next free number). One file per core concept of the platform. Each file is written **by hand,
 in the human's own words** (a marked hand-written zone — see [CLAUDE.md](../../CLAUDE.md) → "Hand-written
 zones"): no AI drafting, no autocomplete on the first pass.
 
@@ -30,6 +30,7 @@ not sequential.
 | Async settlement + reconciliation | `concept-61-async-settlement-reconciliation.md` | 35 | ADR-0003, ARCHITECTURE §6.6/§6.7 |
 | Correlation-id observability | `concept-62-observability-correlation-id.md` | 44 | ADR-0012, ARCHITECTURE §7.7 |
 | Availability + ledger-down-30s | `concept-63-availability-ledger-outage.md` | 45 | ARCHITECTURE §7.4 |
+| Adversarial testing (fault injection, races, conservation) | `concept-73-adversarial-testing.md` | 69 | the step-69 suite, ADR-0014…0017, step 15 |
 
 ## The shape of one concept file
 

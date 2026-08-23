@@ -141,7 +141,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 - [x] [Step 66](docs/steps/step-66.md) — a ledger timeout is an **unknown result**: resolve by re-posting the same `txId` and read the `replayed` flag the ledger already returns ([ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md)) · *requires 65*
 - [x] [Step 67](docs/steps/step-67.md) — finalization fencing: CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` **before** any posting; settle XOR reverse ([ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md), amends ADR-0003)
 - [x] [Step 68](docs/steps/step-68.md) — internal-port isolation: scoped service tokens (`typ`/`iss`/`aud`/`scope`); a user JWT gets `403` on every `/internal/**` route ([ADR-0017](docs/adr/0017-workload-identity-for-internal-ports.md), amends ADR-0007)
-- [ ] [Step 69](docs/steps/step-69.md) — recovery & fencing invariant suite: crash-after-commit, ambiguous timeout, concurrent settle×reverse, lateral-access matrix, conservation everywhere **✍️ hand-written zone** · *requires 65-68*
+- [ ] [Step 69](docs/steps/step-69.md) — recovery & fencing invariant suite: crash-after-commit, ambiguous timeout, concurrent settle×reverse, lateral-access matrix, conservation everywhere · *requires 65-68* · *was a ✍️ zone; reassigned 2026-08-23 — the practice moved to [step 73](docs/steps/step-73.md), which explains this suite*
 
 **P1 — operations & scale.**
 
@@ -206,6 +206,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 - [ ] [Step 61](docs/steps/step-61.md) — Concept: **async settlement + bounded reconciliation** — `202` not `200`, query-before-retry, DLQ, "eventual" made *< 5 min* (Questions 4 & 7) **✍️** (prereq: step 35)
 - [ ] [Step 62](docs/steps/step-62.md) — Concept: **correlation-id observability** — the id in the log *pattern*, one `grep` reconstructs a transaction across services; silence alerts (ADR-0012) **✍️** (prereq: step 44)
 - [ ] [Step 63](docs/steps/step-63.md) — Concept: **99.99% availability & the ledger-down-30s behavior** — fail-fast `503`, nothing debited, retry-safe; the error-budget math (Question 7) **✍️** (prereq: step 45)
+- [ ] [Step 73](docs/steps/step-73.md) — Concept: **adversarial testing** — where each fault is injected and *why that instant*, why a race drill repeats, conservation as the assertion of last resort (and the case where Σ holds and money was still created) **✍️** (prereq: step 69) · *added 2026-08-23, next free number, when step 69 stopped being a ✍️ zone — see its note*
 
 ---
 
