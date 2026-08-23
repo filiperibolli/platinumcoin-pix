@@ -461,15 +461,18 @@ sequenceDiagram
     participant DDB as DynamoDB
     App->>PAY: POST /v1/payments/pix (JWT, Idempotency-Key)
     PAY->>PAY: debtor account = JWT accountId claim (never from body)
-    PAY->>DDB: conditional Put idempotency (claim IN_PROGRESS)
+    PAY->>PAY: mint txId + endToEndId — BEFORE the claim (ADR-0014)
+    PAY->>DDB: conditional Put idempotency: claim CLAIMED **carrying txId + endToEndId**
     PAY->>DDB: reserve daily-limit counter (conditional ADD → ALLOW/DENY/REQUIRE_STEP_UP)
     PAY->>ACC: resolve pixKey → creditor (internal)
     ACC-->>PAY: creditor accountId
-    PAY->>LED: POST /postings (debit payer, credit payee, txId)
+    PAY->>LED: POST /postings (debit payer, credit payee, the claim's txId)
     LED->>DDB: TransactWriteItems (atomic debit+credit+entries)
     DDB-->>LED: OK
+    PAY->>DDB: idempotency phase → POSTED (advisory)
     PAY->>DDB: TransactWriteItems: tx = SETTLED + outbox(PixSettled) — internal settles instantly, no SPI leg
-    PAY->>DDB: complete idempotency (memoize the 202)
+    PAY->>DDB: idempotency phase → RECORDED (advisory)
+    PAY->>DDB: complete idempotency → COMPLETED (memoize the 202)
     PAY-->>App: 202 Accepted {transactionId, status}
     App->>PAY: GET /v1/payments/{id} → status
 ```
@@ -478,6 +481,22 @@ sequenceDiagram
 one write); a retry with the same key+body replays the stored `202` (same `transactionId`); a different
 body under the same key → `409`. Even an internal retry cannot double-debit, because the ledger posting
 is itself idempotent by `txId` (Sprint 3).
+
+**Why the identity is minted before the claim (step 65, [ADR-0014](docs/adr/0014-durable-operation-identity.md)).**
+Read the first three lines of the diagram in that order — *identity → claim → effect* — because the
+original order was claim → effect → identity, and it had a real double-debit in it. The `txId` used to be
+a fresh `UUID` created *inside* the money-moving work: claim won, `tx-A` minted, ledger commits the debit,
+process dies before the transaction and the memo are written. Sixty seconds later the stale re-claim wins
+and mints `tx-B` — an identity the ledger's `attribute_not_exists(txId)` guard has never seen, so it posts,
+and the payer pays twice for one request. Layer 2 was guarding an identity layer 1 never persisted. Now the
+same conditional `PutItem` that wins the key also *writes* `txId` and `endToEndId`, so every resume reads
+the stored identity instead of inventing one, and `reclaim`'s update expression cannot alter it. The
+residual window is harmless by construction: a crash between minting and the claim's write leaves nothing
+at all — no claim, no money — and the client's retry is a clean first attempt. Two consequences visible in
+the diagram: `status` is now the phase (`CLAIMED → POSTED → RECORDED → COMPLETED`, advisory in the middle),
+and the 24h TTL may only recycle a key whose operation actually reached `COMPLETED` — an expired record
+still unresolved answers `409 OPERATION_UNRESOLVED` and an `ERROR` log, because it needs a human, not a
+fresh identity.
 
 **Question 1 (source account):** the debited account is derived **exclusively** from the JWT `accountId`
 claim — the request body has no source-account field at all (the safest way to enforce "never from the

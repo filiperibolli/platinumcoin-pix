@@ -26,16 +26,23 @@ import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedExce
  * <h2>Two conditions carry the whole idempotency contract</h2>
  * <ul>
  *   <li><b>claim</b> is a conditional {@code PutItem} with {@code attribute_not_exists(pk) OR
- *       expiresAt < :now}: it wins only if no <b>live</b> record exists. The {@code OR expiresAt < :now}
- *       clause is what lets a fresh request re-claim an <i>expired</i> record immediately — DynamoDB's
- *       TTL deletion is lazy and can lag hours, so the 24h window is enforced here, not by the delete.</li>
+ *       (expiresAt < :now AND #status = :completed)}, and the item it writes carries the operation's
+ *       {@code txId} and {@code endToEndId} (ADR-0014). Two things follow from that single write. The
+ *       {@code expiresAt < :now} half is what lets a fresh request re-claim an <i>expired</i> record
+ *       immediately — DynamoDB's TTL deletion is lazy and can lag hours, so the 24h window is enforced
+ *       here, not by the delete. The {@code AND #status = :completed} half is what stops the TTL from
+ *       recycling a key whose money operation never resolved: that record's identity may already have
+ *       moved money, so it is refused rather than overwritten.</li>
  *   <li><b>reclaim</b> is a conditional {@code UpdateItem} on {@code claimedAt = :prior}: only the one
  *       retry that observed the stale {@code claimedAt} re-stamps it, so a crash-orphaned claim is
- *       recovered by exactly one racer.</li>
+ *       recovered by exactly one racer. Its {@code SET} clause deliberately never mentions
+ *       {@code txId}/{@code endToEndId} — the identity is immutable for the life of the record, and
+ *       that is enforced by the expression rather than by convention.</li>
  * </ul>
  *
- * <p>{@link #get} re-checks {@code expiresAt} on read and returns {@link Optional#empty()} for an
- * expired-but-still-present record, so the application never replays a response past its window.
+ * <p>{@link #get} returns the item <b>even when expired</b>: telling a legitimately reusable key from a
+ * stranded money operation is a business verdict, so it belongs to the use case (ADR-0014). This
+ * adapter reports {@code expiresAt}; it no longer decides what it means.
  */
 @Repository
 public class DynamoIdempotencyRepository implements IdempotencyRepository {
@@ -58,34 +65,47 @@ public class DynamoIdempotencyRepository implements IdempotencyRepository {
     }
 
     @Override
-    public boolean claim(String accountId, String key, String requestHash, Instant now) {
+    public boolean claim(
+            String accountId, String key, String requestHash, String txId, String endToEndId,
+            Instant now) {
         String pk = pk(accountId, key);
         Map<String, AttributeValue> item = new LinkedHashMap<>();
         item.put("pk", AttributeValue.fromS(pk));
         item.put("sk", AttributeValue.fromS(META_SK));
         item.put("requestHash", AttributeValue.fromS(requestHash));
-        item.put("status", AttributeValue.fromS(IdempotencyStatus.IN_PROGRESS.name()));
+        // The identity rides in the SAME conditional write as the claim (ADR-0014). Not a follow-up
+        // update: a second write could fail on its own and leave an accepted request whose money has
+        // no durable name — the exact gap this step closes.
+        item.put("txId", AttributeValue.fromS(txId));
+        item.put("endToEndId", AttributeValue.fromS(endToEndId));
+        item.put("status", AttributeValue.fromS(IdempotencyStatus.CLAIMED.name()));
         item.put("claimedAt", AttributeValue.fromS(now.toString()));
         item.put("expiresAt", AttributeValue.fromN(Long.toString(expiryEpoch(now))));
 
-        log.debug("DynamoDB conditional PutItem to claim an idempotency key | table={} pk={} sk={} "
-                + "requestHash={}", TABLE, pk, META_SK, requestHash);
+        log.debug("DynamoDB conditional PutItem to claim an idempotency key with its operation "
+                        + "identity | table={} pk={} sk={} requestHash={} txId={} endToEndId={}",
+                TABLE, pk, META_SK, requestHash, txId, endToEndId);
         try {
             dynamo.putItem(request -> request
                     .tableName(TABLE)
                     .item(item)
-                    .conditionExpression("attribute_not_exists(pk) OR expiresAt < :now")
+                    .conditionExpression(
+                            "attribute_not_exists(pk) OR (expiresAt < :now AND #status = :completed)")
+                    .expressionAttributeNames(Map.of("#status", "status"))
                     .expressionAttributeValues(Map.of(
-                            ":now", AttributeValue.fromN(Long.toString(now.getEpochSecond())))));
+                            ":now", AttributeValue.fromN(Long.toString(now.getEpochSecond())),
+                            ":completed", AttributeValue.fromS(IdempotencyStatus.COMPLETED.name()))));
             return true;
         } catch (ConditionalCheckFailedException e) {
-            log.debug("Idempotency claim lost, a live record already exists | pk={}", pk);
+            // Either a live record exists, or an expired one is still unresolved. Which it is decides
+            // replay-vs-409-vs-escalation, and that verdict is the use case's via get().
+            log.debug("Idempotency claim lost, a record blocks it | pk={}", pk);
             return false;
         }
     }
 
     @Override
-    public Optional<IdempotencyRecord> get(String accountId, String key, Instant now) {
+    public Optional<IdempotencyRecord> get(String accountId, String key) {
         String pk = pk(accountId, key);
         Map<String, AttributeValue> item = dynamo.getItem(request -> request
                 .tableName(TABLE)
@@ -97,22 +117,53 @@ public class DynamoIdempotencyRepository implements IdempotencyRepository {
             return Optional.empty();
         }
 
-        long expiresAt = Long.parseLong(item.get("expiresAt").n());
-        if (expiresAt < now.getEpochSecond()) {
-            // Lazy TTL: the item is present but past its window — treat it as absent (ADR-0002).
-            log.debug("Idempotency record present but expired, treating as absent | pk={} expiresAt={} "
-                    + "nowEpoch={}", pk, expiresAt, now.getEpochSecond());
-            return Optional.empty();
-        }
-
         IdempotencyStatus status = IdempotencyStatus.valueOf(item.get("status").s());
         Instant claimedAt = Instant.parse(item.get("claimedAt").s());
+        // Reported, never applied here: an expired record means "reusable key" or "stranded money
+        // operation" depending on its status, and only the use case may draw that line (ADR-0014).
+        Instant expiresAt = Instant.ofEpochSecond(Long.parseLong(item.get("expiresAt").n()));
+        // Absent on a record written before ADR-0014 — surfaced as null so the use case can refuse it
+        // rather than silently resume an operation whose money has no name.
+        String txId = stringOrNull(item.get("txId"));
+        String endToEndId = stringOrNull(item.get("endToEndId"));
         int httpStatus = item.containsKey("httpStatus") ? Integer.parseInt(item.get("httpStatus").n()) : 0;
         Map<String, String> snapshot = readSnapshot(item.get("responseSnapshot"));
-        log.debug("Idempotency record read | pk={} status={} claimedAt={} httpStatus={}",
-                pk, status, claimedAt, httpStatus);
+        log.debug("Idempotency record read | pk={} status={} txId={} endToEndId={} claimedAt={} "
+                        + "expiresAt={} httpStatus={}",
+                pk, status, txId, endToEndId, claimedAt, expiresAt, httpStatus);
         return Optional.of(new IdempotencyRecord(
-                item.get("requestHash").s(), status, claimedAt, httpStatus, snapshot));
+                item.get("requestHash").s(), txId, endToEndId, status, claimedAt, expiresAt,
+                httpStatus, snapshot));
+    }
+
+    /**
+     * Best-effort phase advance (ADR-0014 §3). Two deliberate choices: the condition refuses to move a
+     * {@code COMPLETED} record backwards, and <b>every</b> failure is swallowed with a {@code WARN}.
+     * By the time {@code POSTED} is written the payer's money has already moved — throwing here would
+     * turn a successful payment into a client-visible error over a bookkeeping write whose loss costs
+     * nothing, because correctness rests on the {@code txId} and the ledger's guard.
+     */
+    @Override
+    public void advancePhase(String accountId, String key, IdempotencyStatus phase, Instant now) {
+        String pk = pk(accountId, key);
+        log.debug("DynamoDB conditional UpdateItem to advance the idempotency phase | table={} pk={} "
+                + "phase={}", TABLE, pk, phase);
+        try {
+            dynamo.updateItem(request -> request
+                    .tableName(TABLE)
+                    .key(keyOf(pk))
+                    .updateExpression("SET #status = :phase")
+                    .conditionExpression("attribute_exists(pk) AND #status <> :completed")
+                    .expressionAttributeNames(Map.of("#status", "status"))
+                    .expressionAttributeValues(Map.of(
+                            ":phase", AttributeValue.fromS(phase.name()),
+                            ":completed", AttributeValue.fromS(IdempotencyStatus.COMPLETED.name()))));
+        } catch (RuntimeException e) {
+            log.warn("Advisory idempotency phase advance did not land, the operation continues "
+                            + "unaffected (correctness rests on the txId, not on the phase) | pk={} "
+                            + "phase={} reason={}",
+                    pk, phase, e.toString());
+        }
     }
 
     @Override
@@ -142,12 +193,20 @@ public class DynamoIdempotencyRepository implements IdempotencyRepository {
             dynamo.updateItem(request -> request
                     .tableName(TABLE)
                     .key(keyOf(pk))
-                    .updateExpression("SET #status = :inProgress, requestHash = :hash, "
+                    // txId and endToEndId are absent from this SET on purpose (ADR-0014): a re-claim
+                    // that could rename the money is the very bug being closed, so the expression —
+                    // not a comment or a code review — is what makes it impossible.
+                    .updateExpression("SET #status = :claimed, requestHash = :hash, "
                             + "claimedAt = :now, expiresAt = :exp")
-                    .conditionExpression("#status = :inProgress AND claimedAt = :prior")
+                    // "Non-terminal" is now a range of phases, so the guard is <> COMPLETED rather than
+                    // = one value; attribute_exists(txId) refuses to hand a pre-ADR-0014 record to a
+                    // resume that would have to invent an identity for it.
+                    .conditionExpression(
+                            "#status <> :completed AND claimedAt = :prior AND attribute_exists(txId)")
                     .expressionAttributeNames(Map.of("#status", "status"))
                     .expressionAttributeValues(Map.of(
-                            ":inProgress", AttributeValue.fromS(IdempotencyStatus.IN_PROGRESS.name()),
+                            ":claimed", AttributeValue.fromS(IdempotencyStatus.CLAIMED.name()),
+                            ":completed", AttributeValue.fromS(IdempotencyStatus.COMPLETED.name()),
                             ":hash", AttributeValue.fromS(newRequestHash),
                             ":now", AttributeValue.fromS(now.toString()),
                             ":exp", AttributeValue.fromN(Long.toString(expiryEpoch(now))),
@@ -177,6 +236,10 @@ public class DynamoIdempotencyRepository implements IdempotencyRepository {
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("response snapshot is not serializable", e);
         }
+    }
+
+    private static String stringOrNull(AttributeValue value) {
+        return value == null ? null : value.s();
     }
 
     private static Map<String, String> readSnapshot(AttributeValue value) {

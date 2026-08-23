@@ -416,14 +416,31 @@ Status transitions are guarded updates (`ConditionExpression: #status = :expecte
   "pk": "IDEM#acc-001#3f2a...uuid",
   "sk": "META",
   "requestHash": "sha256:ab12...",
+  "txId": "tx-9f1c...",
+  "endToEndId": "E12345678202607021234abcdefghijk",
   "status": "COMPLETED",
+  "claimedAt": "2026-07-02T12:34:56Z",
   "responseSnapshot": "{\"transactionId\":\"tx-9f1c\",\"status\":\"PROCESSING\"}",
   "httpStatus": 202,
   "expiresAt": 1751551200
 }
 ```
 
-Claimed with `attribute_not_exists(pk)`; the record also carries `claimedAt` — an `IN_PROGRESS` claim older than 60s is stale (crash mid-flight) and may be re-claimed. Note that DynamoDB TTL deletion is **lazy**: reads must check `expiresAt` themselves and treat expired-but-present records as absent. See ADR-0002 for full semantics (replay, 409 on hash mismatch, IN_PROGRESS handling).
+**The claim carries the operation's identity (ADR-0014, step 65).** `txId` and `endToEndId` are minted *before* the claim and written **by** it, in the same conditional `PutItem`. One write establishes both "this request is mine to execute" and "this is the name every monetary effect of it will carry", so a crash anywhere afterwards is recoverable to the *same* identity — a resume re-posts that `txId`, which the ledger's `attribute_not_exists(txId)` guard recognises as a replay instead of a second debit. `reclaim` re-stamps `claimedAt`/`expiresAt` and **never** touches the two identity attributes: its `SET` clause simply does not mention them, and its condition requires `attribute_exists(txId)`.
+
+**`status` is the phase**, one attribute, not two: `CLAIMED → POSTED → RECORDED → COMPLETED`. "In progress" is the derived question `status ≠ COMPLETED`. The intermediate phases are **advisory** — they inform logs and recovery, and correctness rests on `txId` + the ledger guard, so a lost phase advance is harmless. A claim that has been non-terminal for more than 60s is stale (crash mid-flight) and may be re-claimed **under its stored identity**.
+
+**The claim condition, and why the TTL cannot recycle a live money identity:**
+
+```
+attribute_not_exists(pk) OR (expiresAt < :now AND #status = :completed)
+```
+
+DynamoDB TTL deletion is **lazy** (it can lag hours), so the 24h window is enforced in code, never assumed to have been applied by a delete. The `AND #status = :completed` half is the ADR-0014 addition: an expired record that finished is a legitimately reusable key, but an expired record that never reached `COMPLETED` is an **unresolved money operation older than a day** — which the <5-min reconciliation SLO says cannot happen. It is refused (`409 OPERATION_UNRESOLVED` + an `ERROR` log naming the stranded `txId`) rather than overwritten, because handing a client a fresh identity for money that may already have moved is exactly the double-debit being prevented. A record with no `txId` at all (written before this step) is refused the same way rather than resumed under a guessed identity.
+
+The guarantee reaches exactly as far as the item does: DynamoDB's TTL collector eventually deletes an expired record, after which the key is claimable again. That is deliberate — the detector for money that stopped moving is the reconciliation scan over `pix_transactions` (no TTL, step 34), and suspending the TTL here would make a *refused* send's record immortal. See ADR-0014 §4.
+
+Reads return expired records rather than hiding them: "reusable key" and "stranded operation" are the same item to storage but opposite verdicts to the business, so the expiry decision belongs to the use case. See ADR-0002 for the rest of the semantics (replay, 409 on hash mismatch, in-progress handling) and ADR-0014 for the identity rules.
 
 ---
 

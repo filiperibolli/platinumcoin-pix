@@ -9,6 +9,7 @@ import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.exception.UnresolvedOperationException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
@@ -122,7 +123,7 @@ class SendPixUseCaseTest {
 
         assertThat(transactions.created()).isEmpty();
         // Money is validated before any claim, so a malformed request leaves no idempotency record.
-        assertThat(idempotency.get("acc-001", KEY, NOW)).isEmpty();
+        assertThat(idempotency.get("acc-001", KEY)).isEmpty();
     }
 
     @Test
@@ -170,9 +171,8 @@ class SendPixUseCaseTest {
 
     @Test
     void aFreshInProgressClaimForTheSameKeyIs409InProgress() {
-        // A concurrent request is mid-flight: an IN_PROGRESS record whose claim is recent.
-        idempotency.plant("acc-001", KEY, new IdempotencyRecord(
-                hashOfLunch10(), IdempotencyStatus.IN_PROGRESS, NOW.minusSeconds(5), 0, null), NOW);
+        // A concurrent request is mid-flight: a non-terminal record whose claim is recent.
+        idempotency.plant("acc-001", KEY, claimed(hashOfLunch10(), NOW.minusSeconds(5)));
 
         assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
                 .isInstanceOf(RequestInProgressException.class);
@@ -182,10 +182,10 @@ class SendPixUseCaseTest {
 
     @Test
     void aStaleInProgressClaimIsReclaimedAndTheRetryCompletesInsteadOf409ingForever() {
-        // A crash left the claim orphaned: IN_PROGRESS, claimed well beyond the staleness window.
-        idempotency.plant("acc-001", KEY, new IdempotencyRecord(
-                hashOfLunch10(), IdempotencyStatus.IN_PROGRESS,
-                NOW.minusSeconds(SendPixUseCase.STALE_SECONDS + 5), 0, null), NOW);
+        // A crash left the claim orphaned: non-terminal, claimed well beyond the staleness window,
+        // carrying the identity its first attempt would have moved money under (ADR-0014).
+        idempotency.plant("acc-001", KEY,
+                claimed(hashOfLunch10(), NOW.minusSeconds(SendPixUseCase.STALE_SECONDS + 5)));
 
         accept(command("bob@platinum.com", "10.00", "lunch", KEY));
 
@@ -515,9 +515,141 @@ class SendPixUseCaseTest {
         assertThat(transactions.outboxTypes()).containsExactly("PixDebited");
     }
 
+    // --- step 65: durable operation identity (ADR-0014) --------------------------------------------
+
+    @Test
+    void resumeAfterCrashPostsUnderTheSameTxId() {
+        pixKeys.map("bob@platinum.com", "acc-002");
+        // The crash window ADR-0014 closes: the ledger's posting COMMITS (the payer's money is gone)
+        // and the process dies before the transaction and the idempotency completion are written. The
+        // claim is left non-terminal with nothing downstream to say what identity moved the money.
+        ledger.crashAfterRecordingOnce(new IllegalStateException("process died after the ledger commit"));
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(transactions.created()).isEmpty();
+
+        // Past STALE_SECONDS the client retries the SAME key: the orphaned claim is re-claimed and the
+        // money-moving work re-runs. It MUST re-run under the identity already used, so the ledger's
+        // attribute_not_exists(txId) guard recognises it as a replay of the posting it already holds.
+        useCaseAt(NOW.plusSeconds(SendPixUseCase.STALE_SECONDS + 5))
+                .execute(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        // The system invariant, not the return value: one request, one identity, one debit. Two
+        // distinct txIds here would mean the ledger posted twice and the payer paid twice.
+        assertThat(ledger.distinctTxIds()).hasSize(1);
+        assertThat(ledger.postings()).hasSize(1);
+    }
+
+    @Test
+    void idsAreMintedBeforeTheClaim() {
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        // Asserted on the claim CALL, not on what the record ended up holding: the identity has to be
+        // an argument of the write that wins the key, because a follow-up write could fail on its own.
+        FakeIdempotencyRepository.ClaimCall claim = idempotency.claims().get(0);
+        assertThat(idempotency.claims()).hasSize(1);
+        assertThat(claim.txId()).isNotBlank();
+        assertThat(claim.endToEndId()).isNotBlank();
+        // And it is the same identity the money actually moved under — minting before the claim would
+        // be pointless if the ledger were then commanded with something else.
+        assertThat(ledger.only().txId()).isEqualTo(claim.txId());
+        assertThat(transactions.only().txId()).isEqualTo(claim.txId());
+        assertThat(transactions.only().endToEndId()).isEqualTo(claim.endToEndId());
+    }
+
+    @Test
+    void reclaimReusesTheStoredIdentityNotTheCommandsFreshOne() {
+        // A stale record whose identity is unmistakably not something this invocation could generate.
+        String storedTxId = "tx-00000000-0000-0000-0000-0000000stale";
+        String storedEndToEndId = "E12345678202601010000STALEIDENT0";
+        idempotency.plant("acc-001", KEY, new IdempotencyRecord(
+                hashOfLunch10(), storedTxId, storedEndToEndId, IdempotencyStatus.POSTED,
+                NOW.minusSeconds(SendPixUseCase.STALE_SECONDS + 5), NOW.plusSeconds(3600), 0, null));
+
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        // The resume posted under the STORED name. Had it used the freshly minted one, the ledger's
+        // attribute_not_exists(txId) guard would not have recognised the replay and the payer would be
+        // debited a second time for one request.
+        assertThat(ledger.only().txId()).isEqualTo(storedTxId);
+        assertThat(transactions.only().txId()).isEqualTo(storedTxId);
+        assertThat(transactions.only().endToEndId()).isEqualTo(storedEndToEndId);
+    }
+
+    @Test
+    void expiredNonTerminalRecordIsRefused() {
+        // Past the 24h window and still not COMPLETED: an unresolved money operation older than a day.
+        // Recycling the key would hand this caller a brand-new identity for money that may already
+        // have moved, so the platform refuses instead of inventing a second payment.
+        idempotency.plant("acc-001", KEY, new IdempotencyRecord(
+                hashOfLunch10(), "tx-stranded", "E12345678202601010000STRANDED00",
+                IdempotencyStatus.POSTED, NOW.minusSeconds(25 * 3600), NOW.minusSeconds(3600), 0, null));
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(UnresolvedOperationException.class);
+
+        assertThat(ledger.postings()).isEmpty();
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    @Test
+    void aStaleRecordWithNoIdentityIsRefusedRatherThanResumedUnderAGuessedTxId() {
+        // A record written before ADR-0014: stale, resumable by the old rules, but naming no money.
+        idempotency.plant("acc-001", KEY, new IdempotencyRecord(
+                hashOfLunch10(), null, null, IdempotencyStatus.CLAIMED,
+                NOW.minusSeconds(SendPixUseCase.STALE_SECONDS + 5), NOW.plusSeconds(3600), 0, null));
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(UnresolvedOperationException.class);
+
+        assertThat(ledger.postings()).isEmpty();
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    @Test
+    void resumeAfterCrashBetweenTheTransactionWriteAndTheMemoStillCompletes() {
+        pixKeys.map("bob@platinum.com", "acc-002");
+        // The narrowest crash window of all: the ledger posted, the transaction AND its outbox events
+        // committed, and the process died before the idempotency memo. The client never got its 202.
+        transactions.crashAfterCreatingOnce(new IllegalStateException("died before the memo"));
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(IllegalStateException.class);
+
+        // The retry resumes under the stored identity — and must be able to FINISH. Re-creating the
+        // transaction is impossible (attribute_not_exists(pk) refuses it), so a resume that cannot
+        // recognise its own earlier write would strand this client on a 500 until the 24h TTL.
+        SendPixOutcome resumed = useCaseAt(NOW.plusSeconds(SendPixUseCase.STALE_SECONDS + 5))
+                .execute(command("bob@platinum.com", "10.00", "lunch", KEY));
+        assertThat(resumed.httpStatus()).isEqualTo(202);
+
+        // The system invariants, all three: one debit, one transaction item, one announcement. A second
+        // PixSettled would have BACEN-facing consumers act twice on money that moved once.
+        assertThat(ledger.distinctTxIds()).hasSize(1);
+        assertThat(transactions.created()).hasSize(1);
+        assertThat(transactions.outboxTypes()).containsExactly("PixSettled");
+        assertThat(resumed.transactionId()).isEqualTo(transactions.only().txId());
+    }
+
+    /** A non-terminal claim carrying a plausible identity, as the claim write would have left it. */
+    private static IdempotencyRecord claimed(String requestHash, Instant claimedAt) {
+        return new IdempotencyRecord(requestHash, "tx-" + java.util.UUID.randomUUID(),
+                "E12345678202607021234PLANTEDID0", IdempotencyStatus.CLAIMED, claimedAt,
+                claimedAt.plusSeconds(24 * 3600), 0, null);
+    }
+
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */
     private static LocalDate saoPauloDay() {
         return NOW.atZone(java.time.ZoneId.of("America/Sao_Paulo")).toLocalDate();
+    }
+
+    /**
+     * The same use case over the same fakes, but with the clock pinned at {@code at} — how a test walks
+     * a request forward in time (past the staleness window) without a mutable clock.
+     */
+    private SendPixUseCase useCaseAt(Instant at) {
+        return new SendPixUseCase(transactions, idempotency, pixKeys, accountLimits, dailyLimits,
+                fraudScorer, ledger, endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
+                Clock.fixed(at, ZoneOffset.UTC));
     }
 
     /** The request-hash the use case computes for the canonical "lunch / 10.00" request. */
@@ -529,6 +661,6 @@ class SendPixUseCaseTest {
                 new FakeLedgerClient(), endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
                 clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
-        return probe.get("acc-001", "probe-key", NOW).orElseThrow().requestHash();
+        return probe.get("acc-001", "probe-key").orElseThrow().requestHash();
     }
 }

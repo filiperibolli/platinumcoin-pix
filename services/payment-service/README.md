@@ -57,6 +57,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `Idempotency-Key` header absent/blank | `400` | `IDEMPOTENCY_KEY_REQUIRED` |
 | same `Idempotency-Key` replayed with a different payload | `409` | `IDEMPOTENCY_KEY_REUSED` |
 | a concurrent request with the same key is still in flight (carries `Retry-After: 2`) | `409` | `REQUEST_IN_PROGRESS` |
+| the key names a money operation that never resolved and cannot be safely resumed (step 65; **no** `Retry-After` — it needs an operator) | `409` | `OPERATION_UNRESOLVED` |
 | the destination Pix key does not resolve at all (unknown to the DICT; steps 21/27) | `422` | `KEY_NOT_FOUND` |
 | the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
 | the in-path fraud check returned `DENY` (step 25; limit reservation released) | `422` | `FRAUD_DENIED` |
@@ -69,12 +70,30 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 is de-duplicated per `(accountId, key)` in `pix_idempotency` (24h TTL). The lifecycle is claim →
 execute → memoize → replay: a conditional claim wins or loses atomically; the winner does the work and
 stores the response; a losing retry with the **same** request-hash replays the memoized response (same
-`transactionId`), a **different** hash is `409 IDEMPOTENCY_KEY_REUSED`, and an `IN_PROGRESS` claim is
+`transactionId`), a **different** hash is `409 IDEMPOTENCY_KEY_REUSED`, and a non-terminal claim is
 `409 REQUEST_IN_PROGRESS` + `Retry-After` — **unless** it is stale (claimed > 60s ago, i.e. a crash
 left it orphaned), in which case the retry re-claims it, so a crash never blocks the client until the
 TTL. The request-hash is a canonical-JSON SHA-256 over the normalized fields (key order / whitespace
 never change it; a different amount does — `common-lib`'s `CanonicalJson`). DynamoDB TTL deletion is
-lazy, so reads treat an expired-but-present record as absent.
+lazy, so the 24h window is enforced in code, never assumed to have been applied by a delete.
+
+**Durable operation identity (step 65, ADR-0014).** The order the use case reads in is *identity →
+claim → effect*. `txId` and `endToEndId` are minted **before** the claim and written **by** it — the
+same conditional `PutItem` establishes both the right to execute and the name every monetary effect
+will carry. That is what connects ADR-0002's layers: a resume of a crashed attempt re-posts the
+**stored** `txId`, which the ledger's `attribute_not_exists(txId)` guard recognises as a replay rather
+than a second debit (before this step the resume minted a fresh id and the payer paid twice).
+`reclaim` re-stamps only `claimedAt`/`expiresAt`; its update expression cannot touch the identity.
+`status` is the phase — `CLAIMED → POSTED → RECORDED → COMPLETED`, the middle two advisory (logs and
+recovery only; correctness rests on the `txId`). The TTL may recycle a key only once its operation
+reached `COMPLETED`: an expired record still unresolved, or one written before this step with no
+`txId`, answers `409 OPERATION_UNRESOLVED` plus an `ERROR` log naming the stranded `txId` — it is a
+defect the <5-min reconciliation SLO says cannot happen, so it gets a human, not a fresh identity
+(that refusal is a backstop at the intake door and lasts as long as the item does; the real detector
+for stalled money is the reconciliation scan over `pix_transactions` — ADR-0014 §4). And because the
+identity is durable, the transaction write is idempotent too: a resume whose earlier attempt already
+committed `TX#<txId>` reads it back, verifies it describes this same operation, and continues to the
+memo instead of failing — re-creating it is impossible, so the only way out is forward.
 
 **Daily limit (step 20, ADR-0007).** Before any money moves, the use case reads the debtor's
 `dailyLimitCents` from account-service and **reserves** the amount against a per-account,
@@ -432,6 +451,8 @@ curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
   only; step 40 implements the read half here.
 - [ADR-0010](../../docs/adr/0010-clean-architecture-lite.md) — clean/hexagonal-lite per service.
 - [ADR-0011](../../docs/adr/0011-explicit-use-case-layer.md) — explicit use-case layer; no business policy in `api/`.
+- [ADR-0014](../../docs/adr/0014-durable-operation-identity.md) — the `txId` is minted before the
+  idempotency claim and persisted by it, so a crash-resume reuses the same identity (amends ADR-0002).
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited
   from `common-lib`: `[cid=… tx=…]` on every record, English sentences plus `key=value`, amounts in
   cents and account/creditor ids in the clear (an LGPD trade-off production reverses).

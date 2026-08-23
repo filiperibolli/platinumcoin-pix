@@ -136,7 +136,7 @@ class IdempotencyIT extends LocalStackTestBase {
         String key = "inflight-" + java.util.UUID.randomUUID();
         Instant now = Instant.now();
 
-        // A concurrent request is genuinely mid-flight: IN_PROGRESS, claimed just now (not stale).
+        // A concurrent request is genuinely mid-flight: CLAIMED, claimed just now (not stale).
         plantStaleClaim(account, key, requestHash(), now, now);
 
         send(account, key, BODY)
@@ -155,7 +155,7 @@ class IdempotencyIT extends LocalStackTestBase {
         String key = "stale-" + java.util.UUID.randomUUID();
         Instant now = Instant.now();
 
-        // Simulate a crash between claim and completion: an IN_PROGRESS record whose claim is well
+        // Simulate a crash between claim and completion: a non-terminal record whose claim is well
         // beyond the 60s staleness window, carrying the SAME request-hash the send will compute.
         plantStaleClaim(account, key, requestHash(), now.minus(Duration.ofMinutes(5)), now);
 
@@ -197,12 +197,19 @@ class IdempotencyIT extends LocalStackTestBase {
                 "pixKey", "bob@platinum.com", "amount", "10.00", "description", "lunch"));
     }
 
+    /**
+     * Plant a non-terminal claim as the real claim write would have left it — identity included
+     * (ADR-0014). A record with no {@code txId} is a pre-ADR-0014 record and is deliberately refused
+     * rather than resumed, so planting one here would be testing the escalation path, not this one.
+     */
     private void plantStaleClaim(String account, String key, String hash, Instant claimedAt, Instant now) {
         dynamo.putItem(r -> r.tableName("pix_idempotency").item(Map.of(
                 "pk", AttributeValue.fromS("IDEM#" + account + "#" + key),
                 "sk", AttributeValue.fromS("META"),
                 "requestHash", AttributeValue.fromS(hash),
-                "status", AttributeValue.fromS("IN_PROGRESS"),
+                "txId", AttributeValue.fromS("tx-" + java.util.UUID.randomUUID()),
+                "endToEndId", AttributeValue.fromS("E12345678202607021234PLANTEDID0"),
+                "status", AttributeValue.fromS("CLAIMED"),
                 "claimedAt", AttributeValue.fromS(claimedAt.toString()),
                 "expiresAt", AttributeValue.fromN(Long.toString(now.plus(Duration.ofHours(24)).getEpochSecond())))));
     }

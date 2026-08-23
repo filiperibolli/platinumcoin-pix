@@ -34,6 +34,7 @@ final class FakeLedgerClient implements LedgerClient {
     private final List<Posting> postings = new ArrayList<>();
     private final Map<String, Long> balances = new HashMap<>();
     private RuntimeException failure;
+    private RuntimeException crashAfterRecording;
     private int balanceReads;
 
     private String lastStatementAccountId;
@@ -65,6 +66,13 @@ final class FakeLedgerClient implements LedgerClient {
         boolean alreadyPosted = postings.stream().anyMatch(p -> p.txId().equals(txId));
         if (!alreadyPosted) {
             postings.add(new Posting(txId, debtor, creditor, amountCents, description, entryType));
+        }
+        if (crashAfterRecording != null) {
+            // The commit LANDED and then the caller died: the money moved, but nothing downstream of
+            // the ledger ran. One-shot, so the resume that follows can complete normally.
+            RuntimeException crash = crashAfterRecording;
+            crashAfterRecording = null;
+            throw crash;
         }
     }
 
@@ -98,6 +106,20 @@ final class FakeLedgerClient implements LedgerClient {
     /** Make the next (and every) posting throw {@code ex} — used to drive the failure branches. */
     void failWith(RuntimeException ex) {
         this.failure = ex;
+    }
+
+    /**
+     * Simulate a crash <b>after</b> the posting commits: the next call records the posting exactly as
+     * the real ledger would, and only then throws. This is the window ADR-0014 closes — the money has
+     * moved and the caller never learns it — and it is one-shot so the recovery attempt can proceed.
+     */
+    void crashAfterRecordingOnce(RuntimeException ex) {
+        this.crashAfterRecording = ex;
+    }
+
+    /** The distinct {@code txId}s the ledger was ever asked to post — one identity per request, or a bug. */
+    java.util.Set<String> distinctTxIds() {
+        return postings.stream().map(Posting::txId).collect(java.util.stream.Collectors.toSet());
     }
 
     /** The page {@link #readStatement} will return next; lets a test read back the limit it was passed. */
