@@ -5,6 +5,7 @@ import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.model.Direction;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementLine;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -32,18 +34,25 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * operation (ADR-0006). payment-service hands both legs and the {@code txId}; the ledger commits the
  * debit and credit in one {@code TransactWriteItems} (Domain Safety Rule #4).
  *
- * <h2>Mapping the ledger's error contract onto the send flow</h2>
+ * <h2>Classifying the ledger's answer into a {@link LedgerOutcome} (step 66, ADR-0015)</h2>
+ * The one question this adapter must answer honestly is <i>did the money move?</i>, and it has three
+ * possible answers, not two. It classifies; it never guesses.
  * <ul>
- *   <li>{@code 422 INSUFFICIENT_FUNDS} → {@link InsufficientFundsException} — a business refusal; no
- *       money moved (the guard is inside the ledger transaction), so the caller releases its
- *       daily-limit reservation.</li>
- *   <li>{@code 503 LEDGER_CONFLICT}, a connect/read timeout, or an unreachable host →
- *       {@link LedgerUnavailableException} — nothing debited, safe to retry the same {@code txId}.</li>
- *   <li>Any other ledger response ({@code 404}/{@code 409}/{@code 400}/{@code 422 INVALID_POSTING}) is
- *       unexpected for a well-formed posting whose accounts were just resolved and whose {@code txId} is
- *       a fresh UUID. It is surfaced as {@link LedgerUnavailableException} with the real status/code
- *       logged, rather than guessed at — the operator sees the truth and the client is told to retry,
- *       which the {@code txId}-keyed idempotency makes safe.</li>
+ *   <li>{@code 200} → {@link LedgerOutcome#POSTED}, or {@link LedgerOutcome#REPLAYED} when the body's
+ *       {@code replayed} flag says the ledger already held this {@code txId}. Reading that flag is the
+ *       whole of the query-before-retry mechanism: the ledger has always answered it, and this client
+ *       used to discard the body.</li>
+ *   <li>{@code 422 INSUFFICIENT_FUNDS} → classified as {@link LedgerOutcome#INSUFFICIENT_FUNDS} and
+ *       translated to {@link InsufficientFundsException} — a business refusal with its own {@code 422}
+ *       mapping and a daily-limit release; no money moved, the guard being inside the ledger's own
+ *       transaction.</li>
+ *   <li>{@code 503 LEDGER_CONFLICT} and every definite {@code 4xx} refusal ({@code 404},
+ *       {@code 409 POSTING_TXID_MISMATCH}, {@code 400}, {@code 422 INVALID_POSTING}) →
+ *       {@link LedgerOutcome#REFUSED}. The ledger answered, so nothing committed. Retry-safe, but not
+ *       worth an immediate re-POST: re-sending a request it just rejected cannot change the answer.</li>
+ *   <li>A connect/read timeout, an unreachable or reset connection, an unattributable {@code 5xx}, or a
+ *       {@code 200} whose body cannot be read → {@link LedgerOutcome#UNKNOWN}. <b>This is the case the
+ *       step exists for.</b></li>
  * </ul>
  *
  * <p><b>Two operations, one call site (step 27).</b> An internal transfer credits the payee
@@ -51,10 +60,18 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  * ({@code PIX_OUT}, money in flight to BACEN). Both go through the same private {@code post}, so the
  * atomicity, the {@code txId} guard and the error mapping cannot drift between the two flows.
  *
- * <p><b>Timeouts.</b> Connect and read timeouts are set so a hung ledger surfaces as a timeout (a
- * {@link ResourceAccessException}) → {@code 503}, rather than pinning the request thread. A deployed
- * build would additionally trip a <b>circuit breaker</b> after repeated failures instead of hammering a
- * struggling ledger — that seam is Sprint 7 / step 32 and is deferred here (Task 3).
+ * <p><b>Timeouts are an unknown result, never a claim that nothing happened.</b> Connect and read
+ * timeouts are set so a hung ledger surfaces as a {@link ResourceAccessException} rather than pinning
+ * the request thread — that part is unchanged. What changed in step 66 is the meaning attached to it:
+ * this adapter used to map it to {@link LedgerUnavailableException} under the comment <i>"nothing
+ * debited, safe to retry the same txId"</i>, and both halves were false. A read timeout means the
+ * response did not arrive within the budget; the {@code TransactWriteItems} on the other side may have
+ * committed a microsecond before the socket gave up. So the honest classification is
+ * {@link LedgerOutcome#UNKNOWN}, and the resolution — re-POSTing the same {@code txId} until the ledger
+ * either commits it or reports it as a replay — belongs to the use case, which is the only layer that
+ * knows what an ambiguous debit means for a payment. A deployed build would additionally trip a
+ * <b>circuit breaker</b> after repeated failures instead of hammering a struggling ledger — that seam
+ * is Sprint 7 / step 32 and is deferred here (Task 3).
  *
  * <p><b>Service-to-service auth.</b> The endpoint is behind the shared JWT filter, so the caller's
  * bearer token is forwarded (ADR-0007; a service credential is the deployed posture, step-45). The
@@ -66,6 +83,9 @@ public class HttpLedgerClient implements LedgerClient {
     private static final Logger log = LoggerFactory.getLogger(HttpLedgerClient.class);
 
     private static final String ENTRY_TYPE_PIX_INTERNAL = "PIX_INTERNAL";
+
+    /** The ledger's own "I lost to contention and did not commit" code — a definite refusal, not doubt. */
+    private static final String LEDGER_CONFLICT_CODE = "LEDGER_CONFLICT";
 
     /**
      * Why an external send's money moves: out of the payer, into clearing, on its way to another PSP.
@@ -88,6 +108,18 @@ public class HttpLedgerClient implements LedgerClient {
 
     /** Just enough of the problem+json body to read the {@code code} that discriminates a 422. */
     record ProblemView(String code) {
+    }
+
+    /**
+     * Just enough of ledger-service's {@code PostingResponse} to classify the answer: whether this call
+     * committed the money or replayed a {@code txId} the ledger already held, and — for the replay case
+     * — when the money actually moved. The money fields are deliberately not bound: the caller handed
+     * the ledger the amount, so reading it back would invite a second, redundant source for it.
+     *
+     * @param postedAt the instant the posting committed, which on a replay is the <b>earlier</b> call's
+     *                 instant — the one fact a caller surprised by a replay needs in its log
+     */
+    record PostingView(String txId, boolean replayed, String postedAt) {
     }
 
     /**
@@ -129,17 +161,18 @@ public class HttpLedgerClient implements LedgerClient {
     }
 
     @Override
-    public void postInternalTransfer(
+    public LedgerOutcome postInternalTransfer(
             String txId,
             String debtorAccountId,
             String creditorAccountId,
             long amountCents,
             String description) {
-        post(txId, debtorAccountId, creditorAccountId, amountCents, ENTRY_TYPE_PIX_INTERNAL, description);
+        return post(txId, debtorAccountId, creditorAccountId, amountCents, ENTRY_TYPE_PIX_INTERNAL,
+                description);
     }
 
     @Override
-    public void postExternalDebitToClearing(
+    public LedgerOutcome postExternalDebitToClearing(
             String txId,
             String debtorAccountId,
             String clearingAccountId,
@@ -148,7 +181,8 @@ public class HttpLedgerClient implements LedgerClient {
         // Same endpoint, same atomic TransactWriteItems, same txId guard — only the credit account and
         // the entryType differ. The clearing id arrives as an argument (step 52 shards it), never as a
         // constant of this adapter.
-        post(txId, debtorAccountId, clearingAccountId, amountCents, ENTRY_TYPE_PIX_OUT, description);
+        return post(txId, debtorAccountId, clearingAccountId, amountCents, ENTRY_TYPE_PIX_OUT,
+                description);
     }
 
     /**
@@ -256,12 +290,15 @@ public class HttpLedgerClient implements LedgerClient {
     }
 
     /**
-     * The one place the posting call is made, for both flows: build the request, map the ledger's error
-     * contract onto the send flow's exceptions. Keeping it single means the debit of an external send
-     * cannot drift from the debit of an internal one — they are the same operation with a different
-     * credit leg.
+     * The one place the posting call is made, for both flows: build the request and <b>classify</b> what
+     * came back. Keeping it single means the debit of an external send cannot drift from the debit of an
+     * internal one — they are the same operation with a different credit leg — and, since step 66, that
+     * the two cannot end up holding different theories of a timeout either.
+     *
+     * <p>Every path out of here is a classification of one question: <i>did the money move?</i> The only
+     * answer this method is forbidden to invent is a confident one it does not have.
      */
-    private void post(
+    private LedgerOutcome post(
             String txId,
             String debitAccount,
             String creditAccount,
@@ -274,40 +311,97 @@ public class HttpLedgerClient implements LedgerClient {
                 + "amountCents={} entryType={}", txId, debitAccount, creditAccount, amountCents,
                 entryType);
         try {
-            restClient.post()
+            PostingView view = restClient.post()
                     .uri("/internal/ledger/postings")
                     .headers(this::forwardAuthorization)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve()
-                    .toBodilessEntity();
+                    .body(PostingView.class);
+            if (view == null) {
+                // A 2xx whose body we cannot read: the ledger almost certainly committed, but "almost
+                // certainly" is not a fact about money. Unknown, and resolved by re-posting the txId.
+                log.warn("Ledger answered the posting with an empty body, so whether it committed is "
+                                + "unknown | txId={} debitAccount={} amountCents={} entryType={}",
+                        txId, debitAccount, amountCents, entryType);
+                return LedgerOutcome.UNKNOWN;
+            }
+            if (view.replayed()) {
+                log.info("Ledger replayed a posting it already held under this txId, no money moved on "
+                                + "this call | txId={} debitAccount={} creditAccount={} amountCents={} "
+                                + "entryType={} originallyPostedAt={}",
+                        txId, debitAccount, creditAccount, amountCents, entryType, view.postedAt());
+                return LedgerOutcome.REPLAYED;
+            }
             log.info("Ledger committed the posting | txId={} debitAccount={} creditAccount={} "
                     + "amountCents={} entryType={}", txId, debitAccount, creditAccount, amountCents,
                     entryType);
+            return LedgerOutcome.POSTED;
         } catch (RestClientResponseException e) {
-            int status = e.getStatusCode().value();
-            String code = problemCode(e);
-            if (status == HttpStatus.UNPROCESSABLE_ENTITY.value() && "INSUFFICIENT_FUNDS".equals(code)) {
-                log.warn("Ledger refused the debit for insufficient funds | txId={} debitAccount={} "
-                        + "amountCents={} entryType={}", txId, debitAccount, amountCents, entryType);
-                throw new InsufficientFundsException();
-            }
-            if (status == HttpStatus.SERVICE_UNAVAILABLE.value()) {
-                log.warn("Ledger returned 503 (lost to contention past its retry budget), the send is "
-                        + "retry-safe | txId={} code={}", txId, code);
-                throw new LedgerUnavailableException("ledger returned 503 " + code, e);
-            }
-            // Unexpected for a well-formed internal transfer: log the truth, tell the client to retry.
-            log.warn("Ledger posting failed with an unexpected status, treating as unavailable | "
-                    + "txId={} status={} code={}", txId, status, code);
-            throw new LedgerUnavailableException(
-                    "ledger posting failed with status " + status + " code " + code, e);
+            return classifyErrorResponse(e, txId, debitAccount, amountCents, entryType);
         } catch (ResourceAccessException e) {
-            // Connect/read timeout or unreachable host — nothing debited, safe to retry the same txId.
-            log.warn("Ledger unreachable or timed out, the send is retry-safe | txId={} error={}",
-                    txId, e.getMessage());
-            throw new LedgerUnavailableException("ledger unreachable or timed out", e);
+            // A connect timeout or a dropped connection. This used to read "nothing debited, safe to
+            // retry the same txId" — a belief the wire cannot support: the response failing to arrive
+            // says nothing about whether the TransactWriteItems committed on the other side. The only
+            // honest classification is UNKNOWN; resolving it is the use case's job (ADR-0015).
+            log.warn("Ledger unreachable or timed out, so whether the posting committed is UNKNOWN and "
+                            + "must be resolved by re-posting the same txId | txId={} debitAccount={} "
+                            + "amountCents={} entryType={} error={}",
+                    txId, debitAccount, amountCents, entryType, e.getMessage());
+            return LedgerOutcome.UNKNOWN;
+        } catch (RestClientException e) {
+            // Everything else the client can fail with, and it is a broader net than it looks: now that
+            // the body is BOUND rather than discarded, a READ timeout surfaces here (the wait expires
+            // while extracting the response) instead of as a ResourceAccessException — a behaviour
+            // change that came free with reading `replayed`, and one HttpLedgerClientTest pins. Any
+            // failure to obtain a readable answer means the same thing, so it classifies the same way.
+            log.warn("The ledger's answer could not be obtained or read, so whether the posting "
+                            + "committed is UNKNOWN and must be resolved by re-posting the same txId | "
+                            + "txId={} debitAccount={} amountCents={} entryType={} error={}",
+                    txId, debitAccount, amountCents, entryType, e.getMessage());
+            return LedgerOutcome.UNKNOWN;
         }
+    }
+
+    /**
+     * Classify a non-2xx answer. The split that matters is <b>definite refusal vs. unattributable</b>:
+     * a {@code 4xx} or the ledger's own {@code 503 LEDGER_CONFLICT} means it looked at the posting and
+     * declined to commit it, so the money certainly did not move; a {@code 5xx} it did not author (a
+     * proxy's {@code 502}/{@code 503}, an unhandled {@code 500}) could equally have been produced after
+     * the write committed, so it is UNKNOWN like a timeout.
+     */
+    private LedgerOutcome classifyErrorResponse(
+            RestClientResponseException e, String txId, String debitAccount, long amountCents,
+            String entryType) {
+        int status = e.getStatusCode().value();
+        String code = problemCode(e);
+        if (status == HttpStatus.UNPROCESSABLE_ENTITY.value() && "INSUFFICIENT_FUNDS".equals(code)) {
+            log.warn("Ledger refused the debit for insufficient funds | txId={} debitAccount={} "
+                    + "amountCents={} entryType={}", txId, debitAccount, amountCents, entryType);
+            // Classified as an outcome, then translated: this refusal carries its own 422 mapping and a
+            // daily-limit release, so it stays an exception rather than a value every caller must check.
+            throw new InsufficientFundsException();
+        }
+        if (status == HttpStatus.SERVICE_UNAVAILABLE.value() && LEDGER_CONFLICT_CODE.equals(code)) {
+            log.warn("Ledger returned 503 LEDGER_CONFLICT (lost to contention past its retry budget), it "
+                            + "definitively did not commit and the send is retry-safe | txId={} "
+                            + "amountCents={} entryType={}", txId, amountCents, entryType);
+            return LedgerOutcome.REFUSED;
+        }
+        if (e.getStatusCode().is4xxClientError()) {
+            // Unexpected for a well-formed posting whose accounts were just resolved, but definite: the
+            // ledger parsed the request and declined it, so nothing committed. Logged with the real
+            // status/code rather than guessed at — the operator sees the truth.
+            log.warn("Ledger refused the posting with an unexpected client error, nothing committed | "
+                            + "txId={} debitAccount={} amountCents={} entryType={} status={} code={}",
+                    txId, debitAccount, amountCents, entryType, status, code);
+            return LedgerOutcome.REFUSED;
+        }
+        log.warn("Ledger posting failed with a server error it may or may not have authored, so whether "
+                        + "it committed is UNKNOWN | txId={} debitAccount={} amountCents={} entryType={} "
+                        + "status={} code={}",
+                txId, debitAccount, amountCents, entryType, status, code);
+        return LedgerOutcome.UNKNOWN;
     }
 
     /** Read the {@code code} field of the problem+json error body, or {@code null} if unreadable. */

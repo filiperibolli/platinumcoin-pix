@@ -62,7 +62,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | the send would breach the debtor's daily Pix limit | `422` | `LIMIT_EXCEEDED` |
 | the in-path fraud check returned `DENY` (step 25; limit reservation released) | `422` | `FRAUD_DENIED` |
 | the ledger refused the debit for lack of funds (step 21; limit reservation released) | `422` | `INSUFFICIENT_FUNDS` |
-| the ledger was unreachable / timed out / lost to contention (step 21; carries `Retry-After: 5`) | `503` | `LEDGER_UNAVAILABLE` |
+| the ledger refused the posting, or its outcome could not be resolved (step 21; step 66 — carries `Retry-After: 5`) | `503` | `LEDGER_UNAVAILABLE` |
 | account-service could not supply the debtor's limit (not found / unreachable) | `502` | `ACCOUNT_LOOKUP_FAILED` |
 | no / invalid token | `401` | `UNAUTHORIZED` |
 
@@ -114,8 +114,14 @@ an unknown key is `422 KEY_NOT_FOUND` **before** the limit counter is touched, s
 unwind. (2) **Reserve** the daily limit. (3) **Debit**: command ledger-service
 (`POST /internal/ledger/postings`, `entryType=PIX_INTERNAL`, keyed by `txId`) to move both legs in one
 atomic transaction (Domain Safety Rule #4). `INSUFFICIENT_FUNDS` ⇒ `422` and the reservation is
-**released** (no money moved); ledger unreachable/timeout/503 ⇒ `503 LEDGER_UNAVAILABLE` + `Retry-After:
-5` (nothing debited, the same `txId` is safe to retry — a circuit breaker is deferred to step 32). (4)
+**released** (no money moved). A timeout is **not** a claim that nothing was debited (step 66,
+[ADR-0015](../../docs/adr/0015-ledger-timeout-is-an-unknown-result.md)): the adapter classifies the
+answer into `POSTED` / `REPLAYED` / `REFUSED` / `UNKNOWN`, and an `UNKNOWN` is resolved by re-POSTing
+**the same `txId`** — the idempotent POST *is* the query, so it either commits the posting or is told it
+already committed (`replayed: true`). Only if it is still unknown after the bounded attempts
+(`pix.ledger.attempts`, default 2) does the send answer `503 LEDGER_UNAVAILABLE` + `Retry-After: 5`,
+**without** releasing the limit and keeping the same `txId` on the claim, so the next attempt resolves
+it (a circuit breaker is deferred to step 32). (4)
 **Persist** `SETTLED` with `settledAt` and the resolved `creditorAccountId`: an internal transfer has no
 SPI leg, so the atomic posting *is* the settlement — it never dwells in an intermediate `DEBITED` that
 `GET /payments/{id}` would map to an eternal `PROCESSING`.

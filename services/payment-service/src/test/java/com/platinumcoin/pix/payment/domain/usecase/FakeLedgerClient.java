@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.util.ArrayList;
@@ -13,7 +14,8 @@ import java.util.Map;
  * case commands, so a test can assert the exact debit/credit/amount/txId/entryType without a running
  * ledger, and can be told to fail the next posting (insufficient funds or unavailable) to drive those
  * branches. Idempotent by {@code txId} like the real ledger: re-posting the same {@code txId} records
- * nothing new.
+ * nothing new and answers {@link LedgerOutcome#REPLAYED}, which is how a test drives the step-66
+ * resolution path without a socket.
  */
 final class FakeLedgerClient implements LedgerClient {
 
@@ -34,7 +36,9 @@ final class FakeLedgerClient implements LedgerClient {
     private final List<Posting> postings = new ArrayList<>();
     private final Map<String, Long> balances = new HashMap<>();
     private RuntimeException failure;
+    private LedgerOutcome forcedOutcome;
     private RuntimeException crashAfterRecording;
+    private boolean timeoutAfterRecording;
     private int balanceReads;
 
     private String lastStatementAccountId;
@@ -43,29 +47,42 @@ final class FakeLedgerClient implements LedgerClient {
     private StatementPage nextStatementPage = new StatementPage(List.of(), null);
 
     @Override
-    public void postInternalTransfer(
+    public LedgerOutcome postInternalTransfer(
             String txId, String debtorAccountId, String creditorAccountId, long amountCents,
             String description) {
-        record(txId, debtorAccountId, creditorAccountId, amountCents, description, PIX_INTERNAL);
+        return record(txId, debtorAccountId, creditorAccountId, amountCents, description, PIX_INTERNAL);
     }
 
     @Override
-    public void postExternalDebitToClearing(
+    public LedgerOutcome postExternalDebitToClearing(
             String txId, String debtorAccountId, String clearingAccountId, long amountCents,
             String description) {
-        record(txId, debtorAccountId, clearingAccountId, amountCents, description, PIX_OUT);
+        return record(txId, debtorAccountId, clearingAccountId, amountCents, description, PIX_OUT);
     }
 
-    private void record(
+    private LedgerOutcome record(
             String txId, String debtor, String creditor, long amountCents, String description,
             String entryType) {
         if (failure != null) {
             throw failure;
         }
-        // Idempotent by txId: a replay of the same posting is a no-op that returns normally.
+        if (forcedOutcome != null) {
+            // A ledger that answers without moving money: a definite refusal, or a call whose result is
+            // lost. Nothing is recorded, which is exactly the world the outcome describes.
+            return forcedOutcome;
+        }
+        // Idempotent by txId: a replay of the same posting moves no money again and SAYS so — the flag
+        // the real ledger has always returned and the client used to throw away.
         boolean alreadyPosted = postings.stream().anyMatch(p -> p.txId().equals(txId));
         if (!alreadyPosted) {
             postings.add(new Posting(txId, debtor, creditor, amountCents, description, entryType));
+        }
+        if (timeoutAfterRecording) {
+            // The ambiguous outcome of ADR-0015: the posting COMMITTED (it is in the list above) and the
+            // caller never learns so, because the response never arrived. One-shot, so whatever the use
+            // case does next sees the ledger this attempt actually left behind.
+            timeoutAfterRecording = false;
+            return LedgerOutcome.UNKNOWN;
         }
         if (crashAfterRecording != null) {
             // The commit LANDED and then the caller died: the money moved, but nothing downstream of
@@ -74,6 +91,7 @@ final class FakeLedgerClient implements LedgerClient {
             crashAfterRecording = null;
             throw crash;
         }
+        return alreadyPosted ? LedgerOutcome.REPLAYED : LedgerOutcome.POSTED;
     }
 
     /**
@@ -115,6 +133,25 @@ final class FakeLedgerClient implements LedgerClient {
      */
     void crashAfterRecordingOnce(RuntimeException ex) {
         this.crashAfterRecording = ex;
+    }
+
+    /**
+     * Simulate a <b>timeout on a posting that committed</b>: the money moves exactly as the real ledger
+     * would move it, and only then does the caller's wait expire. This is the outcome that carries no
+     * information — "it did not happen" and "it happened and I did not hear" look identical from here.
+     * One-shot, so the resolving re-POST meets the ledger this attempt actually left behind.
+     */
+    void timeoutAfterRecordingOnce() {
+        this.timeoutAfterRecording = true;
+    }
+
+    /**
+     * Answer every posting with {@code outcome} and move no money — a ledger that keeps refusing
+     * ({@code REFUSED}) or keeps losing its answers ({@code UNKNOWN}), which is what the bounded
+     * resolution loop has to give up on.
+     */
+    void alwaysAnswer(LedgerOutcome outcome) {
+        this.forcedOutcome = outcome;
     }
 
     /** The distinct {@code txId}s the ledger was ever asked to post — one identity per request, or a bug. */

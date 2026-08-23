@@ -61,6 +61,16 @@ pix:
   # raising it trades hit rate for how long a customer can see a number that already moved.
   balance-cache:
     ttl: ${BALANCE_CACHE_TTL:5s}
+  # Resolving an AMBIGUOUS ledger outcome (step 66, ADR-0015). A timeout does not mean "nothing was
+  # debited" — it means the answer never arrived — so the send re-POSTs the SAME txId, which the ledger
+  # either commits or reports as a replay. `attempts` is the TOTAL number of POSTs one operation may
+  # make (2 = the original call plus one resolving re-POST), because what is being bounded is how long
+  # a user's request may sit on a misbehaving dependency: every attempt costs a full round trip against
+  # the read timeout above. Still unknown afterwards ⇒ 503, no daily-limit release, and the claim keeps
+  # its txId so the next attempt resolves it.
+  ledger:
+    attempts: ${LEDGER_RESOLUTION_ATTEMPTS:2}
+    backoff: ${LEDGER_RESOLUTION_BACKOFF:200ms}
   events:
     # The ONE topic every domain event is published to (step 26); consumers fan out by subscribing with
     # a filter policy on the eventType message attribute. The ARN is injected rather than looked up by

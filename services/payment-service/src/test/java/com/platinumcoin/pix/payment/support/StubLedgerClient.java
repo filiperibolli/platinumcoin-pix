@@ -3,6 +3,7 @@ package com.platinumcoin.pix.payment.support;
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementLine;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
@@ -43,27 +44,30 @@ public class StubLedgerClient implements LedgerClient {
     private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
     private final Set<String> unknownAccounts = ConcurrentHashMap.newKeySet();
     private final Map<String, List<StatementLine>> statements = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicBoolean loseTheAnswerOnce =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     @Override
-    public void postInternalTransfer(
+    public LedgerOutcome postInternalTransfer(
             String txId, String debtorAccountId, String creditorAccountId, long amountCents,
             String description) {
-        move(txId, debtorAccountId, creditorAccountId, amountCents);
+        return move(txId, debtorAccountId, creditorAccountId, amountCents);
     }
 
     @Override
-    public void postExternalDebitToClearing(
+    public LedgerOutcome postExternalDebitToClearing(
             String txId, String debtorAccountId, String clearingAccountId, long amountCents,
             String description) {
         // Same balanced posting; only the credit leg's account differs (money in flight, not delivered).
-        move(txId, debtorAccountId, clearingAccountId, amountCents);
+        return move(txId, debtorAccountId, clearingAccountId, amountCents);
     }
 
-    private synchronized void move(
+    private synchronized LedgerOutcome move(
             String txId, String debitAccount, String creditAccount, long amountCents) {
-        // Idempotent by txId: a replayed posting returns normally without moving money again.
+        // Idempotent by txId: a replayed posting moves no money again and reports itself as a replay,
+        // exactly like the real ledger's `replayed: true` (step 66).
         if (postedTxIds.contains(txId)) {
-            return;
+            return LedgerOutcome.REPLAYED;
         }
         long debtorBalance = balances.getOrDefault(debitAccount, DEFAULT_BALANCE_CENTS);
         if (debtorBalance < amountCents) {
@@ -72,6 +76,22 @@ public class StubLedgerClient implements LedgerClient {
         balances.put(debitAccount, debtorBalance - amountCents);
         balances.merge(creditAccount, amountCents, Long::sum);
         postedTxIds.add(txId);
+        if (loseTheAnswerOnce.compareAndSet(true, false)) {
+            // The step-66 ambiguity, driven through the real web stack: the money HAS moved (both legs
+            // above) and the caller is told nothing. The resolving re-POST lands on the branch at the
+            // top of this method and is answered REPLAYED.
+            return LedgerOutcome.UNKNOWN;
+        }
+        return LedgerOutcome.POSTED;
+    }
+
+    /**
+     * Make the next posting commit and then <b>lose its answer</b> ({@link LedgerOutcome#UNKNOWN}), the
+     * outcome a read timeout produces. One-shot: the money is already moved, so the resolution attempt
+     * that follows must meet the ledger this call actually left behind.
+     */
+    public void loseTheAnswerOfTheNextPosting() {
+        loseTheAnswerOnce.set(true);
     }
 
     /**

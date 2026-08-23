@@ -109,9 +109,12 @@ public class PaymentExceptionHandler {
 
     @ExceptionHandler(LedgerUnavailableException.class)
     public ResponseEntity<ProblemDetail> handleLedgerUnavailable(LedgerUnavailableException ex) {
-        // Nothing was debited and the same txId is safe to retry, so — like REQUEST_IN_PROGRESS — this
-        // carries Retry-After telling the client to back off and re-send rather than give up. The 503
-        // message is safe (no internals); the cause chain is logged, not returned.
+        // The posting was refused, or its outcome could not be resolved within the bounded attempts
+        // (step 66, ADR-0015) — so the honest statement is "retry", not "nothing happened". Retrying is
+        // safe either way BECAUSE the same txId is reused: the retry re-posts the identity the ledger may
+        // already hold, so it converges on one debit instead of adding a second. Like REQUEST_IN_PROGRESS
+        // this carries Retry-After rather than telling the client to give up. The 503 message is safe (no
+        // internals); the cause chain is logged, not returned.
         log.warn("Mapped a domain failure to the client response | status={} code={} detail={} retryAfter={}",
                 HttpStatus.SERVICE_UNAVAILABLE.value(), "LEDGER_UNAVAILABLE", ex.getMessage(),
                 RETRY_AFTER_LEDGER_SECONDS);

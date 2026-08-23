@@ -9,6 +9,7 @@ import com.platinumcoin.pix.settlement.domain.model.InboundTransaction;
 import com.platinumcoin.pix.settlement.domain.port.InboundTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.LedgerClient;
 import com.platinumcoin.pix.settlement.domain.port.PixKeyResolver;
+import com.platinumcoin.pix.settlement.domain.service.LedgerOutcomes;
 import com.platinumcoin.pix.settlement.domain.service.SettlementOutboxEvents;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -117,10 +118,13 @@ public class ReceiveInboundPixUseCase {
         Instant now = clock.instant();
 
         // Debit clearing / credit the payee — the mirror of an outbound send. Idempotent by txId, which is
-        // what makes running it BEFORE the dedupe guard safe (see the class javadoc). A ledger outage
-        // throws: nothing is recorded locally, so the rail's retry is clean work.
-        ledger.creditInbound(txId, clearingAccountId, creditorAccountId, command.amountCents(),
-                ENTRY_DESCRIPTION_PREFIX + command.endToEndId());
+        // what makes running it BEFORE the dedupe guard safe (see the class javadoc). A refused OR
+        // unknown outcome throws (step 66): nothing is recorded locally, so the rail's retry re-posts
+        // the same in-<endToEndId> identity and resolves whether the credit landed.
+        LedgerOutcomes.requireMoneyMoved(
+                ledger.creditInbound(txId, clearingAccountId, creditorAccountId, command.amountCents(),
+                        ENTRY_DESCRIPTION_PREFIX + command.endToEndId()),
+                txId, "PIX_IN");
 
         InboundTransaction transaction = new InboundTransaction(txId, command.endToEndId(),
                 creditorAccountId, command.creditorKey(), clearingAccountId, command.amountCents(),

@@ -54,9 +54,12 @@ class SendPixFunnelMetricsTest {
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final RecordingPaymentFunnelMetrics funnel = new RecordingPaymentFunnelMetrics();
 
+    private static final int LEDGER_ATTEMPTS = 2;
+    private static final java.time.Duration NO_BACKOFF = java.time.Duration.ZERO;
+
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, funnel, CLEARING, clock);
+            endToEndIds, funnel, CLEARING, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
 
     @BeforeEach
     void seedDestinations() {
@@ -203,7 +206,7 @@ class SendPixFunnelMetricsTest {
      */
     @Test
     void aRetryableInfrastructureFailureIsNotCountedAsARejection() {
-        ledger.failWith(new LedgerUnavailableException("ledger down"));
+        ledger.alwaysAnswer(com.platinumcoin.pix.payment.domain.model.LedgerOutcome.REFUSED);
 
         assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", KEY)))
                 .isInstanceOf(LedgerUnavailableException.class);

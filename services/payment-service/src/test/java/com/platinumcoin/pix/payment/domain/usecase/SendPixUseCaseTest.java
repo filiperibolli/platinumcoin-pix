@@ -13,6 +13,7 @@ import com.platinumcoin.pix.payment.domain.exception.UnresolvedOperationExceptio
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
+import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
@@ -41,6 +42,12 @@ class SendPixUseCaseTest {
     /** The clearing account money in flight is parked in (step 27); an id, injected, never hard-coded. */
     private static final String CLEARING = "SPI_CLEARING";
 
+    /** The production default (step 66): the original POST plus at most one resolving re-POST. */
+    private static final int LEDGER_ATTEMPTS = 2;
+
+    /** No pause between attempts — the tests assert the resolution, not how long it waits. */
+    private static final java.time.Duration NO_BACKOFF = java.time.Duration.ZERO;
+
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final EndToEndIdGenerator endToEndIds = new EndToEndIdGenerator("12345678");
     private final FakeTransactionRepository transactions = new FakeTransactionRepository();
@@ -52,7 +59,7 @@ class SendPixUseCaseTest {
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING, clock);
+            endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -266,7 +273,9 @@ class SendPixUseCaseTest {
     @Test
     void ledgerUnavailableIs503AndDeliberatelyDoesNotReleaseTheReservation() {
         accountLimits.setDailyLimitCents(50_000L);
-        ledger.failWith(new LedgerUnavailableException("ledger down", null));
+        // A DEFINITE refusal (the ledger's own 503 LEDGER_CONFLICT, or a 4xx): it answered, so nothing
+        // committed — and, unlike an unknown, there is nothing to resolve by asking again.
+        ledger.alwaysAnswer(LedgerOutcome.REFUSED);
 
         assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
                 .isInstanceOf(LedgerUnavailableException.class);
@@ -396,7 +405,8 @@ class SendPixUseCaseTest {
         // orchestration does not name the account and needs no edit.
         SendPixUseCase sharded = new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, new RecordingPaymentFunnelMetrics(), "SPI_CLEARING#07", clock);
+                endToEndIds, new RecordingPaymentFunnelMetrics(), "SPI_CLEARING#07", LEDGER_ATTEMPTS,
+                NO_BACKOFF, clock);
         pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
 
         sharded.execute(command("bob@otherbank.com", "10.00", "x", KEY));
@@ -423,7 +433,7 @@ class SendPixUseCaseTest {
     @Test
     void ledgerUnavailableOnTheExternalPathIs503AndPersistsNoTransaction() {
         pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
-        ledger.failWith(new LedgerUnavailableException("ledger down", null));
+        ledger.alwaysAnswer(LedgerOutcome.REFUSED);
 
         assertThatThrownBy(() -> useCase.execute(command("bob@otherbank.com", "125.50", "rent", KEY)))
                 .isInstanceOf(LedgerUnavailableException.class);
@@ -630,6 +640,68 @@ class SendPixUseCaseTest {
         assertThat(resumed.transactionId()).isEqualTo(transactions.only().txId());
     }
 
+    // --- step 66: a ledger timeout is an unknown result (ADR-0015) ---------------------------------
+
+    @Test
+    void aLedgerTimeoutThatActuallyCommittedDebitsOnlyOnce() {
+        pixKeys.map("bob@platinum.com", "acc-002");
+        // The posting COMMITS and the response is lost to a read timeout. From here the two worlds —
+        // "it never happened" and "it happened and I did not hear" — are indistinguishable, so the use
+        // case may not assume either: it re-posts the SAME txId, which the ledger answers as a replay.
+        ledger.timeoutAfterRecordingOnce();
+
+        SendPixOutcome outcome = useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY));
+
+        // The system invariant, not the return value: the money moved exactly once, under one identity,
+        // and the caller was told the truth about it (202, not a 503 for a debit that did happen).
+        assertThat(ledger.postings()).hasSize(1);
+        assertThat(ledger.distinctTxIds()).hasSize(1);
+        assertThat(transactions.created()).hasSize(1);
+        assertThat(outcome.httpStatus()).isEqualTo(202);
+        assertThat(outcome.transactionId()).isEqualTo(ledger.only().txId());
+    }
+
+    @Test
+    void unresolvedUnknownDoesNotReleaseTheDailyLimit() {
+        accountLimits.setDailyLimitCents(50_000L);
+        // A ledger that keeps losing its answers: every attempt, including the resolving re-POST, is
+        // ambiguous. The send gives up — but "gives up" may not quietly mean "nothing happened".
+        ledger.alwaysAnswer(LedgerOutcome.UNKNOWN);
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "125.50", "lunch", KEY)))
+                .isInstanceOf(LedgerUnavailableException.class);
+
+        // The asymmetry is deliberate and is pinned here so a future reader does not "fix" it: the payer
+        // MAY have been debited under this txId, so handing the headroom back would open room for a
+        // second send on top of a debit that possibly happened — the same error, mirrored.
+        assertThat(dailyLimits.usedCents("acc-001", saoPauloDay())).isEqualTo(12_550L);
+        assertThat(transactions.created()).isEmpty();
+    }
+
+    @Test
+    void unresolvedUnknownKeepsTheSameTxIdOnTheClaim() {
+        ledger.alwaysAnswer(LedgerOutcome.UNKNOWN);
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "lunch", KEY)))
+                .isInstanceOf(LedgerUnavailableException.class);
+
+        // The bridge to step 65: an unresolved outcome is only recoverable if the identity that MIGHT
+        // have moved money survives. The claim keeps its txId and stays in its pre-POSTED phase.
+        IdempotencyRecord claim = idempotency.get("acc-001", KEY).orElseThrow();
+        String claimedTxId = idempotency.claims().get(0).txId();
+        assertThat(claim.txId()).isEqualTo(claimedTxId);
+        assertThat(claim.status()).isEqualTo(IdempotencyStatus.CLAIMED);
+
+        // And the next attempt resolves it under that same name — the ledger recognises the txId it may
+        // already hold, so one request can never become two debits.
+        ledger.alwaysAnswer(null);
+        SendPixOutcome resumed = useCaseAt(NOW.plusSeconds(SendPixUseCase.STALE_SECONDS + 5))
+                .execute(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        assertThat(resumed.httpStatus()).isEqualTo(202);
+        assertThat(ledger.distinctTxIds()).containsExactly(claimedTxId);
+        assertThat(transactions.created()).hasSize(1);
+    }
+
     /** A non-terminal claim carrying a plausible identity, as the claim write would have left it. */
     private static IdempotencyRecord claimed(String requestHash, Instant claimedAt) {
         return new IdempotencyRecord(requestHash, "tx-" + java.util.UUID.randomUUID(),
@@ -649,7 +721,7 @@ class SendPixUseCaseTest {
     private SendPixUseCase useCaseAt(Instant at) {
         return new SendPixUseCase(transactions, idempotency, pixKeys, accountLimits, dailyLimits,
                 fraudScorer, ledger, endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
-                Clock.fixed(at, ZoneOffset.UTC));
+                LEDGER_ATTEMPTS, NO_BACKOFF, Clock.fixed(at, ZoneOffset.UTC));
     }
 
     /** The request-hash the use case computes for the canonical "lunch / 10.00" request. */
@@ -659,6 +731,7 @@ class SendPixUseCaseTest {
         new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
                 new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeFraudScorer(),
                 new FakeLedgerClient(), endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
+                LEDGER_ATTEMPTS, NO_BACKOFF,
                 clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
         return probe.get("acc-001", "probe-key").orElseThrow().requestHash();
