@@ -181,8 +181,16 @@ class FunnelMetricsAndPathAuditIT extends LocalStackTestBase {
                 .contains("txId=" + txId)              // the money stages, tied to this payment
                 .contains("status=SETTLED");           // the outcome
 
-        // Flow order, so a trace reads as a story rather than as a bag of lines.
-        assertThat(story.indexOf("dailyLimitCents=")).isLessThan(story.indexOf("txId=" + txId));
+        // Flow order, so a trace reads as a story rather than as a bag of lines: intake, then the
+        // limit reservation, then the outcome.
+        assertThat(story.indexOf("idempotencyKey=")).isLessThan(story.indexOf("dailyLimitCents="));
+        assertThat(story.indexOf("dailyLimitCents=")).isLessThan(story.indexOf("status=SETTLED"));
+
+        // And the trace shows ADR-0014's ordering directly: the payment's identity is already known —
+        // and durable — at intake, BEFORE anything money-adjacent runs. Until step 65 the txId first
+        // appeared at the ledger command, which is precisely why a crash could strand a debit whose
+        // name nothing had recorded.
+        assertThat(story.indexOf("txId=" + txId)).isLessThan(story.indexOf("dailyLimitCents="));
 
         // And the money stages are pinned to THIS payment by txId — the second key of the log pattern.
         assertThat(trace.stream()

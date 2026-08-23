@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import java.util.ArrayList;
@@ -16,13 +17,33 @@ final class FakeTransactionRepository implements TransactionRepository {
 
     private final List<Transaction> created = new ArrayList<>();
     private final List<OutboxEvent> outbox = new ArrayList<>();
+    private RuntimeException crashAfterCreating;
 
     @Override
     public void create(Transaction transaction, List<OutboxEvent> events) {
+        // The real adapter guards the META put with attribute_not_exists(pk), so a second create of the
+        // same txId is refused. The fake mirrors that rather than silently accepting a duplicate —
+        // otherwise a resume could look correct here and conflict only in production.
+        if (created.stream().anyMatch(t -> t.txId().equals(transaction.txId()))) {
+            throw new TransactionWriteConflictException(
+                    "transaction " + transaction.txId() + " already exists", null);
+        }
         // The real adapter commits both in one TransactWriteItems; the fake simply records that the use
         // case handed them over together, which is the part the use case is responsible for.
         created.add(transaction);
         outbox.addAll(events);
+        if (crashAfterCreating != null) {
+            // The transaction and its events are durable and the caller dies before the idempotency
+            // memo — the narrow window a resume has to be able to walk through (ADR-0014).
+            RuntimeException crash = crashAfterCreating;
+            crashAfterCreating = null;
+            throw crash;
+        }
+    }
+
+    /** Simulate a crash immediately after the transaction write commits. One-shot. */
+    void crashAfterCreatingOnce(RuntimeException ex) {
+        this.crashAfterCreating = ex;
     }
 
     @Override

@@ -66,6 +66,20 @@ ADR does not disturb it: the fix is not to *derive* the identity, it is to **per
    than 24h, which the < 5-min reconciliation SLO says cannot happen — so if it ever does, it is a
    defect that needs a human, not a fresh identity handed to a client. It surfaces as a `409` plus an
    `ERROR` log, never as a silent new payment.
+
+   > **The exact reach of this guarantee (recorded during step 65's implementation).** The rule is
+   > enforced by a *condition on an item*, so it holds **for as long as the item exists**. DynamoDB TTL
+   > is enabled on `pix_idempotency.expiresAt`, and its background collector does eventually delete an
+   > expired record — after which `attribute_not_exists(pk)` is true again and the key is claimable,
+   > with no `409` and no `ERROR` log naming the stranded `txId`. Two reasons we accept that rather than
+   > drop the TTL for non-terminal records. First, **this was never the detector**: money that stopped
+   > moving is found by the reconciliation scan over `pix_transactions` (step 34), a table with no TTL —
+   > this rule is a backstop at the intake door, not the alarm. Second, **dropping the TTL here would
+   > cause a worse bug today**: a *refused* send (`KEY_NOT_FOUND`, `LIMIT_EXCEEDED`, `FRAUD_DENIED`,
+   > `INSUFFICIENT_FUNDS`) also leaves a non-terminal record, so an immortal item would block that key
+   > value forever for a payment that never moved a cent. The right order is to make refusals terminal
+   > first — that write belongs with the finalization fencing of ADR-0016 — and only then consider
+   > suspending the TTL while an operation is genuinely unresolved.
 5. **`endToEndId` follows the same rule as `txId`.** It is the rail's idempotency key (layer 3) and
    is minted and persisted at the same moment, for the same reason: a resume that re-generated it
    would present BACEN with a second, unrelated payment.
@@ -103,3 +117,15 @@ ADR does not disturb it: the fix is not to *derive* the identity, it is to **per
 - The residual window shrinks to something harmless: a crash between minting the ids and the claim's
   conditional write leaves *nothing* — no claim, no money — and the client's retry is a clean first
   attempt.
+- **A refused send also leaves a non-terminal record, and decision 4 now catches it too.** A send that
+  dies at `KEY_NOT_FOUND`, `LIMIT_EXCEEDED`, `FRAUD_DENIED` or `INSUFFICIENT_FUNDS` throws out of the
+  use case without completing its claim — pre-existing behaviour, unchanged here. What *is* new is the
+  consequence past 24h: reusing that exact key value now answers `409 OPERATION_UNRESOLVED` where it
+  used to be re-claimable. We accept this deliberately. Storage cannot tell "nothing moved, the payment
+  was refused" from "the debit committed and the process died" — both are a non-terminal record — and
+  when the two are indistinguishable the safe reading is the expensive one. The blast radius is small
+  (a client generates a fresh key per business operation; inside 24h nothing changes) and the failure
+  mode is a visible `409`, never a silent second debit. Making refusals terminal would remove the
+  false positive, but it means writing a terminal state on the failure path — a write that can itself
+  fail, at the exact moment the system is already failing — so it belongs with the finalization
+  fencing work (ADR-0016), not here.

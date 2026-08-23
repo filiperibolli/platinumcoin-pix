@@ -90,6 +90,17 @@ The platform reached its halfway mark: **the full money path is built, tested an
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Fixed
+- Durable operation identity: txId and endToEndId are minted before the idempotency claim and persisted by it, so a crash-resume reuses the same identity instead of double-debiting (step 65, ADR-0014)
+  - Making the resume reuse the identity exposed the other half of the same problem: the transaction
+    write is guarded by `attribute_not_exists(pk)`, so a resume whose earlier attempt had already
+    committed `TX#<txId>` could no longer finish and stranded the client on a `500`. `persistWithOutbox`
+    now reads the existing item back, **verifies it describes this same operation** (debtor + amount),
+    and continues to the memo — writing nothing, so the outbox events are not duplicated either.
+  - ADR-0014 §4 gained the exact reach of "the TTL never recycles a money identity": it is a condition
+    on an item, so it holds while the item exists. DynamoDB's TTL collector eventually deletes it, and
+    that is accepted — the detector for stalled money is the reconciliation scan over `pix_transactions`
+    (no TTL), and suspending the TTL here would make a *refused* send's record immortal.
+  AI: est 3h / actual 1h30 / ~90% generated / 0 issues caught in human review
 - **`GET /v1/payments/{transactionId}` answered `500` for every reversed payment.** A reachable defect on
   the money path, introduced in step 33 and found in step 39 by running the new *Reversal* journey in the
   API explorer end to end (then reproduced with `curl`, outside the explorer). settlement-service marks a

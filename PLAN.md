@@ -137,7 +137,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 
 **P0 — money correctness & security.** These four precede step 45; step 66 additionally requires 65.
 
-- [ ] [Step 65](docs/steps/step-65.md) — durable operation identity: `txId`/`endToEndId` minted **before** the idempotency claim and persisted by it; a resume reuses the stored identity ([ADR-0014](docs/adr/0014-durable-operation-identity.md), amends ADR-0002)
+- [x] [Step 65](docs/steps/step-65.md) — durable operation identity: `txId`/`endToEndId` minted **before** the idempotency claim and persisted by it; a resume reuses the stored identity ([ADR-0014](docs/adr/0014-durable-operation-identity.md), amends ADR-0002)
 - [ ] [Step 66](docs/steps/step-66.md) — a ledger timeout is an **unknown result**: resolve by re-posting the same `txId` and read the `replayed` flag the ledger already returns ([ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md)) · *requires 65*
 - [ ] [Step 67](docs/steps/step-67.md) — finalization fencing: CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` **before** any posting; settle XOR reverse ([ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md), amends ADR-0003)
 - [ ] [Step 68](docs/steps/step-68.md) — internal-port isolation: scoped service tokens (`typ`/`iss`/`aud`/`scope`); a user JWT gets `403` on every `/internal/**` route ([ADR-0017](docs/adr/0017-workload-identity-for-internal-ports.md), amends ADR-0007)

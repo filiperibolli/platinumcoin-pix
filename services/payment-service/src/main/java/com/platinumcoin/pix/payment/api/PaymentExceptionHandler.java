@@ -14,6 +14,7 @@ import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.PaymentNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.exception.UnresolvedOperationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -39,6 +40,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *       absent/blank (ADR-0002).</li>
  *   <li>{@code 409 IDEMPOTENCY_KEY_REUSED} — the same key was replayed with a different payload
  *       (client bug).</li>
+ *   <li>{@code 409 OPERATION_UNRESOLVED} — the key names a money operation that never resolved and
+ *       cannot be safely resumed (ADR-0014); no {@code Retry-After}, it needs a human</li>
  *   <li>{@code 409 REQUEST_IN_PROGRESS} — a concurrent request with the same key is still in flight;
  *       carries {@code Retry-After: 2} so the client backs off and later replays the result.</li>
  *   <li>{@code 422 KEY_NOT_FOUND} — the destination Pix key does not resolve to an internal account
@@ -157,6 +160,15 @@ public class PaymentExceptionHandler {
         // The debtor's limit could not be read; fail the send rather than guess a limit. The message
         // is safe (no internals) — the cause chain is logged, not returned.
         return problem(HttpStatus.BAD_GATEWAY, "ACCOUNT_LOOKUP_FAILED", ex.getMessage());
+    }
+
+    @ExceptionHandler(UnresolvedOperationException.class)
+    public ResponseEntity<ProblemDetail> handleUnresolvedOperation(UnresolvedOperationException ex) {
+        // Sibling of REQUEST_IN_PROGRESS, and deliberately WITHOUT Retry-After: this one never resolves
+        // on its own, so telling the client to come back in two seconds would invite an infinite retry
+        // over a defect. The operator-facing detail (the stranded txId) is in the ERROR log the use
+        // case already emitted, never in the response.
+        return problem(HttpStatus.CONFLICT, "OPERATION_UNRESOLVED", ex.getMessage());
     }
 
     @ExceptionHandler(RequestInProgressException.class)

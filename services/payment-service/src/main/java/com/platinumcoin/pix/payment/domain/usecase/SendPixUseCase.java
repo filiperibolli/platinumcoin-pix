@@ -12,6 +12,8 @@ import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
 import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
+import com.platinumcoin.pix.payment.domain.exception.UnresolvedOperationException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyRecord;
 import com.platinumcoin.pix.payment.domain.model.IdempotencyStatus;
@@ -49,10 +51,12 @@ import org.slf4j.LoggerFactory;
  * it wraps the actual acceptance work in a claim/replay lifecycle so a retried request never mints a
  * second transaction.
  *
- * <p><b>The lifecycle (ADR-0002).</b> Validate the amount first (a malformed request must never leave
- * an idempotency record behind), compute the request-hash over the normalized fields, then:
+ * <p><b>The lifecycle (ADR-0002, amended by ADR-0014).</b> Validate the amount first (a malformed
+ * request must never leave an idempotency record behind), compute the request-hash over the normalized
+ * fields, <b>mint the operation's identity</b> ({@code txId} + {@code endToEndId}), then:
  * <ol>
- *   <li><b>claim</b> — a conditional put wins or loses atomically. Win ⇒ do the money-moving work
+ *   <li><b>claim</b> — a conditional put wins or loses atomically, <b>and writes that identity</b>.
+ *       Win ⇒ do the money-moving work
  *       (resolve the destination key, reserve the daily limit, command the atomic ledger debit/credit,
  *       persist the state the money is actually in — {@code SETTLED} for an internal destination,
  *       {@code DEBITED} for an external one), memoize the response, return a fresh outcome.</li>
@@ -60,14 +64,22 @@ import org.slf4j.LoggerFactory;
  *       <ul>
  *         <li>different hash ⇒ {@link IdempotencyKeyReuseException} ({@code 409}).</li>
  *         <li>same hash, {@code COMPLETED} ⇒ {@link SendPixOutcome.Replayed} (the memoized response).</li>
- *         <li>same hash, {@code IN_PROGRESS} and fresh ⇒ {@link RequestInProgressException} ({@code 409}
+ *         <li>same hash, non-terminal and fresh ⇒ {@link RequestInProgressException} ({@code 409}
  *             + Retry-After).</li>
- *         <li>same hash, {@code IN_PROGRESS} but <b>stale</b> (claimed &gt; {@value #STALE_SECONDS}s ago,
- *             i.e. a crash left the claim orphaned) ⇒ conditionally re-claim and do the work, so a crash
- *             never blocks the client until the 24h TTL.</li>
+ *         <li>same hash, non-terminal but <b>stale</b> (claimed &gt; {@value #STALE_SECONDS}s ago,
+ *             i.e. a crash left the claim orphaned) ⇒ conditionally re-claim and redo the work
+ *             <b>under the identity the record already carries</b>, so a crash never blocks the client
+ *             until the 24h TTL <i>and</i> never mints a second name for the same money.</li>
+ *         <li>expired but still non-terminal, or carrying no identity at all ⇒
+ *             {@link UnresolvedOperationException} ({@code 409}) — see {@code execute}.</li>
  *       </ul>
  *   </li>
  * </ol>
+ *
+ * <p><b>The ordering to read here is identity → claim → effect</b> (ADR-0014). The {@code txId} is not
+ * minted inside the money-moving work any more; it is minted before the claim and persisted by it, so
+ * a crash anywhere after the claim is recoverable to the <i>same</i> identity rather than to a fresh
+ * one the ledger's {@code attribute_not_exists(txId)} guard has never seen.
  *
  * <p>Everything that is a <i>decision</i> lives here rather than in the controller (ADR-0011): amount
  * parsing (which enforces the strictly-positive money rule), id generation, reading the injected
@@ -79,8 +91,10 @@ public class SendPixUseCase {
     private static final Logger log = LoggerFactory.getLogger(SendPixUseCase.class);
 
     /**
-     * An {@code IN_PROGRESS} claim older than this is treated as crash-orphaned and re-claimable — far
-     * beyond any legitimate in-flight send, well below the 24h replay TTL (ADR-0002).
+     * A non-terminal claim older than this is treated as crash-orphaned and re-claimable — far beyond
+     * any legitimate in-flight send, well below the 24h replay TTL (ADR-0002). Shortening it was
+     * considered and rejected as a fix for the crash window (ADR-0014): any non-zero window still
+     * double-debits without a durable identity, and a shorter one re-claims genuinely slow requests.
      */
     static final long STALE_SECONDS = 60;
 
@@ -177,16 +191,27 @@ public class SendPixUseCase {
         String accountId = command.debtorAccountId();
         String requestHash = requestHashOf(command);
 
+        // Mint the operation's identity BEFORE the claim (ADR-0014). The claim below writes it, so the
+        // right to execute and the name of the money are established by one conditional write and can
+        // never drift apart. Everything downstream — the ledger's txId guard, BACEN's endToEndId
+        // dedup, the reconciliation scan — keys off names that are durable from this point on. Minted
+        // after the amount check on purpose: a malformed request must leave nothing behind at all.
+        String mintedTxId = "tx-" + UUID.randomUUID();
+        String mintedEndToEndId = endToEndIds.generate(clock.instant());
+
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             Instant now = clock.instant();
-            if (idempotency.claim(accountId, key, requestHash, now)) {
-                log.info("Idempotency key claimed, proceeding to accept the payment | "
-                        + "debtorAccountId={} idempotencyKey={} attempt={}", accountId, key, attempt);
-                return acceptAndComplete(command, amountCents, accountId, key, now);
+            if (idempotency.claim(accountId, key, requestHash, mintedTxId, mintedEndToEndId, now)) {
+                log.info("Idempotency key claimed and the operation identity persisted with it, "
+                                + "proceeding to accept the payment | debtorAccountId={} "
+                                + "idempotencyKey={} txId={} endToEndId={} attempt={}",
+                        accountId, key, mintedTxId, mintedEndToEndId, attempt);
+                return acceptAndComplete(command, amountCents,
+                        new ClaimedOperation(accountId, key, mintedTxId, mintedEndToEndId), now);
             }
 
-            // Lost the claim: a live record exists. Inspect it to replay, 409, or (if stale) re-claim.
-            Optional<IdempotencyRecord> found = idempotency.get(accountId, key, now);
+            // Lost the claim: a record blocks it. Inspect it to replay, 409, or (if stale) re-claim.
+            Optional<IdempotencyRecord> found = idempotency.get(accountId, key);
             if (found.isEmpty()) {
                 // The record vanished between our claim-loss and this read (lazy TTL / a racing
                 // reclaim). Retry the whole decision — rare, and bounded by MAX_ATTEMPTS.
@@ -195,6 +220,37 @@ public class SendPixUseCase {
                 continue;
             }
             IdempotencyRecord record = found.get();
+
+            // The expiry verdict comes FIRST, because for an expired record the hash is irrelevant:
+            // either the key is free again (so nothing about the old request binds this one), or the
+            // record is a stranded money operation (so no request of any shape may proceed under it).
+            if (record.expired(now)) {
+                if (record.status().terminal()) {
+                    // The 24h window closed on a finished payment: the key is legitimately reusable
+                    // (ADR-0002). We only lost the claim to a racer that got there microseconds ago,
+                    // so re-run the decision rather than guess what it wrote.
+                    log.warn("Idempotency record found expired and terminal, the key is reusable, "
+                                    + "retrying the decision | debtorAccountId={} idempotencyKey={} "
+                                    + "expiresAt={} attempt={}",
+                            accountId, key, record.expiresAt(), attempt);
+                    continue;
+                }
+                // Expired and STILL not terminal: a money operation that never resolved, older than a
+                // day — which the <5-min reconciliation SLO says cannot happen. Recycling the key here
+                // would hand this client a brand-new identity for money that may already have moved,
+                // i.e. exactly the double-debit ADR-0014 removes. Refuse and escalate to a human.
+                log.error("Expired idempotency record is still not terminal, refusing to recycle a "
+                                + "money identity, returning 409 | debtorAccountId={} idempotencyKey={} "
+                                + "strandedTxId={} strandedEndToEndId={} status={} claimedAt={} "
+                                + "expiresAt={}",
+                        accountId, key, record.txId(), record.endToEndId(), record.status(),
+                        record.claimedAt(), record.expiresAt());
+                // Deliberately no funnel rejection: this key was already counted as RECEIVED when its
+                // first attempt was accepted. Counting it again would report two payments arriving
+                // where the user made one request — the same reason the in-progress 409 counts nothing.
+                throw new UnresolvedOperationException(
+                        "a previous attempt of this idempotency key never resolved");
+            }
 
             if (!record.requestHash().equals(requestHash)) {
                 log.warn("Idempotency key reused with a different payload, returning 409 | "
@@ -206,7 +262,7 @@ public class SendPixUseCase {
                 throw new IdempotencyKeyReuseException();
             }
 
-            if (record.status() == IdempotencyStatus.COMPLETED) {
+            if (record.status().terminal()) {
                 Map<String, String> snapshot = record.responseSnapshot();
                 log.info("Idempotency hit on a completed request, replaying the stored response | "
                                 + "debtorAccountId={} idempotencyKey={} httpStatus={} transactionId={}",
@@ -219,14 +275,33 @@ public class SendPixUseCase {
                         record.httpStatus(), snapshot.get("transactionId"), snapshot.get("endToEndId"));
             }
 
-            // IN_PROGRESS.
+            // Non-terminal (CLAIMED / POSTED / RECORDED): live, or crash-orphaned.
             if (isStale(record.claimedAt(), now)) {
+                if (!record.hasIdentity()) {
+                    // Written before ADR-0014, so it names no money. Resuming would mean inventing an
+                    // identity the ledger has never seen — the precise failure being removed — and a
+                    // sandbox has no backfill worth trusting. Refuse rather than guess.
+                    log.error("Stale idempotency record carries no operation identity (written before "
+                                    + "ADR-0014), refusing to resume it under a guessed txId, "
+                                    + "returning 409 | debtorAccountId={} idempotencyKey={} status={} "
+                                    + "claimedAt={}",
+                            accountId, key, record.status(), record.claimedAt());
+                    throw new UnresolvedOperationException(
+                            "this idempotency record predates durable operation identity");
+                }
                 if (idempotency.reclaim(accountId, key, requestHash, record.claimedAt(), now)) {
-                    log.warn("Stale in-progress idempotency claim re-claimed after a crash window, "
-                                    + "proceeding to accept | debtorAccountId={} idempotencyKey={} "
+                    // Resume under the STORED identity, never a fresh one: if the crash happened after
+                    // the ledger committed, re-posting this txId is recognised as a replay by the
+                    // ledger's own guard and the payer is debited exactly once (ADR-0014).
+                    log.warn("Stale idempotency claim re-claimed after a crash window, resuming under "
+                                    + "the stored operation identity | debtorAccountId={} "
+                                    + "idempotencyKey={} txId={} endToEndId={} lastPhase={} "
                                     + "claimedAt={} staleSeconds={}",
-                            accountId, key, record.claimedAt(), STALE_SECONDS);
-                    return acceptAndComplete(command, amountCents, accountId, key, now);
+                            accountId, key, record.txId(), record.endToEndId(), record.status(),
+                            record.claimedAt(), STALE_SECONDS);
+                    return acceptAndComplete(command, amountCents,
+                            new ClaimedOperation(accountId, key, record.txId(), record.endToEndId()),
+                            now);
                 }
                 // Another retry re-claimed first — treat as in-progress.
                 log.warn("Stale idempotency claim already re-claimed by a concurrent retry, "
@@ -248,6 +323,31 @@ public class SendPixUseCase {
     }
 
     /**
+     * What a won claim established, carried as one value through the money-moving core: whose key it is
+     * and — since ADR-0014 — what the money of this operation is called. Grouping the four is not
+     * cosmetic: it makes it impossible for a method down here to have the {@code accountId} but not the
+     * {@code txId}, which is how the identity used to go missing and get re-minted.
+     *
+     * @param txId       minted before the claim and written by it; the ledger's idempotency key
+     * @param endToEndId minted at the same moment; the rail's idempotency key toward BACEN
+     */
+    private record ClaimedOperation(String accountId, String key, String txId, String endToEndId) {
+    }
+
+    /**
+     * Advance the claim's advisory phase (ADR-0014 §3). Deliberately fire-and-observe: the port is
+     * contractually forbidden from throwing here, because by the time {@code POSTED} is written the
+     * payer's money has already moved and failing the request over a bookkeeping write would turn a
+     * successful payment into a client-visible error. Correctness rests on the {@code txId}, not on
+     * this.
+     */
+    private void advancePhase(ClaimedOperation operation, IdempotencyStatus phase, Instant now) {
+        idempotency.advancePhase(operation.accountId(), operation.key(), phase, now);
+        log.debug("Idempotency phase advanced | debtorAccountId={} idempotencyKey={} txId={} phase={}",
+                operation.accountId(), operation.key(), operation.txId(), phase);
+    }
+
+    /**
      * Do the acceptance work, memoize the response, and return the fresh outcome. This is the
      * money-moving core, run only inside a won idempotency claim so a double-tap or replay never
      * repeats it. The orchestration order is <b>resolve → limit → fraud → debit → persist</b>
@@ -261,7 +361,8 @@ public class SendPixUseCase {
      * and "is this already final?" differ.
      */
     private SendPixOutcome acceptAndComplete(
-            SendPixCommand command, long amountCents, String accountId, String key, Instant now) {
+            SendPixCommand command, long amountCents, ClaimedOperation operation, Instant now) {
+        String accountId = operation.accountId();
         // 0) The funnel's entry point. Counted here rather than at the top of execute() because THIS is
         //    where a payment becomes real: a won idempotency claim, exactly once per key. Counting on
         //    every arriving request would fold retries and replays into "payments received" and make
@@ -302,17 +403,17 @@ public class SendPixUseCase {
         //    settlement (steps 28-31). Either way INSUFFICIENT_FUNDS releases the reservation from step 2.
         Transaction transaction = destination.internal()
                 ? settleInternally(
-                        command, destination.accountId(), amountCents, accountId, fraudDecision, now)
-                : debitToClearing(command, amountCents, accountId, fraudDecision, now);
+                        command, destination.accountId(), amountCents, operation, fraudDecision, now)
+                : debitToClearing(command, amountCents, operation, fraudDecision, now);
 
         Map<String, String> snapshot = new LinkedHashMap<>();
         snapshot.put("transactionId", transaction.txId());
         snapshot.put("endToEndId", transaction.endToEndId());
-        idempotency.complete(accountId, key, ACCEPTED_HTTP_STATUS, snapshot, clock.instant());
+        idempotency.complete(accountId, operation.key(), ACCEPTED_HTTP_STATUS, snapshot, clock.instant());
 
         log.info("Idempotency record completed and memoized for replay | debtorAccountId={} "
                         + "idempotencyKey={} transactionId={} httpStatus={}",
-                accountId, key, transaction.txId(), ACCEPTED_HTTP_STATUS);
+                accountId, operation.key(), transaction.txId(), ACCEPTED_HTTP_STATUS);
         return SendPixOutcome.accepted(transaction);
     }
 
@@ -404,8 +505,8 @@ public class SendPixUseCase {
     }
 
     /**
-     * Mint the ids, command the atomic ledger debit/credit, and persist the settled transaction. For an
-     * internal transfer the single {@code TransactWriteItems} <i>is</i> the settlement, so the terminal
+     * Command the atomic ledger debit/credit under the claim's identity, and persist the settled
+     * transaction. For an internal transfer the single {@code TransactWriteItems} <i>is</i> the settlement, so the terminal
      * state is {@code SETTLED} with {@code settledAt} stamped at the same instant the money moved
      * (Domain Safety Rule #4). The ledger is keyed by {@code txId} (Domain Safety Rule #2), so a retry
      * after a crash replays the committed posting rather than double-debiting.
@@ -415,14 +516,17 @@ public class SendPixUseCase {
      * propagates as a {@code 422}. A {@link com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException}
      * is <i>not</i> released: nothing was debited and the client retries the same idempotency key, which
      * re-drives this whole path (the reservation is honoured by that retry). Leaving the record
-     * {@code IN_PROGRESS} accepts the conservative over-count edge ADR-0007/step 20 already documents —
+     * non-terminal accepts the conservative over-count edge ADR-0007/step 20 already documents —
      * never overspend, self-heals next calendar day.
      */
     private Transaction settleInternally(
-            SendPixCommand command, String creditorAccountId, long amountCents, String accountId,
-            FraudDecision fraudDecision, Instant now) {
-        String txId = "tx-" + UUID.randomUUID();
-        String endToEndId = endToEndIds.generate(now);
+            SendPixCommand command, String creditorAccountId, long amountCents,
+            ClaimedOperation operation, FraudDecision fraudDecision, Instant now) {
+        // No id is minted here any more (ADR-0014): both come from the claim, so a resume of a crashed
+        // attempt re-posts the identity the ledger may already hold instead of inventing a second one.
+        String accountId = operation.accountId();
+        String txId = operation.txId();
+        String endToEndId = operation.endToEndId();
         String description = command.description() == null ? "" : command.description();
 
         log.info("Commanding the ledger to debit the payer and credit the payee atomically | txId={} "
@@ -437,6 +541,7 @@ public class SendPixUseCase {
         // The atomic posting committed: the payer's money moved (Domain Safety Rule #4). Counted after
         // the call returns, never before — an optimistic increment would report money that did not move.
         funnel.stageReached(Stage.DEBITED, Outcome.OK);
+        advancePhase(operation, IdempotencyStatus.POSTED, now);
 
         // Internal transfer: the posting committed, so it is settled now. The fraud verdict rides along
         // (fraudSkipped is its boolean shorthand) so the FRAUD_CHECKED stage is durable on the item.
@@ -456,7 +561,7 @@ public class SendPixUseCase {
                 now,
                 now,
                 null);   // a send this service accepts has not failed; only a reversal carries a reason
-        persistWithOutbox(transaction, now);
+        persistWithOutbox(operation, transaction, now);
 
         log.info("Internal Pix moved money and settled, persisted as SETTLED, returning 202 Accepted | "
                         + "txId={} status={} settledAt={}",
@@ -470,7 +575,7 @@ public class SendPixUseCase {
     }
 
     /**
-     * The <b>external</b> half of the branch (step 27): mint the ids, command the atomic posting
+     * The <b>external</b> half of the branch (step 27): command, under the claim's identity, the atomic posting
      * <i>debit payer / credit the clearing account</i>, and persist the transaction as {@code DEBITED}.
      *
      * <p><b>Why the credit leg is an internal clearing account.</b> No ACID transaction can span
@@ -494,10 +599,12 @@ public class SendPixUseCase {
      * ({@code 503}, retry-safe under the same idempotency key).
      */
     private Transaction debitToClearing(
-            SendPixCommand command, long amountCents, String accountId, FraudDecision fraudDecision,
-            Instant now) {
-        String txId = "tx-" + UUID.randomUUID();
-        String endToEndId = endToEndIds.generate(now);
+            SendPixCommand command, long amountCents, ClaimedOperation operation,
+            FraudDecision fraudDecision, Instant now) {
+        // Same rule as the internal path: the identity comes from the claim, never from here.
+        String accountId = operation.accountId();
+        String txId = operation.txId();
+        String endToEndId = operation.endToEndId();
         String description = command.description() == null ? "" : command.description();
 
         log.info("Commanding the ledger to debit the payer and park the money in the clearing account "
@@ -513,6 +620,7 @@ public class SendPixUseCase {
             throw e;
         }
         funnel.stageReached(Stage.DEBITED, Outcome.OK);
+        advancePhase(operation, IdempotencyStatus.POSTED, now);
 
         // The money left the payer but has NOT reached the other PSP: DEBITED, and settledAt stays null
         // until settlement confirms it (step 31). There is no creditorAccountId — the payee banks
@@ -533,7 +641,7 @@ public class SendPixUseCase {
                 now,
                 null,
                 null);   // idem: settlement-service stamps the reason if BACEN ever refuses
-        persistWithOutbox(transaction, now);
+        persistWithOutbox(operation, transaction, now);
 
         log.info("External Pix debited the payer to the clearing account, persisted as DEBITED awaiting "
                         + "settlement, returning 202 Accepted | txId={} status={} clearingAccountId={} "
@@ -556,15 +664,51 @@ public class SendPixUseCase {
      * <p>Which events those are is {@link PixOutboxEvents}' decision, not this method's: an internal
      * send is already settled and announces {@code PixSettled}, an external one announces
      * {@code PixDebited}, and a fail-open fraud skip rides along in the same write.
+     *
+     * <p><b>The write is idempotent too, and it has to be (ADR-0014).</b> Once the identity is durable,
+     * a resume re-runs this method with the {@code txId} its earlier attempt may already have written,
+     * and {@code attribute_not_exists(pk)} refuses it. Treating that refusal as an error would strand
+     * the client: the transaction exists, the money moved, and re-creating it is impossible by
+     * construction — the only way out is forward, to the memo the client never received. So a conflict
+     * here is recognised as "my own earlier attempt" and the flow continues. Making the resume reuse
+     * the identity without also making this write tolerate it would be half a fix.
      */
-    private void persistWithOutbox(Transaction transaction, Instant now) {
+    private void persistWithOutbox(ClaimedOperation operation, Transaction transaction, Instant now) {
         List<OutboxEvent> events = PixOutboxEvents.forAcceptedSend(transaction, now);
-        transactions.create(transaction, events);
-
-        log.info("Transaction and its outbox events committed atomically, awaiting the publisher | "
-                        + "txId={} status={} events={}",
-                transaction.txId(), transaction.status(),
-                events.stream().map(OutboxEvent::eventType).toList());
+        try {
+            transactions.create(transaction, events);
+            log.info("Transaction and its outbox events committed atomically, awaiting the publisher | "
+                            + "txId={} status={} events={}",
+                    transaction.txId(), transaction.status(),
+                    events.stream().map(OutboxEvent::eventType).toList());
+        } catch (TransactionWriteConflictException conflict) {
+            // A txId is minted once per idempotency claim and never shared between operations, so an
+            // existing TX# item can only be this operation's own earlier attempt. That is an argument,
+            // not a proof — and this is the money path, so read the item back and CHECK before acting
+            // on it. The cost is one extra read on a cold recovery path and nothing on the happy path.
+            Transaction alreadyWritten = transactions.findById(transaction.txId())
+                    .orElseThrow(() -> conflict);
+            if (alreadyWritten.amountCents() != transaction.amountCents()
+                    || !alreadyWritten.debtorAccountId().equals(transaction.debtorAccountId())) {
+                log.error("Transaction id already exists but describes a different operation, refusing "
+                                + "to treat it as a resume | txId={} storedDebtorAccountId={} "
+                                + "storedAmountCents={} attemptedDebtorAccountId={} "
+                                + "attemptedAmountCents={}",
+                        transaction.txId(), alreadyWritten.debtorAccountId(),
+                        alreadyWritten.amountCents(), transaction.debtorAccountId(),
+                        transaction.amountCents());
+                throw conflict;
+            }
+            // Proven to be ours: the earlier attempt got the transaction and its events committed and
+            // then died. Writing nothing is exactly right — a second create would duplicate the outbox
+            // events and have consumers act twice on money that moved once.
+            log.warn("Transaction was already recorded by an earlier attempt of this same operation, "
+                            + "skipping the write and resuming at the memo | txId={} status={} "
+                            + "amountCents={} debtorAccountId={}",
+                    transaction.txId(), alreadyWritten.status(), alreadyWritten.amountCents(),
+                    alreadyWritten.debtorAccountId());
+        }
+        advancePhase(operation, IdempotencyStatus.RECORDED, now);
     }
 
     /**

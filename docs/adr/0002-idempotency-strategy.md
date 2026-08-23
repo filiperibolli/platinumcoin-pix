@@ -1,6 +1,14 @@
 # ADR-0002: Idempotency strategy
 
-**Status:** Accepted · **Date:** 2026-07-02 · **Validated 2026-08-10** (Redis evaluated and rejected; DynamoDB confirmed — see note)
+**Status:** Accepted · **Date:** 2026-07-02 · **Validated 2026-08-10** (Redis evaluated and rejected; DynamoDB confirmed — see note) · **Amended by [ADR-0014](0014-durable-operation-identity.md)** (2026-08-22, step 65)
+
+> **Amendment pointer.** The three layers below were never *connected*: the `txId` layer 2 guards was
+> minted after layer 1's claim, so a crash between them defeated both and double-debited the payer.
+> [ADR-0014](0014-durable-operation-identity.md) makes the identity **durable**: `txId`/`endToEndId`
+> are minted before the claim and written by it, `status` becomes the phase
+> (`CLAIMED → POSTED → RECORDED → COMPLETED`), and the TTL may only recycle a key whose operation
+> reached `COMPLETED`. The rejection of a *derived* `txId` recorded below still stands — ADR-0014
+> persists the identity rather than deriving it, precisely to keep the 24h key-reuse semantics.
 
 > **Validation note (2026-08-10).** A design review asked whether idempotency should live on Redis. We
 > evaluated three shapes — **Redis-only**, **Redis-fast-path over a durable store (hybrid)**, and the

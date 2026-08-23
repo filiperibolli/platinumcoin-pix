@@ -136,7 +136,14 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
-          description: Idempotency-Key reused with a different payload, or request in progress
+          description: |
+            IDEMPOTENCY_KEY_REUSED — the same key was replayed with a different payload;
+            REQUEST_IN_PROGRESS — a concurrent request with this key is still in flight (carries Retry-After, the operation may still succeed);
+            OPERATION_UNRESOLVED — the key names a money operation that never resolved and cannot be safely resumed (ADR-0014). NO Retry-After: it will not resolve on its own and needs an operator, so retrying is futile. Use a new Idempotency-Key only after confirming with support whether the original payment moved money.
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 2 }
+              description: Present on REQUEST_IN_PROGRESS only
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
