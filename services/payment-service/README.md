@@ -44,7 +44,7 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | Method | Path | Auth | Description |
 | ------ | ---- | ---- | ----------- |
 | `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); an external one debits the payer into `SPI_CLEARING` and persists `DEBITED`, awaiting settlement (step 27). The wire `status` is `PROCESSING` either way — the honest state is served by `GET /payments/{id}` (step 22). |
-| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
+| `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. The two step-67 fencing states (`FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL`) also read back as `PROCESSING` — a fence is a mechanism, not an outcome. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/v1/accounts/me/balance` | Bearer | The caller's balance (step 40), **cache-aside on Redis** with a 5s TTL and a ledger fallback: `{accountId, balance:"874.50", currency:"BRL", asOf}`. The account comes from the JWT — no path or query parameter can name another one. `asOf` is *when the ledger was read*, so a client can tell how old the number is; a cached answer keeps the original instant. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
@@ -262,7 +262,10 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
                                                                                    (inbound adapters)
 domain/model/     Transaction (record), AccountBalance (cents + the instant they were true),
                   PendingOutboxEvent (a stored event awaiting publication),
-                  TransactionStatus (enum: RECEIVED, DEBITED, SENT_TO_SPI, SETTLED, REVERSED),
+                  TransactionStatus (enum: RECEIVED, DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT,
+                                     FINALIZING_REVERSAL, SETTLED, REVERSED — the two FINALIZING_*
+                                     are settlement-service's fences (step 67, ADR-0016), read-only
+                                     here and mapped to the wire `PROCESSING`),
                   KeyResolution (where a destination key lives: internal | external PSP),
                   IdempotencyRecord, IdempotencyStatus, LimitDecision (enum),
                   FraudDecision (enum: APPROVE, REVIEW, DENY, SKIPPED),

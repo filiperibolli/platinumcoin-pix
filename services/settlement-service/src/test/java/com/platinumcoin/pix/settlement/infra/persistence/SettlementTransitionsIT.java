@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -22,8 +23,8 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
 /**
- * The two guarded transitions against real DynamoDB — the money invariants of step 31, tested where they
- * actually live: inside the write.
+ * Every guarded transition against real DynamoDB — the money invariants of steps 31/33/67, tested where
+ * they actually live: inside the write.
  *
  * <p><b>What a guard is for.</b> Nothing here reads the item and then decides; every precondition is a
  * {@code ConditionExpression} evaluated by the store as part of the same operation that changes the
@@ -31,6 +32,12 @@ import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
  * SQS redelivery, a second consumer instance and (from step 35) the reconciliation loop can all reach
  * for the same transaction at the same time. The invariant being pinned is <b>a transaction can be
  * settled at most once</b> — everything else is a consequence.
+ *
+ * <p><b>Step 67 moved where the decisive guard lives</b>, and the tests moved with it. Finalization is
+ * now {@code fence → post → record}: the {@code FINALIZING_*} transitions are the ones that decide who is
+ * allowed to spend, and the terminal ones only record an ending whose money already moved. The tests
+ * named after {@code DynamoSettlementTransactionStoreIT} in the step file live here, in the IT that
+ * already owns this adapter, rather than in a second near-identical class.
  *
  * <p>Spring-free, like {@code ProcessedEventStoreIT}: the adapter is built straight off the shared
  * container, so what fails here is the write, never a wiring accident.
@@ -113,6 +120,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
     void settlingWritesTheStatusAndItsEventTogether() {
         String txId = givenTransaction("DEBITED");
         store.markSentToSpi(txId, AT);
+        store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
         OutboxEvent event = pixSettled(txId);
 
         store.markSettled(txId, CONFIRMATION, event);
@@ -158,6 +166,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
     void aSettlementIsNeverRecordedTwice() {
         String txId = givenTransaction("DEBITED");
         store.markSentToSpi(txId, AT);
+        store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
         store.markSettled(txId, CONFIRMATION, pixSettled(txId));
 
         assertThatThrownBy(() -> store.markSettled(txId, CONFIRMATION, pixSettled(txId)))
@@ -170,6 +179,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
     void reversingWritesTheStatusFailureReasonAndItsEventTogether() {
         String txId = givenTransaction("DEBITED");
         store.markSentToSpi(txId, AT);
+        store.fenceForReversal(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
         OutboxEvent event = pixReversed(txId);
 
         store.markReversed(txId, "CREDITOR_KEY_NOT_IN_DICT", AT, event);
@@ -197,6 +207,10 @@ class SettlementTransitionsIT extends LocalStackTestBase {
     @Test
     void aDebitedTransactionIsReversedByReconciliationTogetherWithItsEvent() {
         String txId = givenTransaction("DEBITED");
+        assertThat(store.fenceForReversal(txId, FinalizationActor.RECONCILIATION_RESOLVER, AT))
+                .as("DEBITED is a legal source for the reversal fence — the money is parked in clearing "
+                        + "whether or not the rail was ever asked")
+                .isTrue();
         OutboxEvent event = pixReversed(txId);
 
         store.markReversed(txId, "RECONCILED_NO_RAIL_RECORD_PAST_SAFETY_WINDOW", AT, event);
@@ -213,11 +227,13 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         assertThat(events.get(0).get("eventType").s()).isEqualTo("PixReversed");
     }
 
-    /** A transaction that does not exist cannot be reversed — no ghost item is conjured. */
+    /** A transaction that does not exist cannot be fenced or reversed — no ghost item is conjured. */
     @Test
     void anUnknownTransactionCannotBeReversed() {
         String txId = "tx-" + UUID.randomUUID();
 
+        assertThat(store.fenceForReversal(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT))
+                .as("attribute_exists(pk) is part of every fence condition").isFalse();
         assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
                 .isInstanceOf(TransitionNotAllowedException.class);
 
@@ -229,6 +245,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
     void aReversalIsNeverRecordedTwice() {
         String txId = givenTransaction("DEBITED");
         store.markSentToSpi(txId, AT);
+        store.fenceForReversal(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
         store.markReversed(txId, "REASON", AT, pixReversed(txId));
 
         assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
@@ -237,15 +254,119 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         assertThat(outboxEvents(txId)).hasSize(1);
     }
 
-    /** A settled transaction can never be reversed — the two terminal states are mutually exclusive. */
+    /**
+     * A settled transaction can never be reversed — and since step 67 the refusal happens one step
+     * earlier, at the fence, which is what keeps the compensating posting from running at all.
+     */
     @Test
     void aSettledTransactionCannotBeReversed() {
         String txId = givenTransaction("SETTLED");
 
+        assertThat(store.fenceForReversal(txId, FinalizationActor.RECONCILIATION_RESOLVER, AT))
+                .as("no fence, so the payer is never refunded for a payment that settled").isFalse();
         assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
                 .isInstanceOf(TransitionNotAllowedException.class);
 
         assertThat(meta(txId).get("status").s()).isEqualTo("SETTLED");
+    }
+
+    // ── step 67: the fences ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * <b>The mutual exclusion, asserted at the condition-expression level where it actually lives.</b> A
+     * settlement holds the fence; the reversal's condition does not list {@code FINALIZING_SETTLEMENT} as
+     * a legal source, so it is refused — by the database, not by an ordering convention — and the item is
+     * left exactly as the settlement left it.
+     */
+    @Test
+    void fenceForReversalRejectsASettlementFence() {
+        String txId = givenTransaction("SENT_TO_SPI");
+        assertThat(store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT)).isTrue();
+
+        assertThat(store.fenceForReversal(txId, FinalizationActor.RECONCILIATION_RESOLVER, AT.plusSeconds(1)))
+                .as("a reversal can never be laid over a settlement that already owns the ending")
+                .isFalse();
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("FINALIZING_SETTLEMENT");
+        assertThat(meta(txId).get("fencedBy").s()).isEqualTo("settlement-consumer");
+        assertThat(meta(txId).get("fencedAt").s()).isEqualTo(AT.toString());
+    }
+
+    /** The mirror: a reversal holds the fence, and no settlement may be laid over it. */
+    @Test
+    void fenceForSettlementRejectsAReversalFence() {
+        String txId = givenTransaction("SENT_TO_SPI");
+        assertThat(store.fenceForReversal(txId, FinalizationActor.RECONCILIATION_RESOLVER, AT)).isTrue();
+
+        assertThat(store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT.plusSeconds(1)))
+                .as("a settlement can never be laid over a reversal that already owns the ending")
+                .isFalse();
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("FINALIZING_REVERSAL");
+        assertThat(meta(txId).get("fencedBy").s()).isEqualTo("reconciliation-resolver");
+    }
+
+    /**
+     * Re-entering the fence you already hold is legal, and it is what makes a crash between the fence and
+     * the posting recoverable: the redelivery re-acquires, replays the idempotent posting and records the
+     * ending. A one-shot fence would strand every such payment.
+     */
+    @Test
+    void reAcquiringYourOwnFenceIsAllowed() {
+        String txId = givenTransaction("SENT_TO_SPI");
+        store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
+
+        assertThat(store.fenceForSettlement(txId, FinalizationActor.RECONCILIATION_RESOLVER,
+                AT.plusSeconds(90))).isTrue();
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("FINALIZING_SETTLEMENT");
+        assertThat(meta(txId).get("fencedBy").s())
+                .as("the stamp names whoever holds it now, which is what a stall investigation reads")
+                .isEqualTo("reconciliation-resolver");
+    }
+
+    /**
+     * <b>No fence, no ending.</b> A transaction sitting at {@code SENT_TO_SPI} — one nobody fenced — cannot
+     * be recorded as settled: the terminal transition's only legal source is the fence that authorised the
+     * money to move. This is what makes "no posting without a won fence" enforceable rather than merely
+     * intended.
+     */
+    @Test
+    void terminalTransitionRequiresTheMatchingFence() {
+        String txId = givenTransaction("SENT_TO_SPI");
+
+        assertThatThrownBy(() -> store.markSettled(txId, CONFIRMATION, pixSettled(txId)))
+                .isInstanceOf(TransitionNotAllowedException.class);
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("SENT_TO_SPI");
+        assertThat(outboxEvents(txId)).as("the event rolled back with the status").isEmpty();
+    }
+
+    /** The reversal mirror: a reversal fenced for settlement cannot record REVERSED. */
+    @Test
+    void aTerminalReversalRequiresTheReversalFenceSpecifically() {
+        String txId = givenTransaction("SENT_TO_SPI");
+        store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
+
+        assertThatThrownBy(() -> store.markReversed(txId, "REASON", AT, pixReversed(txId)))
+                .isInstanceOf(TransitionNotAllowedException.class);
+
+        assertThat(meta(txId).get("status").s()).isEqualTo("FINALIZING_SETTLEMENT");
+    }
+
+    /**
+     * The GSI2 keys move onto the fencing state like every other transition. If they did not, a fence that
+     * stalls would sit under {@code STATUS#SENT_TO_SPI} with a fresh {@code updatedAt} and quietly age out
+     * of every scan window — or, worse, be re-fenced by the other direction on a stale read.
+     */
+    @Test
+    void aFenceMovesTheReconciliationIndexOntoTheFencingState() {
+        String txId = givenTransaction("SENT_TO_SPI");
+
+        store.fenceForSettlement(txId, FinalizationActor.SETTLEMENT_CONSUMER, AT);
+
+        assertThat(meta(txId).get("gsi2pk").s()).isEqualTo("STATUS#FINALIZING_SETTLEMENT");
+        assertThat(meta(txId).get("gsi2sk").s()).isEqualTo(AT.toString());
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────

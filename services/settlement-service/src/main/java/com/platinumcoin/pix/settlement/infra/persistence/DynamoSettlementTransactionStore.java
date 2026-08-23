@@ -3,6 +3,7 @@ package com.platinumcoin.pix.settlement.infra.persistence;
 import com.platinumcoin.pix.common.event.EventEnvelope;
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.model.TransactionStatus;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
@@ -28,13 +29,21 @@ import software.amazon.awssdk.services.dynamodb.model.Update;
  * documented exception; an internal API between this writer and the table would reintroduce the very
  * dual write the outbox exists to eliminate).
  *
- * <h2>Both transitions are guarded inside the write</h2>
+ * <h2>Every transition is guarded inside the write</h2>
  * Neither method reads the item first. A read-then-check is not a guard: between the read and the write
  * a redelivery, the reconciliation loop (step 35) or another instance can move the same transaction, and
  * both writers would believe they were allowed. Expressing the precondition as a
  * {@code ConditionExpression} makes "is it in the right state?" and "change it" one indivisible
  * operation, so exactly one of N racing writers wins and the rest get
  * {@link TransitionNotAllowedException} — the normal outcome of losing a race, not an error.
+ *
+ * <h2>Where the guard sits is the design (step 67, ADR-0016)</h2>
+ * The terminal transitions below used to be the <i>first</i> conditional write a finalization performed,
+ * and they ran after the ledger posting — so they recorded who won a race that had already cost money.
+ * The {@code FINALIZING_*} fences run before any money moves, and neither accepts the other as a source
+ * state, which is what turns "settle XOR reverse" from a property of timing into a condition expression.
+ * A losing fence is reported as {@code false} rather than as an exception: losing is the expected
+ * outcome of a race and the caller's whole reaction is "move nothing and return".
  *
  * <p><b>{@code status} is a DynamoDB reserved word</b>, hence the {@code #status} expression-attribute
  * name. The value written is {@link TransactionStatus}'s constant name, which is the contract
@@ -130,9 +139,110 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
     }
 
     /**
-     * {@code SENT_TO_SPI → SETTLED} plus the {@code PixSettled} outbox item, in one
-     * {@code TransactWriteItems}. Guarded strictly on {@code SENT_TO_SPI}: only a transaction this
-     * consumer actually put on the rail may be reported as settled.
+     * <b>The settlement fence</b> (step 67, ADR-0016):
+     * {@code (SENT_TO_SPI | FINALIZING_SETTLEMENT) → FINALIZING_SETTLEMENT}, won before any money moves.
+     *
+     * <p>Modelled on {@link #markSentToSpi} — the pattern was already here, it was simply never applied
+     * to finalization. Same shape: one {@code UpdateItem}, the precondition inside it, {@code ALL_OLD} to
+     * see what the state was.
+     */
+    @Override
+    public boolean fenceForSettlement(String txId, FinalizationActor by, Instant at) {
+        return fence(txId, TransactionStatus.FINALIZING_SETTLEMENT, TransactionStatus.SENT_TO_SPI, null,
+                by, at);
+    }
+
+    /**
+     * <b>The reversal fence</b> (step 67, ADR-0016):
+     * {@code (SENT_TO_SPI | DEBITED | FINALIZING_REVERSAL) → FINALIZING_REVERSAL}. Both stuck states are
+     * legal sources because the payer's money has been parked in clearing since acceptance either way
+     * (step 27); {@code FINALIZING_SETTLEMENT} is not, and that is the mutual exclusion.
+     */
+    @Override
+    public boolean fenceForReversal(String txId, FinalizationActor by, Instant at) {
+        return fence(txId, TransactionStatus.FINALIZING_REVERSAL, TransactionStatus.SENT_TO_SPI,
+                TransactionStatus.DEBITED, by, at);
+    }
+
+    /**
+     * The one implementation both fences share, because the <b>only</b> difference between them is which
+     * states they accept as a source — and keeping that difference to a parameter list is what makes the
+     * asymmetry auditable at a glance instead of buried in two near-identical methods.
+     *
+     * <p>The condition is {@code attribute_exists(pk) AND (status ∈ legal sources ∪ {target})}. Including
+     * the target itself is what allows re-entering a fence you already hold; excluding the <i>other</i>
+     * fencing state — simply by never listing it — is what makes settle and reverse mutually exclusive.
+     * Nothing enumerates the forbidden states: the guard is a whitelist, so a state added later is
+     * refused by default rather than silently permitted.
+     *
+     * <p>{@code gsi2pk}/{@code gsi2sk} move onto the fencing state like every other transition, so a
+     * fence that stalls is found by the reconciliation scan under {@code STATUS#FINALIZING_*} instead of
+     * disappearing from it.
+     *
+     * @return {@code true} when this call owns the fence, {@code false} when the condition refused
+     */
+    private boolean fence(String txId, TransactionStatus target, TransactionStatus source,
+            TransactionStatus alternativeSource, FinalizationActor by, Instant at) {
+        String now = at.toString();
+        Map<String, AttributeValue> values = new LinkedHashMap<>();
+        values.put(":target", AttributeValue.fromS(target.name()));
+        values.put(":targetIndex", AttributeValue.fromS(STATUS_PREFIX + target.name()));
+        values.put(":source", AttributeValue.fromS(source.name()));
+        values.put(":now", AttributeValue.fromS(now));
+        values.put(":by", AttributeValue.fromS(by.stamp()));
+
+        StringBuilder condition = new StringBuilder(
+                "attribute_exists(pk) AND (#status = :source OR #status = :target");
+        if (alternativeSource != null) {
+            condition.append(" OR #status = :alternativeSource");
+            values.put(":alternativeSource", AttributeValue.fromS(alternativeSource.name()));
+        }
+        condition.append(")");
+
+        log.debug("DynamoDB UpdateItem taking the finalization fence | table={} pk={}{} sk={} "
+                        + "update=SET status,gsi2pk,gsi2sk,updatedAt,fencedBy,fencedAt condition={} "
+                        + "target={} fencedBy={} fencedAt={}",
+                TABLE, TX_PREFIX, txId, META_SK, condition, target, by.stamp(), now);
+
+        Map<String, AttributeValue> previous;
+        try {
+            previous = dynamo.updateItem(request -> request
+                    .tableName(TABLE)
+                    .key(metaKey(txId))
+                    .updateExpression("SET #status = :target, gsi2pk = :targetIndex, gsi2sk = :now, "
+                            + "updatedAt = :now, fencedBy = :by, fencedAt = :now")
+                    .conditionExpression(condition.toString())
+                    .expressionAttributeNames(STATUS_ALIAS)
+                    .expressionAttributeValues(values)
+                    .returnValues(ReturnValue.ALL_OLD)).attributes();
+        } catch (ConditionalCheckFailedException e) {
+            // Losing is not an error: another path owns this transaction's ending (or it is already
+            // terminal), and the caller's entire reaction is to move no money and return NOT_ELIGIBLE.
+            // WARN, not ERROR — a refused finalization is exactly what the fence exists to produce.
+            log.warn("Finalization fence refused, another path owns this transaction's ending or it is "
+                            + "already terminal, so NO money will be moved by this path | txId={} "
+                            + "wantedFence={} legalSources={} requestedBy={}",
+                    txId, target, alternativeSource == null ? source : source + "/" + alternativeSource,
+                    by.stamp());
+            return false;
+        }
+
+        AttributeValue previousStatus = previous == null ? null : previous.get("status");
+        boolean reAcquired = previousStatus != null && target.name().equals(previousStatus.s());
+
+        log.info("Finalization fence taken, this path now has the exclusive right to finish the "
+                        + "transaction in this direction and may post to the ledger | txId={} "
+                        + "previousStatus={} status={} fencedBy={} fencedAt={} reAcquired={}",
+                txId, previousStatus == null ? null : previousStatus.s(), target, by.stamp(), now,
+                reAcquired);
+        return true;
+    }
+
+    /**
+     * {@code FINALIZING_SETTLEMENT → SETTLED} plus the {@code PixSettled} outbox item, in one
+     * {@code TransactWriteItems}. Guarded strictly on the settlement fence (step 67): only the path that
+     * won the right to settle — and therefore the only path that drew the clearing account down — may
+     * record the ending.
      */
     @Override
     public void markSettled(String txId, SettlementConfirmation confirmation, OutboxEvent event) {
@@ -149,16 +259,16 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
         try {
             dynamo.transactWriteItems(request -> request.transactItems(writes));
         } catch (TransactionCanceledException e) {
-            // Either the status guard fired (the transaction left SENT_TO_SPI under us) or the event id
-            // already exists (someone already recorded this settlement). Both mean the same thing to the
-            // caller — this consumer may not record the settlement — and in both cases NOTHING was
-            // written: the outbox item rolled back with the status, which is the property this write
-            // exists to provide.
-            log.warn("Atomic settlement write was cancelled, the transaction is no longer SENT_TO_SPI or "
-                            + "the event was already recorded, nothing was written (status and outbox "
-                            + "both rolled back) | txId={} eventId={} reasons={}",
+            // Either the status guard fired (this path no longer holds the settlement fence — it already
+            // recorded the settlement on a prior delivery) or the event id already exists. Both mean the
+            // same thing to the caller — this consumer may not record the settlement — and in both cases
+            // NOTHING was written: the outbox item rolled back with the status, which is the property this
+            // write exists to provide.
+            log.warn("Atomic settlement write was cancelled, the transaction no longer holds the "
+                            + "settlement fence or the event was already recorded, nothing was written "
+                            + "(status and outbox both rolled back) | txId={} eventId={} reasons={}",
                     txId, event.eventId(), e.cancellationReasons().stream().map(r -> r.code()).toList());
-            throw new TransitionNotAllowedException(txId, TransactionStatus.SENT_TO_SPI.name(),
+            throw new TransitionNotAllowedException(txId, TransactionStatus.FINALIZING_SETTLEMENT.name(),
                     TransactionStatus.SETTLED.name());
         }
 
@@ -168,14 +278,12 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
     }
 
     /**
-     * {@code (DEBITED | SENT_TO_SPI) → REVERSED} plus the {@code PixReversed} outbox item, in one
-     * {@code TransactWriteItems} (step 33; guard widened in step 35). Guarded on the <b>two stuck
-     * states</b>: the queue-driven reversal reaches it from {@code SENT_TO_SPI} (BACEN refused a POST),
-     * and the reconciliation resolver (step 35) reaches it for a transaction whose settlement was never
-     * attempted and still sits at {@code DEBITED}. Both have the payer's money parked in clearing since
-     * acceptance (step 27), so reversing from either is money-correct; what the guard still refuses is a
-     * terminal state — a {@code SETTLED} transaction dragged to {@code REVERSED} would double-move money,
-     * and a {@code REVERSED} one reversed again is the redelivery this guard turns into a no-op.
+     * {@code FINALIZING_REVERSAL → REVERSED} plus the {@code PixReversed} outbox item, in one
+     * {@code TransactWriteItems} (step 33; source narrowed to the fence in step 67). Which transactions
+     * may be reversed at all — either stuck state, never a terminal one — is now decided by
+     * {@link #fenceForReversal}, because that decision has to be made <i>before</i> the compensating
+     * posting. What is left here is recording an ending whose money has already moved, so its one legal
+     * source is the fence that authorised it.
      */
     @Override
     public void markReversed(String txId, String failureReason, Instant at, OutboxEvent event) {
@@ -192,15 +300,15 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
         try {
             dynamo.transactWriteItems(request -> request.transactItems(writes));
         } catch (TransactionCanceledException e) {
-            // Either the status guard fired (the transaction left SENT_TO_SPI under us — a redelivery
-            // already reversed it, or a racing settle) or the event id already exists. Both mean this
+            // Either the status guard fired (this path no longer holds the reversal fence — it already
+            // recorded the reversal on a prior delivery) or the event id already exists. Both mean this
             // consumer may not record the reversal, and in both cases NOTHING was written: the outbox item
             // rolled back with the status.
-            log.warn("Atomic reversal write was cancelled, the transaction is no longer in a stuck state "
-                            + "(DEBITED/SENT_TO_SPI) or the event was already recorded, nothing was written "
-                            + "(status and outbox both rolled back) | txId={} eventId={} reasons={}",
+            log.warn("Atomic reversal write was cancelled, the transaction no longer holds the reversal "
+                            + "fence or the event was already recorded, nothing was written (status and "
+                            + "outbox both rolled back) | txId={} eventId={} reasons={}",
                     txId, event.eventId(), e.cancellationReasons().stream().map(r -> r.code()).toList());
-            throw new TransitionNotAllowedException(txId, "DEBITED or SENT_TO_SPI",
+            throw new TransitionNotAllowedException(txId, TransactionStatus.FINALIZING_REVERSAL.name(),
                     TransactionStatus.REVERSED.name());
         }
 
@@ -215,22 +323,22 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
      * one attribute a reversal adds, read back by the status endpoint's external {@code REVERSED}
      * vocabulary (step 22). No {@code settledAt}: nothing settled.
      *
-     * <p>The condition accepts <b>either</b> stuck state — {@code SENT_TO_SPI} (the queue-driven reversal)
-     * or {@code DEBITED} (the resolver reversing a send whose settlement was never attempted, step 35) —
-     * and refuses every terminal one, which is what makes the reversal idempotent at the state level.
+     * <p>The condition is the reversal fence and nothing else (step 67). It used to accept either stuck
+     * state, which was correct while this was the <i>first</i> guard a reversal met; now the fence has
+     * already decided that question — before the compensating posting, where the decision belongs — and
+     * accepting a raw stuck state here would let a path that never fenced record an ending.
      */
     private static Update reversedUpdate(String txId, String failureReason, String now) {
         Map<String, AttributeValue> values = Map.of(
                 ":target", AttributeValue.fromS(TransactionStatus.REVERSED.name()),
                 ":targetIndex", AttributeValue.fromS(STATUS_PREFIX + TransactionStatus.REVERSED.name()),
-                ":sentToSpi", AttributeValue.fromS(TransactionStatus.SENT_TO_SPI.name()),
-                ":debited", AttributeValue.fromS(TransactionStatus.DEBITED.name()),
+                ":fence", AttributeValue.fromS(TransactionStatus.FINALIZING_REVERSAL.name()),
                 ":now", AttributeValue.fromS(now),
                 ":reason", AttributeValue.fromS(failureReason));
 
         log.debug("DynamoDB Update of the transaction META item | table={} pk={}{} sk={} "
                         + "update=SET status,gsi2pk,gsi2sk,updatedAt,failureReason "
-                        + "condition=attribute_exists(pk) AND (status=SENT_TO_SPI OR status=DEBITED) "
+                        + "condition=attribute_exists(pk) AND status=FINALIZING_REVERSAL "
                         + "reversedAt={} failureReason={}",
                 TABLE, TX_PREFIX, txId, META_SK, now, failureReason);
 
@@ -239,8 +347,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
                 .key(metaKey(txId))
                 .updateExpression("SET #status = :target, gsi2pk = :targetIndex, gsi2sk = :now, "
                         + "updatedAt = :now, failureReason = :reason")
-                .conditionExpression(
-                        "attribute_exists(pk) AND (#status = :sentToSpi OR #status = :debited)")
+                .conditionExpression("attribute_exists(pk) AND #status = :fence")
                 .expressionAttributeNames(STATUS_ALIAS)
                 .expressionAttributeValues(values)
                 .build();
@@ -258,7 +365,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
         values.put(":target", AttributeValue.fromS(TransactionStatus.SETTLED.name()));
         values.put(":targetIndex",
                 AttributeValue.fromS(STATUS_PREFIX + TransactionStatus.SETTLED.name()));
-        values.put(":sentToSpi", AttributeValue.fromS(TransactionStatus.SENT_TO_SPI.name()));
+        values.put(":fence", AttributeValue.fromS(TransactionStatus.FINALIZING_SETTLEMENT.name()));
         values.put(":settledAt", AttributeValue.fromS(settledAt));
 
         StringBuilder expression = new StringBuilder(
@@ -271,7 +378,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
         }
 
         log.debug("DynamoDB Update of the transaction META item | table={} pk={}{} sk={} update={} "
-                        + "condition=attribute_exists(pk) AND status=SENT_TO_SPI settledAt={} "
+                        + "condition=attribute_exists(pk) AND status=FINALIZING_SETTLEMENT settledAt={} "
                         + "creditorIspb={}",
                 TABLE, TX_PREFIX, txId, META_SK, expression, settledAt, confirmation.creditorIspb());
 
@@ -279,7 +386,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
                 .tableName(TABLE)
                 .key(metaKey(txId))
                 .updateExpression(expression.toString())
-                .conditionExpression("attribute_exists(pk) AND #status = :sentToSpi")
+                .conditionExpression("attribute_exists(pk) AND #status = :fence")
                 .expressionAttributeNames(STATUS_ALIAS)
                 .expressionAttributeValues(values)
                 .build();

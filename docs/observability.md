@@ -91,8 +91,15 @@ Who emits which stage:
 | `pix_cache_hit_total` / `pix_cache_miss_total` | counter (`cache=balance`) | payment-service | hit-rate floor | 40 |
 | `pix_outbox_lag_seconds` | gauge | payment-service | `> 60s` | 29 |
 | `pix_settlement_dlq_depth_messages` | gauge | settlement-service | `> 0` | 32 |
-| `pix_reconciliation_oldest_seconds` | gauge | settlement-service | `> 300s` | 34/35 |
+| `pix_reconciliation_oldest_seconds` | gauge | settlement-service | `> 300s` | 34/35/67 |
 | `pix_fraud_score_seconds` | timer | fraud-service | — (budget lives in ADR-0005) | 24 |
+
+>
+> **Step 67 widened what `pix_reconciliation_oldest_seconds` watches, without adding a metric.** The
+> stuck-transaction scan behind it now covers the two `FINALIZING_*` fencing states as well as
+> `DEBITED`/`SENT_TO_SPI` (ADR-0016), so a finalization that stalls between winning its fence and
+> recording its ending raises **this** gauge and trips **this** alert. A separate "stalled fence" series
+> would have split one question — *is any payment stuck past the SLO?* — across two dashboards.
 
 > **Renames applied in step 44** (old → new): `cache.hit`→`pix.cache.hit`, `cache.miss`→`pix.cache.miss`,
 > `outbox.lag`→`pix.outbox.lag`, `settlement.dlq.depth`→`pix.settlement.dlq.depth`,

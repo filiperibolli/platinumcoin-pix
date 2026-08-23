@@ -90,6 +90,38 @@ The platform reached its halfway mark: **the full money path is built, tested an
   key-reuse semantics). **No code or schema change** — the original design was already correct.
 
 ### Fixed
+- Finalization fencing: settle and reverse now win a conditional FINALIZING_* transition before any ledger posting, so a race between the settlement consumer and the reconciliation resolver can no longer move money twice (step 67, ADR-0016)
+  - The mechanism was already in the codebase and applied one state too late. `markSentToSpi` has always
+    been a real CAS returning "did I win"; the finalization guards were real CAS operations too — they
+    just ran **after** the ledger call, which made them a record of who won a race that had already cost
+    money. `-rel` and `-rev` are different `txId`s, so posting idempotency never related them: both
+    postings committed, `SPI_CLEARING` was drawn down twice against one credit, and **money was created**.
+  - **Σ balances does not catch it**, which is why the drill asserts something sharper. Both postings are
+    double-entry, so the total is conserved even when both commit; the creation shows up as the clearing
+    account going negative — and `SPI_CLEARING` is deliberately exempt from the no-negative-balance guard
+    (`AccountPolicy`, an inter-bank position rather than a wallet), so nothing refused it.
+    `FinalizationFencingIT` therefore pins **clearing nets to zero** and **`payer + SPI_SETTLED` moved by
+    exactly the amount** — the money went out to the network XOR came back, never both. Against `main` it
+    failed deterministically, not flakily: both paths post before either CAS runs, so even a fully
+    serialized execution double-draws.
+  - **The asymmetry is the whole mechanism.** Each fence's condition is a whitelist of legal source states
+    that includes itself and excludes the other; nothing enumerates what is forbidden. Re-entering your
+    own fence is legal (a crash between fence and posting replays the idempotent posting), entering the
+    other one is impossible by condition expression rather than by timing.
+  - The two states shipped in **both** `TransactionStatus` enums in one commit. payment-service rebuilds
+    that attribute with `valueOf`, so shipping one side only would have made every
+    `GET /v1/payments/{id}` issued mid-finalization answer `500` — the same defect `REVERSED` caused in
+    step 33, caught this time before it shipped (`StatusQueryIT#aFencedTransactionIsReadableAsProcessing`).
+    Both map to `PROCESSING`: the internal state machine grew two states and the client contract grew none.
+  - The stuck scan now queries **four** partitions. A fence moves `gsi2pk` onto `STATUS#FINALIZING_*`, so
+    omitting them would have made a stalled finalization leave the stuck partitions and become invisible
+    to every future scan — the payer's money parked in clearing with nothing left to look at it. Same
+    gauge, same alert: `pix_reconciliation_oldest_seconds` covers it, and no new metric was added.
+  - A stalled fence is **completed in the direction it was fenced**, never flipped. The resolver's
+    "Why the safety window is a correctness mechanism" javadoc was rewritten rather than left standing:
+    the window is now a latency optimisation (don't fence a reversal over a settlement legitimately in
+    flight), and a comment claiming a role the fence has taken over is exactly the drift CLAUDE.md forbids.
+  AI: est 4h / actual 30min / ~92% generated / 0 issues caught in human review
 - A ledger timeout is now an unknown result resolved by re-posting the same txId, and the ledger's replayed flag is read instead of discarded — a committed-but-timed-out posting debits exactly once (step 66, ADR-0015)
   - `LedgerClient` returns a `LedgerOutcome` (`POSTED · REPLAYED · INSUFFICIENT_FUNDS · REFUSED ·
     UNKNOWN`) instead of `void`: a port whose only vocabulary is "returned" or "threw" cannot say

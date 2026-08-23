@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.ReconcilableTransaction;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
@@ -41,7 +42,9 @@ import org.junit.jupiter.api.Test;
  *       a POST could still be in flight and reversing would race a settle into double-moving money;</li>
  *   <li>UNREACHABLE and an already-terminal transaction are no-ops (the latter without even querying);</li>
  *   <li>the funnel counter increments only when this run actually moved the state, never when a concurrent
- *       path already resolved it (the guarded transition refused).</li>
+ *       path already resolved it (the guarded transition refused);</li>
+ *   <li><b>step 67</b> — a transaction already holding a {@code FINALIZING_*} fence is finished in
+ *       <i>that</i> direction, never flipped, whatever the rail answers now.</li>
  * </ul>
  */
 class StuckTransactionResolverTest {
@@ -196,11 +199,66 @@ class StuckTransactionResolverTest {
                 .isZero();
     }
 
+    /**
+     * <b>A stalled settlement fence is finished as a settlement, whatever the rail now says</b> (step 67).
+     * The path that fenced held a definitive SETTLED answer; that the rail no longer has the record — the
+     * UNKNOWN a resolver would normally reverse on, well past the safety window — does not make the money
+     * come back. Reversing here would refund a payer whose money left the bank.
+     */
+    @Test
+    void completesAStalledFenceInItsOwnDirection() {
+        givenStuck(TransactionStatus.FINALIZING_SETTLEMENT, NOW.minusSeconds(300), NOW.minusSeconds(280));
+        spi.answers(SpiReconciliation.unknown()); // 300s > the 240s window: the reverse branch, normally
+
+        resolver.reconcile(stuck(TransactionStatus.FINALIZING_SETTLEMENT, NOW.minusSeconds(300)));
+
+        assertThat(transactions.settled).as("finished in the direction it was fenced")
+                .containsExactly(TX_ID);
+        assertThat(transactions.reversed).as("a stalled settlement is never flipped to a reversal")
+                .isEmpty();
+        assertThat(ledger.releases).containsExactly(TX_ID + "-rel");
+        assertThat(ledger.reversals).isEmpty();
+        assertThat(metrics.settled).isEqualTo(1);
+    }
+
+    /** The reversal mirror: a stalled reversal fence is completed as a reversal, not settled. */
+    @Test
+    void completesAStalledReversalFenceAsAReversal() {
+        givenStuck(TransactionStatus.FINALIZING_REVERSAL, NOW.minusSeconds(300), NOW.minusSeconds(280));
+        spi.answers(SpiReconciliation.settled(new SpiSettlement(E2E_ID, AMOUNT, "99999999", NOW)));
+
+        resolver.reconcile(stuck(TransactionStatus.FINALIZING_REVERSAL, NOW.minusSeconds(300)));
+
+        assertThat(transactions.reversed).containsExactly(TX_ID);
+        assertThat(transactions.settled).isEmpty();
+        assertThat(spi.reconcileCalls)
+                .as("a fenced reversal needs nothing from the rail, so it is not even asked")
+                .isZero();
+        assertThat(transactions.reversedReason)
+                .isEqualTo("RECONCILED_COMPLETED_STALLED_REVERSAL_FENCE");
+    }
+
+    /** The resolver stamps its own identity on every fence it takes, so a stall says which path stalled. */
+    @Test
+    void everyFenceTheResolverTakesIsStampedAsTheResolver() {
+        givenStuck(TransactionStatus.SENT_TO_SPI, NOW.minusSeconds(200));
+        spi.answers(SpiReconciliation.settled(new SpiSettlement(E2E_ID, AMOUNT, "99999999", NOW)));
+
+        resolver.reconcile(stuck(TransactionStatus.SENT_TO_SPI, NOW.minusSeconds(200)));
+
+        assertThat(transactions.fencedBy).containsExactly(FinalizationActor.RECONCILIATION_RESOLVER);
+    }
+
     // ── fixtures ─────────────────────────────────────────────────────────────────────────────────
 
     private void givenStuck(TransactionStatus status, Instant updatedAt) {
+        givenStuck(status, updatedAt, null);
+    }
+
+    /** A transaction holding a finalization fence since {@code fencedAt} (step 67). */
+    private void givenStuck(TransactionStatus status, Instant updatedAt, Instant fencedAt) {
         reconciliationStore.give(new ReconcilableTransaction(TX_ID, status, E2E_ID, PAYER,
-                "bob@otherbank.com", CLEARING, AMOUNT, "aluguel", NOW.minusSeconds(3600)));
+                "bob@otherbank.com", CLEARING, AMOUNT, "aluguel", NOW.minusSeconds(3600), fencedAt));
     }
 
     private static StuckTransaction stuck(TransactionStatus status, Instant updatedAt) {
@@ -248,9 +306,17 @@ class StuckTransactionResolverTest {
         }
     }
 
+    /**
+     * The store with its guards modelled, including step 67's fences. The mutual exclusion is reproduced
+     * the way the real condition expression enforces it — once a direction holds the fence, the other one
+     * is refused — so a test that asserts "no money moved" is asserting against the same rule DynamoDB
+     * evaluates, not against a permissive stub.
+     */
     private static final class RecordingTransactions implements SettlementTransactionStore {
         private final List<String> settled = new ArrayList<>();
         private final List<String> reversed = new ArrayList<>();
+        private final List<FinalizationActor> fencedBy = new ArrayList<>();
+        private TransactionStatus fence;
         private boolean refuseSettled;
         private boolean refuseReversed;
         private String reversedReason;
@@ -258,6 +324,26 @@ class StuckTransactionResolverTest {
         @Override
         public boolean markSentToSpi(String txId, Instant at) {
             throw new UnsupportedOperationException("the resolver does not re-claim");
+        }
+
+        @Override
+        public boolean fenceForSettlement(String txId, FinalizationActor by, Instant at) {
+            if (fence == TransactionStatus.FINALIZING_REVERSAL) {
+                return false;
+            }
+            fence = TransactionStatus.FINALIZING_SETTLEMENT;
+            fencedBy.add(by);
+            return true;
+        }
+
+        @Override
+        public boolean fenceForReversal(String txId, FinalizationActor by, Instant at) {
+            if (fence == TransactionStatus.FINALIZING_SETTLEMENT) {
+                return false;
+            }
+            fence = TransactionStatus.FINALIZING_REVERSAL;
+            fencedBy.add(by);
+            return true;
         }
 
         @Override

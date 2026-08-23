@@ -128,6 +128,58 @@ class StatusQueryIT extends LocalStackTestBase {
                 .andExpect(jsonPath("$.failureReason").value("CREDITOR_KEY_NOT_IN_DICT"));
     }
 
+    /**
+     * <b>The same class of defect as {@code aReversedPaymentReadsBackAsReversedInsteadOf500}, caught before
+     * it shipped.</b> Step 67 gave settlement-service two new statuses to write — {@code FINALIZING_*},
+     * held for the milliseconds a finalization takes — and this service reads that attribute back with
+     * {@code valueOf}. Ship the fence on one side only and every {@code GET /v1/payments/&#123;id&#125;}
+     * issued while a payment is being finalized answers {@code 500}: an ambiguous window on the money path,
+     * on the endpoint that is the authoritative answer about the payment.
+     *
+     * <p>It reads back as {@code PROCESSING}, not as a new word. A fence is a mechanism, not an outcome —
+     * the internal state machine grew two states and the client contract grew none.
+     */
+    @Test
+    void aFencedTransactionIsReadableAsProcessing() throws Exception {
+        String debtor = "acc-status-fenced";
+        pixKeys.mapExternal("bob@otherbank.com", "99999999");   // external payee: rests at DEBITED
+        ledger.setBalance(debtor, 1_000_00L);
+
+        String txId = sendAndGetTxId(debtor, "bob@otherbank.com", "31.40");
+        markFencedAsSettlementServiceWould(txId, "FINALIZING_SETTLEMENT");
+
+        mvc.perform(get("/v1/payments/{id}", txId)
+                        .header("Authorization", "Bearer " + TestTokens.forUser("u", debtor)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PROCESSING"))
+                .andExpect(jsonPath("$.amount").value("31.40"))
+                .andExpect(jsonPath("$.settledAt").value(nullValue()));
+
+        // The reversal fence is the mirror, and equally must not become a user-visible "about to reverse".
+        markFencedAsSettlementServiceWould(txId, "FINALIZING_REVERSAL");
+
+        mvc.perform(get("/v1/payments/{id}", txId)
+                        .header("Authorization", "Bearer " + TestTokens.forUser("u", debtor)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("PROCESSING"));
+    }
+
+    /** The same attributes {@code DynamoSettlementTransactionStore#fence} sets (step 67). */
+    private void markFencedAsSettlementServiceWould(String txId, String fencingStatus) {
+        String now = Instant.now().toString();
+        dynamo.updateItem(request -> request
+                .tableName("pix_transactions")
+                .key(Map.of("pk", AttributeValue.fromS("TX#" + txId), "sk", AttributeValue.fromS("META")))
+                .updateExpression("SET #status = :target, gsi2pk = :targetIndex, gsi2sk = :now, "
+                        + "updatedAt = :now, fencedBy = :by, fencedAt = :now")
+                .expressionAttributeNames(Map.of("#status", "status"))
+                .expressionAttributeValues(Map.of(
+                        ":target", AttributeValue.fromS(fencingStatus),
+                        ":targetIndex", AttributeValue.fromS("STATUS#" + fencingStatus),
+                        ":now", AttributeValue.fromS(now),
+                        ":by", AttributeValue.fromS("settlement-consumer"))));
+    }
+
     /** The same attributes {@code DynamoSettlementTransactionStore#reversedUpdate} sets. */
     private void markReversedAsSettlementServiceWould(String txId, String failureReason) {
         String now = Instant.now().toString();

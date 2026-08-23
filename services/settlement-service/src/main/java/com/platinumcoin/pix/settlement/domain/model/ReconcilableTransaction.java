@@ -29,6 +29,10 @@ import java.time.Instant;
  * @param debitedAt         the instant the payer was debited (the item's {@code createdAt}); a reversal
  *                          releases the daily-limit reservation against <i>this</i> instant's calendar day,
  *                          not the day reconciliation runs
+ * @param fencedAt          when a finalization fence was taken on this transaction (step 67), {@code null}
+ *                          if it holds none. It is what a stalled {@code FINALIZING_SETTLEMENT} settles on
+ *                          when the rail no longer has the record — see
+ *                          {@link com.platinumcoin.pix.settlement.domain.service.StuckTransactionResolver}
  */
 public record ReconcilableTransaction(
         String txId,
@@ -39,10 +43,17 @@ public record ReconcilableTransaction(
         String clearingAccountId,
         long amountCents,
         String description,
-        Instant debitedAt) {
+        Instant debitedAt,
+        Instant fencedAt) {
 
-    /** Only the two stuck states are the resolver's to move; a terminal one is already resolved. */
+    /**
+     * Whether this transaction still owes work. The two stuck states, <b>plus the two fencing states</b>
+     * (step 67): a fence is a finalization in progress, and one that stalls is exactly what reconciliation
+     * exists to finish. Treating {@code FINALIZING_*} as "already resolved" would strand a transaction
+     * whose money may or may not have moved — the one outcome the < 5-min SLO cannot allow.
+     */
     public boolean isStuck() {
-        return status == TransactionStatus.DEBITED || status == TransactionStatus.SENT_TO_SPI;
+        return status == TransactionStatus.DEBITED || status == TransactionStatus.SENT_TO_SPI
+                || status.isFencing();
     }
 }

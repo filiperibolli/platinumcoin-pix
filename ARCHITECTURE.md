@@ -204,7 +204,7 @@ The rules are not aspirational — each service ships one **ArchUnit** `*Archite
 **Transaction state machine:**
 
 ```
-RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED
+RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → FINALIZING_* → SETTLED
                 │               │           │
                 └ REJECTED      │           ├→ FAILED → REVERSED (compensating credit)
                   (fraud/limit) │           └→ (timeout) … reconciliation resolves
@@ -641,9 +641,54 @@ sequenceDiagram
 
 The subtle rule: **after a timeout you must query before retrying blind** — a timeout is not a failure,
 BACEN may have settled. Separately, a scheduled **reconciliation job** (every 60s) scans `transactions`
-GSI2 for `status IN (DEBITED, SENT_TO_SPI)` older than 2 min → queries the SPI → finalizes (SETTLED) or
-**compensates** (`debit clearing / credit payer`, status `REVERSED`, notify user). Age > 5 min raises an
-SLO-breach alert. Compensation is a *new* posting, never an update/delete — the ledger stays append-only.
+GSI2 for `status IN (DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL)` older than 2 min →
+queries the SPI → finalizes (SETTLED) or **compensates** (`debit clearing / credit payer`, status
+`REVERSED`, notify user). Age > 5 min raises an SLO-breach alert. Compensation is a *new* posting, never an
+update/delete — the ledger stays append-only.
+
+**Finalization fencing — CAS before the money (step 67, [ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md), amends ADR-0003).**
+The lifecycle above has **two** independent finalizers — the queue consumer and the reconciliation
+resolver — reaching **opposite** endings under **different** posting identities (`<txId>-rel` releases
+clearing, `<txId>-rev` refunds the payer). Posting idempotency does not relate them at all, so while the
+guarded transition ran *after* the ledger call, a settle racing a reverse drew `SPI_CLEARING` down twice
+against one credit: **money created**, and `SPI_CLEARING` is deliberately exempt from the
+no-negative-balance guard (it is an inter-bank position, not a wallet), so nothing refused it. The safety
+window narrowed that race; it could not close it.
+
+Exclusivity is now won **before** the money moves. Each arrow below is a conditional write:
+
+```mermaid
+stateDiagram-v2
+    [*] --> DEBITED: 202 Accepted — payer debited, money parked in clearing
+    DEBITED --> SENT_TO_SPI: markSentToSpi (before the rail call)
+    SENT_TO_SPI --> FINALIZING_SETTLEMENT: fenceForSettlement ✋
+    SENT_TO_SPI --> FINALIZING_REVERSAL: fenceForReversal ✋
+    DEBITED --> FINALIZING_REVERSAL: fenceForReversal ✋ (settlement never attempted)
+    FINALIZING_SETTLEMENT --> FINALIZING_SETTLEMENT: re-acquire own fence (crash recovery)
+    FINALIZING_REVERSAL --> FINALIZING_REVERSAL: re-acquire own fence (crash recovery)
+    FINALIZING_SETTLEMENT --> SETTLED: post -rel, then markSettled + PixSettled
+    FINALIZING_REVERSAL --> REVERSED: post -rev, then markReversed + PixReversed
+    SETTLED --> [*]
+    REVERSED --> [*]
+    note right of FINALIZING_SETTLEMENT
+        No arrow between the two fences — in either direction.
+        That absence IS the mutual exclusion: it is a whitelist
+        in a ConditionExpression, not an ordering convention.
+    end note
+```
+
+- **No ledger posting happens in a finalization path without a won fence preceding it.** The loser returns
+  `NOT_ELIGIBLE` having called the ledger zero times.
+- **Re-entering your own fence is legal, entering the other one is impossible.** That is what keeps a crash
+  between the fence and the posting recoverable: the redelivery re-acquires and replays the idempotent
+  posting.
+- **A stalled fence is finished in the direction it was fenced.** The scan covers the two fencing
+  partitions, and the resolver completes that phase — never flips it, whatever the rail now says. A
+  stalled settlement is a stalled settlement, not a licence to reverse.
+- **The safety window stays, reclassified**: it now avoids fencing a reversal over a settlement that is
+  legitimately in flight (a pointless race, and a payment reversed that was about to succeed). It is
+  latency and outcome quality, not correctness.
+- Clients learn nothing new: both fencing states map to `PROCESSING`.
 
 ---
 
@@ -955,7 +1000,7 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 ### 7.7 Observability
 - **Logs** (ADR-0012): SLF4J + Logback in every service, configured once in `common-lib` and inherited by depending on it. Each request gets a `correlationId` at the edge (generated if absent), propagated via header and MDC to every downstream call and every consumer (events carry it in the envelope), and printed by the **log pattern itself** (`[cid=… tx=…]` on every record, framework lines included) — so **the complete path of any transaction is reconstructable across all services** with one `grep`. Messages are English sentences followed by `key=value` pairs (*"Pix key resolved to a destination | normalizedValue=… accountId=…"*) rather than dotted event tokens: prose for the reader, pairs for the grep. Human-readable console is the default; the JSON encoder is one profile away (`json-logs`) for a log platform. **This is a sandbox posture: personal-shaped values (Pix keys, CPFs, e-mails) are logged in full and `com.platinumcoin.pix` runs at DEBUG by default — secrets (passwords, hashes, tokens, credentials) never are.** ADR-0012 states the LGPD trade-off and exactly what production reverses (masking/tokenization at the log boundary, INFO by default, JSON with retention + access control).
 - **Metrics**: Micrometer → Prometheus (scrapes every service's `/actuator/prometheus` every 10s). Every platform metric is prefixed `pix.`, and the exact Prometheus series names are pinned by a test (`PrometheusMetricNamesTest`) — a silently renamed series breaks every dashboard panel and PromQL rule *without failing anything*, which is the most expensive failure mode observability has. Latency is exported as a **percentile histogram** with explicit buckets on the two SLO boundaries (300ms, 2s), configured once in common-lib: a quantile computed inside each JVM cannot be aggregated across instances, so only buckets can honestly answer an SLO stated for the platform. Catalog: `docs/observability.md`.
-- **Dashboards (Grafana, provisioned as code)**: (1) *Technical* — latency p50/p99 per endpoint vs SLO lines (2s send, 300ms balance), throughput, error rates, queue depths + DLQ, cache hit rate, JVM basics; (2) *Business funnel* — payments by stage over time (RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → SETTLED, with REJECTED/REVERSED branches), conversion between stages, fraud decision mix, reconciliation actions, money volume settled. The funnel view is the one a product owner reads — observability that answers business questions, not only "is the CPU ok".
+- **Dashboards (Grafana, provisioned as code)**: (1) *Technical* — latency p50/p99 per endpoint vs SLO lines (2s send, 300ms balance), throughput, error rates, queue depths + DLQ, cache hit rate, JVM basics; (2) *Business funnel* — payments by stage over time (RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → FINALIZING_* → SETTLED, with REJECTED/REVERSED branches), conversion between stages, fraud decision mix, reconciliation actions, money volume settled. The funnel view is the one a product owner reads — observability that answers business questions, not only "is the CPU ok".
 - **Silence alerts** for async flows: a watchdog comparing an input-side counter against an output-side one (e.g., "no settlement completed in 120s **while debits are flowing**") — detecting the *absence* of expected events, which is how async systems usually fail: the consumer is wedged, nothing errors, and every error rate stays a healthy zero. DLQ depth > 0 alerts immediately. Reconciliation-age > 5 min alerts (SLO guard). Implemented as `AlertEvaluator` in settlement-service (step 44): six rules in three shapes — threshold, ratio and silence — announced on **state transitions only**, with a `runbook=` on every line. Because three of the rules watch metrics *other* services own (outbox lag, cache hit-rate, fail-open rate), the evaluator reads **Prometheus** through a `MetricSource` port rather than its own registry: that is the only vantage point from which a cross-service question can be asked. The dependency is soft by construction — an unanswerable query yields `SKIPPED` and leaves the rule's remembered state untouched, so a monitoring outage can neither invent an incident nor silently close one — and nothing on the money path calls it. In production these rules are an Alertmanager rules file next to the same Prometheus; they are in code here so the platform can say something is wrong under plain `docker compose up`, and so each rule has a unit test proving it fires. Full catalog and reasoning: `docs/observability.md`.
 - **Path tracing**: `scripts/trace.sh <correlationId|txId>` collates and time-orders every service's logs for one request or one payment — fifty lines of `grep`, not a tracing backend, precisely because the id is in the log *pattern*. Verified end to end in step 44: one external send is 48 lines across 7 services, spanning the synchronous request and the whole asynchronous settlement. It accepts a `txId` too, because work no request started (the reconciliation scan) honestly has no correlation id.
 - OpenTelemetry tracing is optional locally; correlation ids make manual trace-following possible without it.

@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.domain.usecase;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.SettlementConfirmation;
 import com.platinumcoin.pix.settlement.domain.port.SettlementTransactionStore;
 import java.time.Instant;
@@ -9,16 +10,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The store, with its two guards made switchable. The real adapter expresses them as
- * {@code ConditionExpression}s inside the write; refusing here is the same event the use case sees —
- * a {@link TransitionNotAllowedException} — which is exactly what lets this policy be tested without
- * DynamoDB.
+ * The store, with its guards made switchable. The real adapter expresses them as
+ * {@code ConditionExpression}s inside the write; refusing here produces the same events the use case sees
+ * — a {@link TransitionNotAllowedException} from a terminal transition, {@code false} from a lost fence
+ * (step 67) — which is exactly what lets this policy be tested without DynamoDB.
  */
 final class FakeSettlementTransactionStore implements SettlementTransactionStore {
 
     private final List<String> trace;
     private final List<String> sentToSpi = new ArrayList<>();
     private boolean refuseSentToSpi;
+    private boolean refuseSettlementFence;
     private boolean refuseSettled;
     private boolean refuseReversed;
     private int settledCalls;
@@ -52,6 +54,19 @@ final class FakeSettlementTransactionStore implements SettlementTransactionStore
         return firstClaim;
     }
 
+    /** The settlement fence: {@code false} means another direction owns the ending and no money moves. */
+    @Override
+    public boolean fenceForSettlement(String txId, FinalizationActor by, Instant at) {
+        trace.add("fenceForSettlement");
+        return !refuseSettlementFence;
+    }
+
+    @Override
+    public boolean fenceForReversal(String txId, FinalizationActor by, Instant at) {
+        trace.add("fenceForReversal");
+        return true;
+    }
+
     @Override
     public void markSettled(String txId, SettlementConfirmation confirmation, OutboxEvent event) {
         trace.add("markSettled");
@@ -78,6 +93,10 @@ final class FakeSettlementTransactionStore implements SettlementTransactionStore
 
     void refuseSentToSpi() {
         this.refuseSentToSpi = true;
+    }
+
+    void refuseSettlementFence() {
+        this.refuseSettlementFence = true;
     }
 
     void refuseSettled() {

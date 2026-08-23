@@ -154,7 +154,7 @@ Access patterns: get transaction by id (status query); find by endToEndId (recon
 | PK | `TX#<txId>` |
 | SK | `META` (the transaction) or `OUTBOX#<eventId>` (outbox items) |
 | GSI1 | PK `E2E#<endToEndId>` → lookup by Pix end-to-end id |
-| GSI2 | PK `STATUS#<status>`, SK `updatedAt` → reconciliation scan (`status IN (DEBITED, SENT_TO_SPI) AND updatedAt < now-2min`) |
+| GSI2 | PK `STATUS#<status>`, SK `updatedAt` → reconciliation scan (`status IN (DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL) AND updatedAt < now-2min`) |
 | GSI3 (sparse) | PK `OUTBOX#UNPUBLISHED`, SK `occurredAt` → the publisher's work queue: only unpublished outbox items carry `gsi3pk`, so the index holds in-flight events only |
 
 **Transaction item:**
@@ -209,9 +209,37 @@ existing outbound transaction, plus (step 37) the **creation** of an inbound one
 | Transition | Condition (inside the write) | Attributes written |
 |---|---|---|
 | `DEBITED → SENT_TO_SPI` | `attribute_exists(pk) AND (status = DEBITED OR status = SENT_TO_SPI)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt` |
-| `SENT_TO_SPI → SETTLED` | `attribute_exists(pk) AND status = SENT_TO_SPI` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
-| `(DEBITED \| SENT_TO_SPI) → REVERSED` (step 33; guard widened step 35) | `attribute_exists(pk) AND (status = SENT_TO_SPI OR status = DEBITED)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
+| **fence** `(SENT_TO_SPI \| FINALIZING_SETTLEMENT) → FINALIZING_SETTLEMENT` (step 67) | `attribute_exists(pk) AND (status = SENT_TO_SPI OR status = FINALIZING_SETTLEMENT)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`fencedBy`**, **`fencedAt`** |
+| **fence** `(SENT_TO_SPI \| DEBITED \| FINALIZING_REVERSAL) → FINALIZING_REVERSAL` (step 67) | `attribute_exists(pk) AND (status = SENT_TO_SPI OR status = DEBITED OR status = FINALIZING_REVERSAL)` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`fencedBy`**, **`fencedAt`** |
+| `FINALIZING_SETTLEMENT → SETTLED` (step 33; source narrowed to the fence in step 67) | `attribute_exists(pk) AND status = FINALIZING_SETTLEMENT` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`settledAt`**, **`creditorIspb`** + the `OUTBOX#<eventId>` item |
+| `FINALIZING_REVERSAL → REVERSED` (step 33; guard widened step 35, source narrowed to the fence in step 67) | `attribute_exists(pk) AND status = FINALIZING_REVERSAL` | `status`, `gsi2pk`, `gsi2sk`, `updatedAt`, **`failureReason`** + the `OUTBOX#<eventId>` (`PixReversed`) item |
 | **create** `→ RECEIVED_SETTLED` (step 37, inbound) | `attribute_not_exists(pk)` | the whole `INBOUND` item below + the `OUTBOX#<eventId>` (`PixReceived`) item |
+
+**The two fencing states and their attributes (step 67, [ADR-0016](adr/0016-finalization-fencing-settle-xor-reverse.md)).**
+`FINALIZING_SETTLEMENT` and `FINALIZING_REVERSAL` are **non-terminal** states a finalizer must win before
+it posts anything to the ledger. Two independent paths finalize an external send — the settlement consumer
+and the reconciliation resolver — and their postings carry *different* `txId`s (`-rel` vs `-rev`), so
+posting idempotency does not relate them. While the guarded transition ran *after* the money moved, a
+settle racing a reverse drew `SPI_CLEARING` down twice against one credit and **created money** (and
+`SPI_CLEARING` is exempt from the no-negative-balance guard, so nothing stopped it). The fence makes
+"settle XOR reverse" a condition expression instead of a property of timing:
+
+- **Neither fencing state is a legal source for the other** — that single asymmetry *is* the mutual
+  exclusion. Re-entering the fence you already hold **is** legal, which is what makes a crash between the
+  fence and the posting recoverable (the redelivery replays the idempotent posting).
+- `fencedBy` — `settlement-consumer` | `reconciliation-resolver`. Operational, not load-bearing: nothing
+  branches on it, and a fence is never released or overridden because of who owns it. It answers "which
+  path stalled?" when a transaction is found sitting in a fencing state.
+- `fencedAt` — when the fence was taken. Read by reconciliation when it completes a stalled
+  `FINALIZING_SETTLEMENT` whose rail no longer has the record: it stands in for `settledAt`, with a WARN
+  saying so, because the fence was only ever taken by a path holding a definitive `SETTLED` answer and
+  reversing there would refund a payer whose money left the bank.
+- Both states carry `gsi2pk = STATUS#FINALIZING_*`, so **the stuck-transaction scan queries four
+  partitions, not two**. Omitting them would make a stalled fence invisible to every future scan — the
+  payer's money parked in clearing with nothing left to look at it.
+- Clients never see them: `GET /v1/payments/{id}` maps both to `PROCESSING` (step 22's vocabulary is
+  unchanged). Both enums — settlement-service's *and* payment-service's — learned the two constants in the
+  same commit, because the reader rebuilds `status` with `valueOf` and an unknown constant is a `500`.
 
 - `settledAt` is **BACEN's** instant (the SPI's `recordedAt`), not ours: the money moved on the rail, and
   reconciliation (step 35) compares the two systems on exactly that fact.
@@ -222,16 +250,18 @@ existing outbound transaction, plus (step 37) the **creation** of an inbound one
   and — like a settlement — is idempotent: a redelivery finds it already `REVERSED` and the guard refuses.
   On the **success** branch a settlement additionally posts a `CLEARING_RELEASE` (`debit clearing / credit
   SPI_SETTLED`, `txId=<orig>-rel`) so the clearing balance nets to zero; both postings are idempotent by
-  their deterministic `txId`, so they run before the guarded status transition without ever double-moving
-  money. **Step 35 widened the reversal guard** from strictly `SENT_TO_SPI` to *either* stuck state
-  (`DEBITED OR SENT_TO_SPI`): the reconciliation resolver reverses a send whose settlement was never
-  attempted and still sits at `DEBITED`, whose money has been parked in clearing since acceptance all the
-  same, so reversing from `DEBITED` is as money-correct as from `SENT_TO_SPI`. The guard still refuses any
-  terminal state, so a `SETTLED` transaction is never dragged to `REVERSED`.
+  their deterministic `txId`, so they run before the terminal status transition without ever double-moving
+  money *on the same path*. **Step 35 widened the reversal guard** from strictly `SENT_TO_SPI` to *either*
+  stuck state (`DEBITED OR SENT_TO_SPI`): the reconciliation resolver reverses a send whose settlement was
+  never attempted and still sits at `DEBITED`, whose money has been parked in clearing since acceptance all
+  the same, so reversing from `DEBITED` is as money-correct as from `SENT_TO_SPI`. **Step 67 moved that
+  breadth onto the reversal fence** — it is the decision "may this be reversed at all?", and it has to
+  happen *before* the compensating posting; the terminal transition now only records an ending whose money
+  already moved. Either way, a `SETTLED` transaction is never dragged to `REVERSED`.
 - `creditorIspb` is the participant that received the money, written only when the rail reported one. It
   is the external counterpart of `creditorAccountId` — an external payee has no account here.
-- `gsi2pk`/`gsi2sk` move with **every** transition, or a finished payment would keep showing up in the
-  stuck-transaction scan forever.
+- `gsi2pk`/`gsi2sk` move with **every** transition, fences included, or a finished payment would keep
+  showing up in the stuck-transaction scan forever — and a fenced one would disappear from it.
 - The first transition accepts an item **already** in `SENT_TO_SPI` (re-claiming a retry is not a
   regression) but never one outside those two states — dragging a `SETTLED` transaction back onto the rail
   would send the same money twice.

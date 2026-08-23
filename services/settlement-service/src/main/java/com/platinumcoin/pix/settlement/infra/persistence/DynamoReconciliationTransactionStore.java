@@ -69,6 +69,7 @@ public class DynamoReconciliationTransactionStore implements ReconciliationTrans
      * Map the stored {@code META} item to the resolver's view. {@code description} defaults to empty (the
      * item may omit it); the external-only fields ({@code endToEndId}, {@code clearingAccountId}) are read
      * as nullable, and the resolver refuses to act on a transaction missing them rather than guessing.
+     * {@code fencedAt} is nullable for the same reason — only a fenced transaction carries it.
      */
     private static ReconcilableTransaction toTransaction(Map<String, AttributeValue> item) {
         return new ReconcilableTransaction(
@@ -80,7 +81,10 @@ public class DynamoReconciliationTransactionStore implements ReconciliationTrans
                 string(item, "clearingAccountId"),
                 Long.parseLong(item.get("amountCents").n()),
                 item.containsKey("description") ? item.get("description").s() : "",
-                Instant.parse(item.get("createdAt").s()));
+                Instant.parse(item.get("createdAt").s()),
+                // Present only on a transaction that holds a finalization fence (step 67); absent on every
+                // other item, hence the defensive read rather than a required attribute.
+                item.containsKey("fencedAt") ? Instant.parse(item.get("fencedAt").s()) : null);
     }
 
     private static String string(Map<String, AttributeValue> item, String key) {

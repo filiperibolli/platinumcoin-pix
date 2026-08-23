@@ -1,8 +1,11 @@
 package com.platinumcoin.pix.settlement.domain.service;
 
+import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
 import com.platinumcoin.pix.settlement.domain.model.ReconcilableTransaction;
 import com.platinumcoin.pix.settlement.domain.model.SpiReconciliation;
+import com.platinumcoin.pix.settlement.domain.model.SpiSettlement;
 import com.platinumcoin.pix.settlement.domain.model.StuckTransaction;
+import com.platinumcoin.pix.settlement.domain.model.TransactionStatus;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationMetrics;
 import com.platinumcoin.pix.settlement.domain.port.ReconciliationTransactionStore;
 import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
@@ -36,25 +39,38 @@ import org.slf4j.LoggerFactory;
  *   <li><b>UNREACHABLE</b> — the query could not be completed; nothing is decided, leave for next cycle.</li>
  * </ul>
  *
- * <h2>Why the safety window is a correctness mechanism, not just patience</h2>
- * BACEN's rail is idempotent per {@code endToEndId} — it gives one terminal answer forever — so a genuine
- * SETTLED and a genuine FAILED can never both be produced for one id, and reconciliation cannot race the
- * queue into moving money twice on those. The one branch that <i>could</i> is UNKNOWN: if the resolver
- * reversed the instant the rail reported "no record", a POST still in flight could settle a moment later,
- * and the {@code -rev} and {@code -rel} postings (different {@code txId}s, so posting idempotency does not
- * cover them) would both draw the clearing account down — money created. The safety window closes that:
- * by the time it elapses (comfortably past the 12s SPI timeout, the retry backoff and the DLQ threshold),
- * no concurrent settle can plausibly still be in flight, so reversing on UNKNOWN is safe. The guarded
- * transition is the backstop that decides the winner if two paths still collide; the window is what makes
- * the collision vanishingly unlikely in the first place.
+ * <h2>A fenced transaction is not a decision to make (step 67)</h2>
+ * A transaction found in {@code FINALIZING_SETTLEMENT} or {@code FINALIZING_REVERSAL} has already had its
+ * ending chosen — by a path that won the fence and then stalled. The resolver <b>finishes the fenced
+ * direction</b> and never consults the rail for a verdict: re-acquiring the same fence, replaying that
+ * phase's idempotent posting and recording its terminal transition. A stalled settlement is a stalled
+ * settlement, never a licence to reverse.
+ *
+ * <h2>The safety window is a latency optimisation, not a correctness mechanism (rewritten in step 67)</h2>
+ * <b>It used to be the argument for why this class could not create money, and it no longer is.</b> The
+ * reasoning was: BACEN's rail is idempotent per {@code endToEndId}, so a genuine SETTLED and a genuine
+ * FAILED can never both be produced for one id; the one branch that could collide is UNKNOWN, where a
+ * POST still in flight might settle just after the resolver reversed — and the {@code -rev} and
+ * {@code -rel} postings, being different {@code txId}s, would both draw the clearing account down. The
+ * window made that unlikely by waiting out any plausible in-flight settle. Unlikely is not impossible,
+ * and the failure it left was the worst class the platform has: silent money creation, visible only to a
+ * conservation audit after the fact.
+ *
+ * <p>Step 67 ({@link FinalizationActor}, ADR-0016) replaced the probabilistic barrier with a structural
+ * one: a finalizer must win a conditional transition into {@code FINALIZING_SETTLEMENT} or
+ * {@code FINALIZING_REVERSAL} <b>before</b> it posts anything, and neither is a legal source for the
+ * other. Settle and reverse are now mutually exclusive by condition expression. <b>The window stays,
+ * demoted to what it always really was:</b> a way to avoid fencing a reversal over a settlement that is
+ * legitimately still in flight — a pointless race the fence would resolve anyway, at the cost of a
+ * payment reversed that was about to succeed. Its value is latency and outcome quality, not safety.
  *
  * <h2>Idempotent by construction</h2>
- * The resolver claims nothing and dedupes on nothing: its safety is entirely the guarded transition
- * (at most one path moves the state) plus posting idempotency (the {@code -rel}/{@code -rev} {@code txId}
- * replays as a no-op). So a resolver run that races a late SQS redelivery or a DLQ redrive is harmless —
- * whoever reaches the guarded transition first wins, the other gets {@code NOT_ELIGIBLE} and moves no
- * money. Re-running the resolver on an already-terminal transaction is a no-op it detects before even
- * querying the rail.
+ * The resolver claims nothing and dedupes on nothing: its safety is the fence (at most one <i>direction</i>
+ * ever spends money) plus posting idempotency (the {@code -rel}/{@code -rev} {@code txId} replays as a
+ * no-op) plus the guarded terminal transition. So a resolver run that races a late SQS redelivery or a DLQ
+ * redrive is harmless — whoever takes the fence first owns the ending, the other gets
+ * {@code NOT_ELIGIBLE} and moves no money at all. Re-running the resolver on an already-terminal
+ * transaction is a no-op it detects before even querying the rail.
  *
  * <p>Plain Java, no Spring and no AWS type (ADR-0010/0011): the schedule is in {@code api/}; the read, the
  * rail, the finalizer's ledger/store and the metric each sit behind a port or a domain service.
@@ -65,6 +81,13 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
 
     /** The failure reason stamped when a transaction is reversed because the rail never recorded it. */
     private static final String NO_RAIL_RECORD = "RECONCILED_NO_RAIL_RECORD_PAST_SAFETY_WINDOW";
+
+    /**
+     * The reason stamped when reconciliation finishes a reversal somebody else fenced and then stalled on
+     * (step 67). The original refusal code is not carried by the fence, and inventing one would put a
+     * BACEN code on a decision BACEN did not make.
+     */
+    private static final String STALLED_REVERSAL_FENCE = "RECONCILED_COMPLETED_STALLED_REVERSAL_FENCE";
 
     private final ReconciliationTransactionStore transactions;
     private final SpiSettlementClient spi;
@@ -112,6 +135,14 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
             return;
         }
 
+        if (tx.status().isFencing()) {
+            // The ending was decided before any money moved; reconciliation's job is to finish it, not to
+            // re-decide it. Deliberately BEFORE the rail query, so no rail answer can reach a branch that
+            // might flip the direction.
+            completeFencedDirection(tx, now);
+            return;
+        }
+
         SpiReconciliation answer = spi.reconcile(tx.endToEndId());
         log.info("Reconciliation queried the rail for a stuck transaction | txId={} status={} "
                         + "endToEndId={} railAnswer={} ageSeconds={}",
@@ -119,7 +150,7 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
 
         SettlePixCommand command = toCommand(tx);
         switch (answer.kind()) {
-            case SETTLED -> finalizeSettled(command, answer, now);
+            case SETTLED -> finalizeSettled(command, answer.settlement(), now);
             case FAILED -> reverse(command, answer.reason(), now);
             case UNKNOWN -> resolveUnknown(command, stuck, now);
             case UNREACHABLE -> log.info("Reconciliation left the transaction for the next cycle, the rail "
@@ -128,9 +159,62 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
         }
     }
 
+    /**
+     * <b>Finish a stalled fence in the direction it was fenced</b> (step 67, ADR-0016 §5). The path that
+     * took the fence crashed somewhere between winning it and recording the ending; its posting is
+     * idempotent by {@code txId}, so replaying the phase is safe whether the money already moved or not.
+     *
+     * <h2>Why a settlement fence still queries the rail, and why the answer cannot change the direction</h2>
+     * {@code markSettled} needs a {@code SettlementConfirmation}, whose {@code settledAt} is <b>BACEN's</b>
+     * instant — the fact reconciliation compares the two systems on. So the rail is asked for the
+     * <i>details</i>. If it still reports the settlement, those details are used. If it does not (an
+     * UNKNOWN past the record's retention, an unreachable rail), the transaction is settled anyway, on the
+     * fence instant, with a loud WARN: the fence was only ever taken by a path holding a definitive
+     * SETTLED answer, and reversing here would refund a payer whose money left the bank.
+     *
+     * <p>A reversal fence needs nothing from the rail at all. The original refusal reason is not persisted
+     * by the fence (which stamps only {@code fencedBy}/{@code fencedAt}), so the completed reversal carries
+     * {@code RECONCILED_COMPLETED_STALLED_REVERSAL_FENCE} — honest about what happened rather than
+     * guessing at BACEN's original code.
+     */
+    private void completeFencedDirection(ReconcilableTransaction tx, Instant now) {
+        SettlePixCommand command = toCommand(tx);
+        if (tx.status() == TransactionStatus.FINALIZING_REVERSAL) {
+            log.warn("Reconciliation found a stalled REVERSAL fence and is completing it in that "
+                            + "direction, the rail is not consulted because the ending was already decided "
+                            + "| txId={} endToEndId={} amountCents={} fencedAt={}",
+                    tx.txId(), tx.endToEndId(), tx.amountCents(), tx.fencedAt());
+            reverse(command, STALLED_REVERSAL_FENCE, now);
+            return;
+        }
+
+        SpiReconciliation answer = spi.reconcile(tx.endToEndId());
+        SpiSettlement settlement;
+        if (answer.kind() == SpiReconciliation.Kind.SETTLED) {
+            settlement = answer.settlement();
+            log.warn("Reconciliation found a stalled SETTLEMENT fence and is completing it, the rail still "
+                            + "reports the settlement so its own instant is used | txId={} endToEndId={} "
+                            + "amountCents={} fencedAt={} settledAt={}",
+                    tx.txId(), tx.endToEndId(), tx.amountCents(), tx.fencedAt(), settlement.recordedAt());
+        } else {
+            // Never a reversal: the fence is only ever taken by a path that already held a definitive
+            // SETTLED answer, so an ambiguous rail now is our record being gone, not the money coming back.
+            Instant settledAt = tx.fencedAt() != null ? tx.fencedAt() : now;
+            settlement = new SpiSettlement(tx.endToEndId(), tx.amountCents(), null, settledAt);
+            log.warn("Reconciliation is completing a stalled SETTLEMENT fence WITHOUT the rail's own "
+                            + "instant, the rail no longer answers for this id so the fence instant stands "
+                            + "in as settledAt, and the transaction is settled rather than reversed because "
+                            + "the fence was taken on a definitive SETTLED answer | txId={} endToEndId={} "
+                            + "railAnswer={} fencedAt={} settledAtUsed={}",
+                    tx.txId(), tx.endToEndId(), answer.kind(), tx.fencedAt(), settledAt);
+        }
+        finalizeSettled(command, settlement, now);
+    }
+
     /** SETTLED at the rail ⇒ finalize; count it only if this run actually moved the state. */
-    private void finalizeSettled(SettlePixCommand command, SpiReconciliation answer, Instant now) {
-        SettleOutcome outcome = finalizer.finalizeSettled(command, answer.settlement(), now);
+    private void finalizeSettled(SettlePixCommand command, SpiSettlement settlement, Instant now) {
+        SettleOutcome outcome = finalizer.finalizeSettled(command, settlement, now,
+                FinalizationActor.RECONCILIATION_RESOLVER);
         if (outcome == SettleOutcome.SETTLED) {
             metrics.resolvedSettled();
             log.info("Reconciliation resolved a stuck transaction by finalizing it SETTLED — the rail had "
@@ -143,9 +227,10 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
     }
 
     /**
-     * UNKNOWN ⇒ the rail has no record. Reverse only once the transaction is older than the safety window
-     * (see the class javadoc on why the window is a correctness mechanism); within it, leave for the next
-     * cycle so a still-in-flight POST can settle.
+     * UNKNOWN ⇒ the rail has no record. Reverse only once the transaction is older than the safety window;
+     * within it, leave for the next cycle so a still-in-flight POST can settle. Since step 67 the window is
+     * an optimisation, not the safety net (see the class javadoc): reversing early would now simply lose a
+     * fence to the settle, but it would still have reversed a payment that was about to succeed.
      */
     private void resolveUnknown(SettlePixCommand command, StuckTransaction stuck, Instant now) {
         Duration age = stuck.ageAt(now);
@@ -165,7 +250,8 @@ public class StuckTransactionResolver implements StuckTransactionReconciler {
 
     /** FAILED or a past-window UNKNOWN ⇒ reverse; count it only if this run actually moved the state. */
     private void reverse(SettlePixCommand command, String reason, Instant now) {
-        SettleOutcome outcome = finalizer.reverse(command, reason, now);
+        SettleOutcome outcome = finalizer.reverse(command, reason, now,
+                FinalizationActor.RECONCILIATION_RESOLVER);
         if (outcome == SettleOutcome.REVERSED) {
             metrics.resolvedReversed();
             log.info("Reconciliation resolved a stuck transaction by reversing it — the payer was refunded "

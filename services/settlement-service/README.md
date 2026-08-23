@@ -33,11 +33,19 @@ PixDebited ─▶ claim eventId (dedup) ─▶ [redelivery? GET /spi/settlements
 on SPI timeout/5xx: don't delete ─▶ ChangeMessageVisibility(backoff) ─▶ SQS redelivers
                     ─▶ after 5 receives ─▶ settlement-queue-dlq  (pix.settlement.dlq.depth gauge)
 
-on SETTLED (step 33): ledger CLEARING_RELEASE  (debit clearing / credit SPI_SETTLED, txId=<orig>-rel)
-                                        ─▶ then tx → SETTLED  (idempotent by that txId)
-on SPI permanent refusal (step 33): ledger PIX_REVERSAL  (debit clearing / credit payer, txId=<orig>-rev)
-                                        ─▶ tx: SENT_TO_SPI → REVERSED + PixReversed  (guarded, ONE write)
+on SETTLED (steps 33/67): tx: SENT_TO_SPI → FINALIZING_SETTLEMENT  (FENCE — won before any money moves)
+                                        ─▶ ledger CLEARING_RELEASE  (debit clearing / credit SPI_SETTLED,
+                                                                     txId=<orig>-rel)
+                                        ─▶ tx: FINALIZING_SETTLEMENT → SETTLED + PixSettled  (ONE write)
+on SPI permanent refusal (steps 33/67): tx: SENT_TO_SPI → FINALIZING_REVERSAL  (FENCE)
+                                        ─▶ ledger PIX_REVERSAL  (debit clearing / credit payer,
+                                                                 txId=<orig>-rev)
+                                        ─▶ tx: FINALIZING_REVERSAL → REVERSED + PixReversed  (ONE write)
                                         ─▶ release the daily-limit reservation  (only if the guard won)
+
+losing a fence: return NOT_ELIGIBLE having called the ledger ZERO times — the other direction owns
+                this transaction's ending, and FINALIZING_SETTLEMENT/FINALIZING_REVERSAL are not legal
+                source states for each other
 ```
 
 Three properties carry the whole design:
@@ -47,10 +55,14 @@ Three properties carry the whole design:
    the rail is called — never after. The claim survives **only** a completed settlement; every other
    ending releases it, so a redelivery is real work instead of being silently swallowed (step 32's
    retries depend on this).
-2. **Both transitions are guarded inside the write.** No read-then-check anywhere: the precondition is a
-   `ConditionExpression` evaluated as part of the same operation that changes the state, so a redelivery,
-   a second instance and (from step 35) the reconciliation loop can race and exactly one wins. A
-   `SETTLED` transaction can never be put back on the rail — that would be the same money sent twice.
+2. **Every transition is guarded inside the write, and since step 67 the decisive one runs before the
+   money.** No read-then-check anywhere: the precondition is a `ConditionExpression` evaluated as part of
+   the same operation that changes the state, so a redelivery, a second instance and (from step 35) the
+   reconciliation loop can race and exactly one wins. A `SETTLED` transaction can never be put back on the
+   rail — that would be the same money sent twice. The terminal transitions used to be the *first* guard a
+   finalization met, which made them a record of who won a race that had already cost money; the
+   `FINALIZING_*` **fences** (ADR-0016) run ahead of the ledger call, so a losing path posts nothing at
+   all.
 3. **`SENT_TO_SPI` is written before the call.** It is the durable statement "we asked BACEN". Without
    it, a settlement that timed out (BACEN may well have completed it) would be indistinguishable from
    one never attempted — and those two demand opposite reactions.
@@ -69,15 +81,17 @@ it posts a `CLEARING_RELEASE` (`debit clearing / credit SPI_SETTLED`, `txId=<ori
 leaves clearing; on a **permanent refusal** it posts a compensating `PIX_REVERSAL` (`debit clearing / credit
 payer`, `txId=<orig>-rev`), transitions the transaction to `REVERSED`, releases the daily-limit reservation
 and announces `PixReversed`. Both postings are **idempotent by their deterministic `txId`**, so they run
-before the guarded status transition without ever double-moving money, and the ledger stays append-only — a
-reversal is a new posting, never an edit. Σ balances is invariant on both branches. settlement has no user
+before the terminal status transition without ever double-moving money *on the same path* — and since step
+67 a **fence** won ahead of either posting is what stops the *other* path from moving money at the same
+time. The ledger stays append-only — a reversal is a new posting, never an edit. Σ balances is invariant on both branches. settlement has no user
 token to forward off a queue, so it mints its own short-lived service token (shared secret) for the ledger
 call — a sandbox stand-in for a real service credential (ADR-0013; step-45 hardening).
 
 **Finding what fell through the cracks (step 34).** SQS retries and the DLQ catch messages that keep
 failing, but a transaction can go stuck without a live message behind it — a consumer that crashed after
 `markSentToSpi`, an SPI answer that never arrived. A `@Scheduled` scan (`StuckTransactionScanner`, every
-60s) queries GSI2 (`STATUS#DEBITED`/`STATUS#SENT_TO_SPI`, `updatedAt < now-2min`) for exactly those, hands
+60s) queries GSI2 (`STATUS#DEBITED`/`STATUS#SENT_TO_SPI` and, since step 67, `STATUS#FINALIZING_SETTLEMENT`/
+`STATUS#FINALIZING_REVERSAL`, `updatedAt < now-2min`) for exactly those, hands
 each to the reconciliation path, and publishes the age of the oldest as the `pix.reconciliation.oldest.seconds`
 gauge — the **leading** indicator of the <5-min SLO (ADR-0003), rising before anything reaches the DLQ. The
 scan is bounded per tick (`max-per-tick`) so a backlog drains over ticks; at very large scale the status GSI
@@ -87,11 +101,15 @@ would be sharded (`STATUS#DEBITED#<0-15>`), N=1 locally.
 loads each stuck transaction and asks the rail — a three-way `SpiSettlementClient.reconcile` — what became of
 it: `SETTLED` ⇒ finalize; `FAILED` ⇒ reverse now; `UNKNOWN` ⇒ reverse **only past a safety window**
 (`reverse-safety-window-seconds`, else leave); `UNREACHABLE` ⇒ leave. Finalize and reverse are the shared
-`SettlementFinalizer` (extracted so the queue path and the resolver move money identically). The window is a
-*correctness* mechanism, not patience: BACEN is idempotent per `endToEndId`, so only the UNKNOWN branch could
-race a still-in-flight POST into double-moving money (the `-rev`/`-rel` postings have different `txId`s), and
-waiting it out closes that window while the guarded transition is the backstop. Idempotent by construction —
-it claims and dedupes on nothing — so it races a late redelivery or DLQ redrive harmlessly. Terminal outcomes
+`SettlementFinalizer` (extracted so the queue path and the resolver move money identically). A transaction
+found already holding a fence is not a decision at all: it is **completed in the direction it was fenced**
+(step 67), rail answer or not — a stalled settlement is a stalled settlement, never a licence to reverse.
+The window used to be argued as a *correctness* mechanism (BACEN is idempotent per `endToEndId`, so only the
+UNKNOWN branch could race a still-in-flight POST into double-moving money via the different `-rev`/`-rel`
+`txId`s). **Step 67 demoted it to a latency optimisation**: the fence makes settle and reverse mutually
+exclusive by condition expression, so the window's remaining job is to avoid reversing a payment that was
+about to succeed. Idempotent by construction — it claims and dedupes on nothing — so it races a late
+redelivery or DLQ redrive harmlessly. Terminal outcomes
 increment `pix.reconciliation.resolved{action}` (settled|reversed), and `ReconciliationSloAlert` fires
 `pix.reconciliation.oldest.seconds > slo-breach-seconds` (step 44 points Prometheus at the same gauge/threshold).
 
@@ -329,6 +347,9 @@ awsl s3api head-object --bucket pix-audit-log --key <key> \
 
 - [ADR-0003](../../docs/adr/0003-async-settlement-and-reconciliation.md) — asynchronous settlement, the
   12s SPI timeout, query-before-retry, DLQ, bounded reconciliation.
+- [ADR-0016](../../docs/adr/0016-finalization-fencing-settle-xor-reverse.md) (amends ADR-0003) —
+  finalization fencing: a CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` before any posting, so
+  settle and reverse are mutually exclusive by condition expression rather than by timing.
 - [ADR-0004](../../docs/adr/0004-transactional-outbox-with-polling-publisher.md) — transactional outbox,
   at-least-once delivery, dedup by `eventId`.
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — `endToEndId` is the idempotency key toward
