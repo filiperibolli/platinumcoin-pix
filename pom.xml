@@ -25,7 +25,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- BOM versions — the single place any of these change -->
-        <spring-boot.version>3.3.13</spring-boot.version>
+        <spring-boot.version>4.1.1</spring-boot.version>
         <aws-sdk.version>2.28.29</aws-sdk.version>
         <testcontainers.version>1.20.4</testcontainers.version>
 
