@@ -266,7 +266,7 @@
       "id": 4,
       "type": "piechart",
       "title": "Fraud decision mix",
-      "description": "The in-path verdict mix as the SEND FLOW saw it \u2014 which is why it includes SKIPPED, the fail-open that only the caller can observe (ADR-0005).",
+      "description": "The in-path verdict mix as the SEND FLOW saw it \u2014 which is why it includes the two verdicts only the caller can observe. SKIPPED is capacity: the 200ms budget was blown and the send proceeded unscored (ADR-0005). FRAUD_ERROR is correctness: the check was BROKEN \u2014 a 401/403, a drifted contract, a bug \u2014 so the send also proceeded unscored, but this one will not fix itself when load falls (ADR-0018). Both are risk, not drop-off; neither ever reaches the wire.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -331,7 +331,7 @@
       "id": 5,
       "type": "stat",
       "title": "Fail-open rate vs 5% ceiling",
-      "description": "How often the 200ms fraud budget was blown and the send proceeded UNSCORED. Fail-open is a deliberate design (availability of payments over completeness of scoring); this number is what keeps it a documented exception rather than the norm.",
+      "description": "How often the 200ms fraud budget was blown and the send proceeded UNSCORED \u2014 CAPACITY fail-opens only, since ADR-0018 moved broken checks onto their own FRAUD_ERROR series and the fraud_broken alert. Fail-open is a deliberate design (availability of payments over completeness of scoring); this number is what keeps it a documented exception rather than the norm.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"

@@ -27,6 +27,40 @@ The platform reached its halfway mark: **the full money path is built, tested an
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
 ### Changed
+- Fraud failures are classified: fail-open stays for transient failures, while auth/contract/bug failures become a distinct FRAUD_ERROR with its own log level, metric series and alert instead of hiding behind the same SKIPPED counter (step 70, ADR-0018)
+  AI: est 3h / actual 1h10 / ~93% generated / 1 issue caught in human review
+  - **The behaviour is deliberately unchanged; only the silence is gone.** Both failure classes still let
+    the payment through — ADR-0005's trade-off is intact, because a broken fraud deploy must not become a
+    payments outage. A transient failure (timeout, unreachable host, `5xx`, `429`) is still `SKIPPED` at
+    `WARN`. A non-transient one (`401`/`403`, any other `4xx`, an unreadable body on a `2xx`, an adapter
+    bug) is now `FRAUD_ERROR` at `ERROR`, on its own `pix_fraud_decision{decision="FRAUD_ERROR"}` series,
+    and stamped durably on the transaction — so "which payments went out unscored *because the control was
+    broken*" is a scan of `pix_transactions`, not a search through logs that rotate.
+  - **New alert `fraud_broken`** — a `Threshold` at zero over 5m, deliberately **not** a ratio. A fail-open
+    is normal in small doses and "how much of it" is the right question; a broken check is not a dose, so
+    one occurrence is the alert. A percentage would also need volume before it could fire, which inverts
+    the urgency: the quiet 3am deploy that breaks the contract is when the denominator is smallest.
+    `fraud_fail_open_rate` keeps its 5% ceiling and finally measures only capacity fail-opens.
+  - **The classification is not by exception type, and that was the one real trap.** `RestClient` reports a
+    read timeout and an unreadable body through the *same* `RestClientException` (both surface while it is
+    extracting the response), and `JsonProcessingException` is itself an `IOException` — so the obvious
+    `instanceof IOException` test would have filed contract drift under "capacity", the single most
+    important case landing on the wrong side. The adapter asks the narrower honest question instead: did
+    the network fail to deliver the bytes (`SocketTimeoutException`/`SocketException`/
+    `UnknownHostException`)? Caught by `aReadTimeoutIsStillASkip`, which was written before the code.
+  - **Proven end to end, not dialled.** `FraudIntegrationIT` routes the stub through the production
+    `HttpFraudScorer` aimed at a server answering `403` — the exact shape step 68 made reachable, a service
+    token without the `fraud:score` scope — and asserts transport → classification → use case → persisted
+    item in one causal line. A dialled verdict would only have proven the test agrees with itself.
+  - **One issue the money-safety review caught:** deriving the flag with `fraudDecision.wentUnscored()`
+    replaced a null-safe `== SKIPPED` comparison at a point *after* the ledger posting commits, so a port
+    violating its own contract would have stranded a debit with no transaction row. Normalized in
+    `screenForFraud` **before** the debit — and semantically exactly right, since a port that cannot answer
+    *is* a broken check (`aPortThatAnswersNullIsTreatedAsABrokenCheckBeforeAnyMoneyMoves`).
+  - `fraudSkipped` now means "went out unscored" and is `true` for both classes: the flag drives behaviour
+    (the `FraudCheckSkipped` outbox marker and the async re-score, identical either way), the verdict drives
+    diagnosis. `docs/observability.md` §2.1/§4, `docs/data-model.md` §4, ARCHITECTURE §7.5, ADR-0005's
+    amendment pointer, both service READMEs and the API explorer updated in the same change.
 - **Sprint 11.5 planned — external review remediation** (2026-08-22): an independent staff-level review
   by **Geison Flores** (Mercado Livre) landed as `docs/solucao-e-sugestoes.html` (PR #58), classifying
   findings P0 (money correctness & security) / P1 (operations & scale) / P2. **Every finding was

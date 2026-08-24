@@ -51,7 +51,16 @@ Three layers, and the platform is only observable because all three exist:
 
 **`stage`** — `RECEIVED` · `FRAUD_CHECKED` · `DEBITED` · `SENT_TO_SPI` · `SETTLED` · `REVERSED`
 **`outcome`** — `ok` (advanced) · `rejected` (died here)
-**`decision`** — `APPROVE` · `REVIEW` · `DENY` · `SKIPPED`  **`action`** — `settled` · `reversed`
+**`decision`** — `APPROVE` · `REVIEW` · `DENY` · `SKIPPED` · `FRAUD_ERROR`  **`action`** — `settled` · `reversed`
+
+> **`SKIPPED` vs `FRAUD_ERROR` (ADR-0018).** Both mean the send went out **unscored**, and both let it
+> proceed — that is ADR-0005's trade-off, unchanged. They differ in what they say about the system, which is
+> the only part an operator can act on: `SKIPPED` is **capacity** (the 200ms budget expired, an unreachable
+> host, a `5xx`, a `429` — it recovers when load falls), `FRAUD_ERROR` is **correctness** (a `401`/`403`,
+> any other `4xx`, a body this platform can no longer read, a bug in the adapter — the control is *off*
+> until a human fixes it). Three of the five are fraud-service's own answer; these two are minted by
+> `HttpFraudScorer`, because only the caller can observe that its own call failed. Both are also durable on
+> `pix_transactions.fraudDecision`, so the population is queryable and not just graphable.
 
 Who emits which stage:
 
@@ -166,7 +175,40 @@ thresholds come from `pix.settlement.alerts.*` so a drill can tighten a window f
 | `reconciliation_backlog_age` | threshold | oldest stuck `> 300s` | 300s | `docs/local-dev.md` §5.5 |
 | `outbox_publisher_lag` | threshold | oldest unpublished `> 60s` | 60s | `docs/local-dev.md` §5.4 |
 | `fraud_fail_open_rate` | ratio (ceiling) | `SKIPPED` share `> 5%` over 10m | 0.05 | this file, §4 |
+| `fraud_broken` | threshold | **any** `FRAUD_ERROR` over 5m | 0 | this file, §4 |
 | `balance_cache_hit_rate` | ratio (floor) | hit rate `< 70%` over 10m | 0.70 | `docs/local-dev.md` §5.7 |
+
+### The two fraud rules, and why one of them is not a rate (ADR-0018)
+`fraud_fail_open_rate` was, until step 70, the only thing the platform said about fraud failing — and it
+counted a fraud engine that had been **off since the last deploy** under the same name as a busy afternoon.
+That is not a threshold problem, it is a *population* problem: a ratio over two different conditions cannot
+answer either question, so the operator got a true number about a false cause.
+
+The split gives each question its own shape, and the shapes are not interchangeable:
+
+- **`fraud_fail_open_rate` stays a ratio**, because a fail-open is *normal in small doses*. One skipped
+  score during a traffic spike is the design working; the alarming thing is when it stops being
+  exceptional. "How much of it" is exactly the right question, and the 5% now finally means what this
+  section always claimed it meant.
+- **`fraud_broken` is a threshold at zero**, because a broken check is **not a dose**. One `401`, one
+  unreadable body, and the control is disabled for *every* payment until a human intervenes — there is no
+  acceptable share of that. Expressing it as a percentage would also invert the urgency, since a
+  proportion needs volume before it can fire, and the quiet 3am deploy that breaks the contract is exactly
+  when the denominator is smallest.
+
+**Runbook — `fraud_broken` fires.** Payments are still flowing (deliberately; ADR-0018 keeps ADR-0005's
+availability choice), so this is not a payments incident — it is a **control outage**, and the clock on it
+is fraud exposure, not downtime.
+1. `docker compose logs payment-service | grep 'BROKEN'` — the `ERROR` line carries `class=NON_TRANSIENT`
+   plus the status and response body, which usually names the cause outright.
+2. A `403` almost always means the **service token's scope** (ADR-0017): check `fraud:score` is minted and
+   that fraud-service's expected `aud` matches. A `400` or an unreadable body means the **contract
+   drifted** — compare fraud-service's `ScoreResult` against `HttpFraudScorer.ScoreResultView`.
+3. Fix the cause, then confirm the series stops advancing:
+   `curl -s localhost:8084/actuator/prometheus | grep pix_fraud_decision_total`.
+4. The payments that went out during the window are a **query, not a search**: scan `pix_transactions` for
+   `fraudDecision = FRAUD_ERROR`. Every one of them also emitted `FraudCheckSkipped`, so async re-scoring
+   has them; the query is for deciding whether the exposure needs anything more than that.
 
 ### Why silence is the shape that matters
 A synchronous system fails as an *error*. An asynchronous one fails as **nothing at all** — the consumer is
@@ -196,7 +238,7 @@ stopped" visible from inside the pipeline that stopped.
    Grafana tab open.
 
 ### Why the watchdog reads Prometheus, not its own registry
-Three of the six rules watch metrics settlement-service does not own (`pix.outbox.lag`, the cache hit rate,
+Three of the seven rules watch metrics settlement-service does not own (`pix.outbox.lag`, the cache hit rate,
 the fail-open rate). A watchdog restricted to its local `MeterRegistry` could only ever see its own corner —
 and the failure it exists to catch is precisely a statement about **two services at once**. Prometheus
 already scrapes everything, so it is the one place a cross-service question can be asked.

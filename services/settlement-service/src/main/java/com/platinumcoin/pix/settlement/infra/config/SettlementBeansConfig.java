@@ -246,7 +246,10 @@ public class SettlementBeansConfig {
 
                 // A ceiling, not a floor: fail-open is a deliberate design (ADR-0005), so the alert is not
                 // "it happened" but "it is now the norm" — at which point sends are routinely unscored and
-                // the 200ms budget needs looking at rather than tolerating.
+                // the 200ms budget needs looking at rather than tolerating. Since ADR-0018 the numerator
+                // selects SKIPPED alone, which is a narrowing that changed no PromQL: it used to be the
+                // only failure value there was, so it silently counted broken checks too and this rule
+                // answered "is fraud struggling?" with data about a fraud engine that was simply off.
                 new AlertRule.Ratio(
                         "fraud_fail_open_rate",
                         "too large a share of payments is bypassing fraud scoring — the 200ms budget is "
@@ -255,6 +258,24 @@ public class SettlementBeansConfig {
                         "sum(increase(pix_fraud_decision_total{decision=\"SKIPPED\"}[" + window + "]))",
                         "sum(increase(pix_fraud_decision_total[" + window + "]))",
                         alerts.fraudSkippedCeiling(), Comparison.ABOVE, alerts.ratioMinimumSamples()),
+
+                // The rule ADR-0018 exists for, and note the SHAPE: a Threshold at zero, not a Ratio.
+                // Every other "fraud is unhealthy" question is proportional — a fail-open is normal in
+                // small doses, a cache miss is normal in small doses — but "the fraud check is broken" is
+                // not a dose. One 401, one unreadable body, and the control is off for every payment until
+                // a human fixes it; there is no share of that which is acceptable. Expressing it as a
+                // percentage would also require a certain VOLUME before it could fire, which inverts the
+                // urgency: the quiet 3am deploy that breaks the contract is exactly when nobody is paying
+                // and the denominator is smallest.
+                new AlertRule.Threshold(
+                        "fraud_broken",
+                        "the fraud check is BROKEN, not slow — payments are going out unscored because "
+                                + "the control is disabled (auth, contract or a bug), and this will not "
+                                + "fix itself when load falls",
+                        "docs/observability.md §4 (alert rules)",
+                        "sum(increase(pix_fraud_decision_total{decision=\"FRAUD_ERROR\"}["
+                                + alerts.fraudBrokenWindow() + "]))",
+                        0, Comparison.ABOVE, "broken checks"),
 
                 new AlertRule.Ratio(
                         "balance_cache_hit_rate",

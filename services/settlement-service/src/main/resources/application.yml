@@ -147,7 +147,9 @@ pix:
       outbox-lag: ${ALERTS_OUTBOX_LAG:60s}
       # The fail-open CEILING (ADR-0005). Skipping the fraud check under timeout is a deliberate design,
       # so the alert is not "it happened" but "it is now routine": above 5% of decisions, sends are
-      # regularly unscored and the 200ms budget needs attention rather than tolerance.
+      # regularly unscored and the 200ms budget needs attention rather than tolerance. Since ADR-0018 this
+      # counts CAPACITY fail-opens only — a broken check is FRAUD_ERROR and raises fraud-broken below — so
+      # the 5% finally means what this comment has always claimed it meant.
       fraud-skipped-ceiling: ${ALERTS_FRAUD_SKIPPED_CEILING:0.05}
       # The balance cache hit-rate FLOOR (ADR-0008). The 300ms p99 budget (KR2.2) assumes most reads are
       # served from Redis; below 70% the budget is resting on the ledger, which still answers correctly
@@ -161,6 +163,12 @@ pix:
       # the rule reports SKIPPED rather than dividing by an almost-empty denominator — otherwise the
       # cache-hit floor fires every quiet night purely because nobody read a balance (see AlertRule.Ratio).
       ratio-minimum-samples: ${ALERTS_RATIO_MINIMUM_SAMPLES:20}
+      # The fraud_broken lookback (ADR-0018). Deliberately SHORTER than ratio-window, and deliberately not
+      # a ratio at all: a 401 from fraud-service, or a body this platform can no longer read, means the
+      # control is off — that is a binary fact, and waiting for it to become 5% of a 10-minute population
+      # would require a fraud outage to become the majority of traffic before anyone was paged. The window
+      # is here only so the counter's increase is readable, not to accumulate a sample.
+      fraud-broken-window: ${ALERTS_FRAUD_BROKEN_WINDOW:5m}
   # The immutable audit trail (step 43). settlement-service is the platform's audit writer: it consumes
   # the ONLY unfiltered subscription on pix-events (audit-queue, step 42) and appends every event as a
   # JSON line to S3. Audit does not act on events, it records that they happened — which is why the

@@ -363,6 +363,69 @@ class SendPixUseCaseTest {
         assertThat(ledger.postings()).hasSize(1);
     }
 
+    @Test
+    void fraudErrorProceedsAndIsStampedOnTheTransaction() {
+        // ADR-0018: the check was BROKEN (a 401, a drifted contract), not slow. The behaviour must be
+        // byte-for-byte the SKIPPED behaviour above — that is the deliberate half of the decision, because
+        // a bad fraud deploy must not become a payments outage. What must NOT be the same is the record it
+        // leaves: the verdict distinguishes "we were busy" from "the control was off".
+        fraudScorer.returning(FraudDecision.FRAUD_ERROR);
+
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        Transaction persisted = transactions.only();
+        assertThat(persisted.status()).isEqualTo(TransactionStatus.SETTLED);
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.FRAUD_ERROR);
+        // fraudSkipped means "went out unscored", which is true of both failure classes — it is what the
+        // outbox marker and the async re-score key off. The WHICH lives in fraudDecision, next to it.
+        assertThat(persisted.fraudSkipped()).isTrue();
+        assertThat(ledger.postings()).hasSize(1);
+    }
+
+    @Test
+    void aPortThatAnswersNullIsTreatedAsABrokenCheckBeforeAnyMoneyMoves() {
+        // A FraudScorer returning null breaks the port's own contract. The reason this is asserted rather
+        // than trusted: the verdict is read AFTER the ledger posting commits, so an unguarded null would
+        // strand a debit with no transaction row — money moved, nothing recorded. Normalizing it before
+        // the debit is both safe and semantically exact: a port that cannot answer IS a broken check.
+        fraudScorer.returning(null);
+
+        accept(command("bob@platinum.com", "10.00", "lunch", KEY));
+
+        Transaction persisted = transactions.only();
+        assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.FRAUD_ERROR);
+        assertThat(persisted.fraudSkipped()).isTrue();
+        // The invariant that matters: exactly one posting, and it is recorded. No stranded debit.
+        assertThat(ledger.postings()).hasSize(1);
+        assertThat(transactions.created()).hasSize(1);
+    }
+
+    @Test
+    void aBrokenFraudCheckStillAnnouncesFraudCheckSkippedForTheAsyncRescore() {
+        // The compensating control is what makes proceeding defensible, so it must not be the thing that
+        // silently drops out when the failure gets worse. Same event name on purpose: the consumer's job
+        // ("score this one after the fact") does not change with the reason it went unscored.
+        fraudScorer.returning(FraudDecision.FRAUD_ERROR);
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        accept(command("bob@otherbank.com", "200.00", "rent", KEY));
+
+        assertThat(transactions.outboxTypes()).containsExactly("PixDebited", "FraudCheckSkipped");
+    }
+
+    @Test
+    void aDenyIsStillADenyAfterTheClassification() {
+        // The regression the classification could most easily cause: a business verdict quietly reclassified
+        // as a failure would turn every fraud denial into an accepted payment. DENY blocks, as it always did.
+        fraudScorer.returning(FraudDecision.DENY);
+
+        assertThatThrownBy(() -> useCase.execute(command("bob@platinum.com", "10.00", "x", KEY)))
+                .isInstanceOf(FraudDeniedException.class);
+
+        assertThat(ledger.postings()).isEmpty();
+        assertThat(transactions.created()).isEmpty();
+    }
+
     // --- step 27: external orchestration (resolve → limit → fraud → debit to clearing → DEBITED) ----
 
     @Test

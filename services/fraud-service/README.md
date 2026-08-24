@@ -3,7 +3,8 @@
 > Synchronous fraud scoring in the send path for the PlatinumCoin Pix platform. Inserted between the
 > daily-limit check and the ledger debit under a **hard 200ms client budget** (fraud targets p99 <
 > 150ms), **fail-open** on timeout/error (ADR-0005). **Step 23 ships the skeleton only** — the
-> rule-based scoring endpoint is step 24.
+> rule-based scoring endpoint is step 24. Step 70 classifies what a *failure* of this service means to
+> the caller (ADR-0018) — see "What a failure here does to a payment" below.
 
 - **Port:** `8083`
 - **Depends on:** `common-lib` (error model, correlation-id filter, JSON logging, JWT validation) + **Redis** (velocity counters)
@@ -46,8 +47,20 @@ beyond Redis** (heavy/ML scoring runs async off the event stream and feeds block
 
 Each fired reason adds its configured weight to a 0–100 score; `score >= deny-band (70)` ⇒ DENY,
 `>= review-band (40)` ⇒ REVIEW, else APPROVE. A single huge amount (weight 70) denies on its own.
-`/internal/**` is **not** on the JWT allow-list, so the endpoint requires a Bearer token; payment-service
-forwards the caller's token with the 200ms timeout + fail-open flag in **step 25**.
+`/internal/**` is **not** on the JWT allow-list, so the endpoint requires a Bearer token — since **step 68**
+a **scoped service token** (`aud=fraud-service`, `scope=fraud:score`) that payment-service mints for
+itself, never the end user's bearer (ADR-0017). The 200ms timeout + fail-open landed in **step 25**.
+
+**What a failure here does to a payment (step 70, ADR-0018).** Nothing stops: payment-service fails open in
+every case, because a broken fraud deploy must not become a payments outage. But *how* the failure is
+reported now depends on which kind it is, and this service's behaviour decides that. Answering slowly, or
+with a `5xx`/`429`, is read as **capacity** — the caller records `SKIPPED` at `WARN` and it feeds the 5%
+`fraud_fail_open_rate` ceiling. Answering `401`/`403` (a scope this endpoint did not accept), any other
+`4xx`, or a `200` whose body the caller can no longer bind — a renamed field in `ScoreResult` is the
+realistic case — is read as **broken**: `FRAUD_ERROR` at `ERROR`, its own metric series, and the
+`fraud_broken` alert fires on the *first* occurrence. Practical consequence for anyone changing this
+service: **a breaking change to the `ScoreResult` wire shape is an incident, not a refactor** — it disables
+fraud screening platform-wide while every dashboard stays green except that one alert.
 
 ## Configuration
 

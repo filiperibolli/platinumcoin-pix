@@ -594,16 +594,36 @@ public class SendPixUseCase {
      *   <li>{@code DENY} ⇒ <b>release the reservation</b> taken by {@link #reserveDailyLimit} and refuse
      *       with {@link FraudDeniedException} ({@code 422}) — a denied send must leave the day's counter
      *       exactly as it found it, mirroring the insufficient-funds release.</li>
-     *   <li>{@code SKIPPED} ⇒ the check timed out or errored and the adapter <b>failed open</b>; the send
-     *       proceeds unscored and flagged, and the skip is queued for async re-scoring (outbox seam).</li>
+     *   <li>{@code SKIPPED} ⇒ the check could not finish inside the 200ms budget and the adapter
+     *       <b>failed open</b>; the send proceeds unscored and flagged, and the skip is queued for async
+     *       re-scoring (outbox seam).</li>
+     *   <li>{@code FRAUD_ERROR} ⇒ the check is <b>broken</b>, not slow (ADR-0018). Behaviourally
+     *       identical to {@code SKIPPED} — deliberately, because a bad fraud deploy must not become a
+     *       payments outage — but reported at {@code ERROR} and stamped with its own verdict, so the
+     *       payments that went out unscored <i>because the control was disabled</i> are a query rather
+     *       than a log search.</li>
      *   <li>{@code APPROVE}/{@code REVIEW} ⇒ proceed (a {@code REVIEW} is flagged, not blocked).</li>
      * </ul>
-     * The port never throws for a slow/broken fraud-service — the fail-<i>open</i> lives in the adapter
-     * (it alone observes the timeout), so this method applies a single business rule to a four-valued
-     * result and advances the transaction to the {@code FRAUD_CHECKED} stage.
+     * The port never throws for a slow/broken fraud-service — the fail-<i>open</i> and its classification
+     * live in the adapter (it alone observes the transport fact), so this method applies a single business
+     * rule to a five-valued result and advances the transaction to the {@code FRAUD_CHECKED} stage. Note
+     * what the use case does <b>not</b> learn from the split: the rule is still "{@code DENY} blocks,
+     * everything else proceeds". The classification is a statement to operators, not a change of policy —
+     * which is why it cost this method one branch and no new decision.
      */
     private FraudDecision screenForFraud(String accountId, String pixKey, long amountCents, Instant now) {
-        FraudDecision decision = fraudScorer.score(accountId, pixKey, amountCents, now);
+        FraudDecision scored = fraudScorer.score(accountId, pixKey, amountCents, now);
+        // A port that answers null has broken its own contract, which is precisely what FRAUD_ERROR means
+        // — so normalize here rather than trusting the contract downstream. The placement is the point:
+        // this is BEFORE the debit, so a misbehaving adapter refuses the score loudly instead of throwing
+        // an NPE after the money has already moved and stranding a debit with no transaction row.
+        FraudDecision decision = scored != null ? scored : FraudDecision.FRAUD_ERROR;
+        if (scored == null) {
+            log.error("The fraud port returned no decision at all, which breaks its own contract; "
+                            + "treating it as a broken check and proceeding fail-open | "
+                            + "debtorAccountId={} pixKey={} amountCents={}",
+                    accountId, pixKey, amountCents);
+        }
 
         // The verdict mix, recorded for every outcome including SKIPPED — the fail-open share of this
         // counter is the only place the platform reports how often the 200ms budget was blown (ADR-0005).
@@ -619,16 +639,26 @@ public class SendPixUseCase {
             throw new FraudDeniedException();
         }
 
-        if (decision == FraudDecision.SKIPPED) {
+        if (decision == FraudDecision.FRAUD_ERROR) {
+            // ADR-0018: the send proceeds EXACTLY as for a SKIPPED — same branch, same outbox marker,
+            // same 202. What differs is that this one is actionable: the fraud control is disabled until
+            // somebody fixes a credential or a contract, so it is stated at ERROR rather than filed under
+            // "the afternoon was busy". Both classes go out unscored; only one of them will fix itself.
+            log.error("Fraud check was BROKEN rather than slow, proceeding fail-open anyway (ADR-0018 "
+                            + "keeps ADR-0005's availability choice), the send is unscored and flagged "
+                            + "for async re-scoring | debtorAccountId={} pixKey={} amountCents={} "
+                            + "fraudSkipped=true decision={}",
+                    accountId, pixKey, amountCents, decision);
+        } else if (decision == FraudDecision.SKIPPED) {
             // The core ADR-0005 behaviour: availability of payments chosen at this layer. The send is
             // unscored — bounded by daily limits + async re-scoring, which the skip marker below triggers.
-            log.warn("Fraud check skipped (timed out or errored past the 200ms budget), proceeding "
-                            + "fail-open, the send is unscored and flagged | debtorAccountId={} pixKey={} "
-                            + "amountCents={} fraudSkipped=true decision={}",
+            log.warn("Fraud check skipped (the 200ms budget expired or fraud-service was unreachable), "
+                            + "proceeding fail-open, the send is unscored and flagged | "
+                            + "debtorAccountId={} pixKey={} amountCents={} fraudSkipped=true decision={}",
                     accountId, pixKey, amountCents, decision);
             // The skip is not forgotten: it becomes a FraudCheckSkipped outbox event written in the
             // same atomic transaction as the payment (step 28), so async re-scoring cannot miss it
-            // even if this process dies right after the debit.
+            // even if this process dies right after the debit. A FRAUD_ERROR takes the same seam.
         } else {
             log.info("Fraud check scored the payment and cleared it to proceed | debtorAccountId={} "
                             + "pixKey={} amountCents={} decision={}",
@@ -637,9 +667,11 @@ public class SendPixUseCase {
 
         log.info("Fraud stage advanced the transaction RECEIVED->FRAUD_CHECKED | debtorAccountId={} "
                         + "pixKey={} decision={} fraudSkipped={}",
-                accountId, pixKey, decision, decision == FraudDecision.SKIPPED);
-        // A skip ADVANCES the funnel: fail-open means the payment proceeds. It is visible as risk in the
-        // decision mix above, never as a drop-off here — the two are different questions.
+                accountId, pixKey, decision, decision.wentUnscored());
+        // A skip ADVANCES the funnel, and so does a FRAUD_ERROR: fail-open means the payment proceeds.
+        // Both are visible as risk in the decision mix above, never as a drop-off here — "how many
+        // payments died?" and "how many went out unscored?" are different questions, and answering the
+        // second in the first one's counter would report a working platform as a broken one.
         funnel.stageReached(Stage.FRAUD_CHECKED, Outcome.OK);
         return decision;
     }
@@ -688,7 +720,8 @@ public class SendPixUseCase {
         advancePhase(operation, IdempotencyStatus.POSTED, now);
 
         // Internal transfer: the posting committed, so it is settled now. The fraud verdict rides along
-        // (fraudSkipped is its boolean shorthand) so the FRAUD_CHECKED stage is durable on the item.
+        // (fraudSkipped is its boolean shorthand — TRUE for both unscored classes, ADR-0018) so the
+        // FRAUD_CHECKED stage is durable on the item.
         Transaction transaction = new Transaction(
                 txId,
                 endToEndId,
@@ -701,7 +734,7 @@ public class SendPixUseCase {
                 TransactionStatus.SETTLED,
                 description,
                 fraudDecision,
-                fraudDecision == FraudDecision.SKIPPED,
+                fraudDecision.wentUnscored(),
                 now,
                 now,
                 null);   // a send this service accepts has not failed; only a reversal carries a reason
@@ -782,7 +815,7 @@ public class SendPixUseCase {
                 TransactionStatus.DEBITED,
                 description,
                 fraudDecision,
-                fraudDecision == FraudDecision.SKIPPED,
+                fraudDecision.wentUnscored(),
                 now,
                 null,
                 null);   // idem: settlement-service stamps the reason if BACEN ever refuses
