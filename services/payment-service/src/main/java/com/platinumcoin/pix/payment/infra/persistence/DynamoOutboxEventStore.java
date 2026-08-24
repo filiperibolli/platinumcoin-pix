@@ -137,6 +137,10 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
                 // reading it back needs no special parser, it is a valid ISO-8601 instant.
                 Instant.parse(item.get("occurredAt").s()),
                 item.containsKey("correlationId") ? item.get("correlationId").s() : null,
+                // Absent on any item written before step 72, and on any request whose trace was not
+                // sampled. Read as null, carried as null, and the consumer starts a fresh trace — the
+                // outbox has never needed tracing to work and still does not.
+                item.containsKey("traceparent") ? item.get("traceparent").s() : null,
                 // Read from the item, never re-derived from the eventType: the writer already decided,
                 // and a reader that decided again could disagree with it across a deploy — stranding
                 // events on a partition no publisher polls.

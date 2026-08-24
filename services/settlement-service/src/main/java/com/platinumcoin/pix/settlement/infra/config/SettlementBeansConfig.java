@@ -47,6 +47,25 @@ import org.springframework.context.annotation.Configuration;
 public class SettlementBeansConfig {
 
     /**
+     * The two endpoints the platform states a latency SLO for, as Spring MVC reports them in the
+     * {@code uri} tag — the templated path, never a concrete id, or the series would explode by
+     * cardinality and a budget would end up computed from one payment (step 72, ADR-0021).
+     */
+    private static final String SEND_URI = "/v1/payments/pix";
+
+    private static final String BALANCE_URI = "/v1/accounts/me/balance";
+
+    /**
+     * The histogram boundaries {@code CommonMetricsAutoConfiguration} registers explicitly (step 44), in
+     * the exact textual form the Prometheus registry renders them. These strings couple the alert rules to
+     * that filter and are meant to: if an SLO boundary ever moves, both places must move together, and
+     * {@code ErrorBudgetRuleTest} fails until they do.
+     */
+    private static final String SEND_SLO_BUCKET = "2.0";
+
+    private static final String BALANCE_SLO_BUCKET = "0.3";
+
+    /**
      * The service's notion of "now", injected rather than read from {@code Instant.now()} so the instant
      * a transition is stamped with is a value a test can pin. UTC, like every other service.
      */
@@ -312,7 +331,81 @@ public class SettlementBeansConfig {
                         "sum(increase(pix_cache_hit_total[" + window + "]))",
                         "sum(increase(pix_cache_hit_total[" + window + "])) + "
                                 + "sum(increase(pix_cache_miss_total[" + window + "]))",
-                        alerts.cacheHitFloor(), Comparison.BELOW, alerts.ratioMinimumSamples()));
+                        alerts.cacheHitFloor(), Comparison.BELOW, alerts.ratioMinimumSamples()),
+
+                // ── Error budgets (step 72, ADR-0021 decision 6) ────────────────────────────────────
+                // Everything above is an absolute threshold and every one of them stays: "the DLQ has a
+                // message in it" is a fact worth saying whatever the budget looks like. What none of them
+                // can say is how much of the quarter's tolerance a breach has already cost, which is the
+                // only input to the decision an operator actually makes at 3am — wake someone, or open a
+                // ticket. These four rules are that input, and they are built from the SLO buckets step 44
+                // registered on purpose so the arithmetic is a division of counters, not an estimate.
+                //
+                // The pair per SLO is the SRE-workbook multi-window one. 14.4x over 1h (confirmed by 5m)
+                // spends 2% of a 30-day budget in an hour — a page. 6x over 6h (confirmed by 30m) spends
+                // 5% in six hours — a ticket. The short window is a veto, not a second opinion: it is what
+                // stops the alert from ringing at an incident that ended twenty minutes ago and only lives
+                // on in the hourly average.
+                sendBudget(alerts, "fast", alerts.fastBurnFactor(),
+                        alerts.fastBurnLongWindow(), alerts.fastBurnShortWindow()),
+                sendBudget(alerts, "slow", alerts.slowBurnFactor(),
+                        alerts.slowBurnLongWindow(), alerts.slowBurnShortWindow()),
+                balanceBudget(alerts, "fast", alerts.fastBurnFactor(),
+                        alerts.fastBurnLongWindow(), alerts.fastBurnShortWindow()),
+                balanceBudget(alerts, "slow", alerts.slowBurnFactor(),
+                        alerts.slowBurnLongWindow(), alerts.slowBurnShortWindow()));
+    }
+
+    /** KR2.1 — a send acknowledgement inside 2s. The `le="2.0"` bucket is the "good" counter. */
+    private static AlertRule.BurnRate sendBudget(
+            AlertProperties alerts, String speed, double factor, String longWindow, String shortWindow) {
+        return new AlertRule.BurnRate(
+                "send_error_budget_" + speed + "_burn",
+                speed.equals("fast")
+                        ? "the send-Pix latency budget (KR2.1, p99 < 2s) is burning fast enough to exhaust "
+                                + "the period's allowance in days — this is a page, not a ticket"
+                        : "the send-Pix latency budget (KR2.1, p99 < 2s) has been draining steadily — "
+                                + "nothing is on fire, and the period's allowance will not survive it",
+                "docs/observability.md §4.1 (error budgets)",
+                sloBucket(SEND_URI, SEND_SLO_BUCKET, longWindow),
+                sloTotal(SEND_URI, longWindow),
+                sloBucket(SEND_URI, SEND_SLO_BUCKET, shortWindow),
+                sloTotal(SEND_URI, shortWindow),
+                alerts.latencyObjective(), factor, alerts.burnMinimumRequests());
+    }
+
+    /** KR2.2 — a balance read inside 300ms. Same shape, the other bucket. */
+    private static AlertRule.BurnRate balanceBudget(
+            AlertProperties alerts, String speed, double factor, String longWindow, String shortWindow) {
+        return new AlertRule.BurnRate(
+                "balance_error_budget_" + speed + "_burn",
+                speed.equals("fast")
+                        ? "the balance-read latency budget (KR2.2, p99 < 300ms) is burning fast enough to "
+                                + "exhaust the period's allowance in days — this is a page, not a ticket"
+                        : "the balance-read latency budget (KR2.2, p99 < 300ms) has been draining "
+                                + "steadily — nothing is on fire, and the period's allowance will not "
+                                + "survive it",
+                "docs/observability.md §4.1 (error budgets)",
+                sloBucket(BALANCE_URI, BALANCE_SLO_BUCKET, longWindow),
+                sloTotal(BALANCE_URI, longWindow),
+                sloBucket(BALANCE_URI, BALANCE_SLO_BUCKET, shortWindow),
+                sloTotal(BALANCE_URI, shortWindow),
+                alerts.latencyObjective(), factor, alerts.burnMinimumRequests());
+    }
+
+    /**
+     * Requests that met the SLO: the cumulative histogram bucket at exactly the SLO boundary. `increase`
+     * rather than `rate` so the number is a request COUNT — which is what makes `burn-minimum-requests`
+     * a population and not a per-second rate nobody can reason about.
+     */
+    private static String sloBucket(String uri, String bucket, String window) {
+        return "sum(increase(http_server_requests_seconds_bucket{uri=\"%s\",le=\"%s\"}[%s]))"
+                .formatted(uri, bucket, window);
+    }
+
+    /** All requests to the same endpoint over the same window — the denominator of the same fraction. */
+    private static String sloTotal(String uri, String window) {
+        return "sum(increase(http_server_requests_seconds_count{uri=\"%s\"}[%s]))".formatted(uri, window);
     }
 
     /**

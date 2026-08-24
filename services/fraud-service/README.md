@@ -130,3 +130,8 @@ curl -s -X POST localhost:8083/internal/fraud/score \
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited
   from `common-lib`: `[cid=… tx=…]` on every record, English sentences plus `key=value`,
   `com.platinumcoin.pix` at DEBUG.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited whole from `common-lib`. The 200ms budget is named as a span by the *caller*
+  (`pix.fraud.budget` in payment-service), because the budget is connect + read + classify + decide, which
+  is a larger interval than anything this service can see from the inside.

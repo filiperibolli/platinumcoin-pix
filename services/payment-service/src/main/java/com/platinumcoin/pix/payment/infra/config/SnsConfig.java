@@ -1,7 +1,11 @@
 package com.platinumcoin.pix.payment.infra.config;
 
 import com.platinumcoin.pix.payment.domain.port.EventPublisher;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
 import com.platinumcoin.pix.payment.infra.client.SnsEventPublisher;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
+import com.platinumcoin.pix.common.metrics.AwsSdkDependencyMetrics;
 import java.net.URI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +40,7 @@ public class SnsConfig {
     private static final Logger log = LoggerFactory.getLogger(SnsConfig.class);
 
     @Bean
-    SnsClient snsClient(AwsProperties aws) {
+    SnsClient snsClient(AwsProperties aws, AwsSdkDependencyMetrics dependencyMetrics) {
         log.info("Built the SNS client, credentials are never logged | endpoint={} region={}",
                 aws.endpointUrl(), aws.region());
         return SnsClient.builder()
@@ -44,12 +48,28 @@ public class SnsConfig {
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                // Every call this client makes is timed into pix.dependency.seconds (step 72). Attached
+                // per client because the SDK offers no global hook — an explicit line beats a publisher
+                // that silently measures nothing.
+                .overrideConfiguration(override -> override.addMetricPublisher(dependencyMetrics))
                 .build();
     }
 
+    /**
+     * {@code ObjectProvider} for the tracing collaborators, not a plain parameter: they exist only when
+     * Boot's tracing auto-configuration is active, and the publisher must remain constructible without
+     * them. Publishing an event is on the money path; observability never gets to be a startup dependency
+     * of it (ADR-0021).
+     */
     @Bean
-    EventPublisher eventPublisher(SnsClient sns, @Value("${pix.events.topic-arn}") String topicArn) {
-        log.info("Wired the outbox publisher to its SNS topic | topicArn={}", topicArn);
-        return new SnsEventPublisher(sns, topicArn);
+    EventPublisher eventPublisher(
+            SnsClient sns,
+            @Value("${pix.events.topic-arn}") String topicArn,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        TracePropagation propagation = tracing.getIfAvailable();
+        log.info("Wired the outbox publisher to its SNS topic | topicArn={} tracingEnabled={}",
+                topicArn, propagation != null);
+        return new SnsEventPublisher(sns, topicArn, tracer.getIfAvailable(), propagation);
     }
 }

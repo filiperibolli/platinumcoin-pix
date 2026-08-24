@@ -25,6 +25,13 @@ import java.util.Objects;
  * @param correlationId the request that caused the event, carried across the asynchronous boundary so
  *                      one {@code grep} still reconstructs the path (ADR-0012); {@code null} when the
  *                      event was minted outside a request thread
+ * @param traceparent   the W3C trace context of the request that produced the event (step 72,
+ *                      ADR-0021), stored on the item at write time so the publisher — which runs seconds
+ *                      later on a scheduler thread with no trace of its own — can resume that trace
+ *                      instead of starting a disconnected one. {@code null} when tracing is off, when the
+ *                      trace was not sampled, or on an item written before this step. Nothing branches
+ *                      on it: it is carried, and a missing value simply means the message begins a new
+ *                      trace on the consumer side.
  * @param lane          which drain this event goes out on (step 71, ADR-0019). Derived from
  *                      {@code eventType} by the writer and stored on the item, so the publisher never
  *                      re-derives it — a lane the writer chose and a lane the reader guessed could
@@ -38,6 +45,7 @@ public record PendingOutboxEvent(
         String payloadJson,
         Instant occurredAt,
         String correlationId,
+        String traceparent,
         OutboxLane lane) {
 
     public PendingOutboxEvent {

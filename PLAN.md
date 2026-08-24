@@ -147,7 +147,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 
 - [x] [Step 70](docs/steps/step-70.md) — fraud failure classification: fail-open only for transient failures; auth/contract/bug failures become a visible `FRAUD_ERROR` ([ADR-0018](docs/adr/0018-fraud-failure-classification.md), amends ADR-0005) · *drilled by step 64*
 - [x] [Step 71](docs/steps/step-71.md) — outbox lanes (settlement · notification · audit), parallel publishers, backpressure, per-lane queue-age SLO + parallel settlement consumer ([ADR-0019](docs/adr/0019-outbox-lanes-and-priority.md), amends ADR-0004) · *closes the reversal incident in `docs/load/RESULTS.md` Context 2*
-- [ ] [Step 72](docs/steps/step-72.md) — distributed tracing (OTel, across HTTP **and** the queues) + error-budget burn alerts — the **delta** over step 44, which keeps everything it delivered ([ADR-0021](docs/adr/0021-distributed-tracing-and-error-budget-alerts.md))
+- [x] [Step 72](docs/steps/step-72.md) — distributed tracing (OTel, across HTTP **and** the queues) + error-budget burn alerts — the **delta** over step 44, which keeps everything it delivered ([ADR-0021](docs/adr/0021-distributed-tracing-and-error-budget-alerts.md))
 
 > **The fourth P1 — "comprovar 500+ TPS" — is discharged by [step 47](docs/steps/step-47.md), whose scope was
 > widened rather than duplicated** (representative infrastructure, WCU/RCU + cost budget, p99 per dependency,

@@ -192,6 +192,30 @@ pix:
       # would require a fraud outage to become the majority of traffic before anyone was paged. The window
       # is here only so the counter's increase is readable, not to accumulate a sample.
       fraud-broken-window: ${ALERTS_FRAUD_BROKEN_WINDOW:5m}
+      # ── Error budgets (step 72, ADR-0021) ────────────────────────────────────────────────────────
+      # Everything above answers "is something wrong?". These answer "how much of the period's tolerance
+      # has it already cost?" — the question that decides whether a human is woken up.
+      #
+      # The objective is 0.99 for BOTH SLOs because both are stated as p99s, and a p99 target IS the
+      # sentence "99% of requests land inside the boundary". The error budget is therefore 1% of requests,
+      # and a burn rate of 1.0 means we are spending it at exactly the rate the period affords.
+      latency-objective: ${ALERTS_LATENCY_OBJECTIVE:0.99}
+      # 14.4x over 1h: 2% of a 30-day budget in a single hour. At that pace the whole month's allowance is
+      # gone in about two days, which is the definition of "page someone now". The 5m window is the veto —
+      # it is what makes the alert stop within minutes of the incident stopping, instead of ringing at a
+      # healthy system until the hourly average forgets.
+      fast-burn-factor: ${ALERTS_FAST_BURN_FACTOR:14.4}
+      fast-burn-long-window: ${ALERTS_FAST_BURN_LONG_WINDOW:1h}
+      fast-burn-short-window: ${ALERTS_FAST_BURN_SHORT_WINDOW:5m}
+      # 6x over 6h: 5% of the budget in six hours. Nothing is on fire and the month will not survive it —
+      # a ticket, not a phone call. Both pairs exist because a single one cannot be both fast enough to
+      # catch an outage and patient enough to ignore a hiccup.
+      slow-burn-factor: ${ALERTS_SLOW_BURN_FACTOR:6}
+      slow-burn-long-window: ${ALERTS_SLOW_BURN_LONG_WINDOW:6h}
+      slow-burn-short-window: ${ALERTS_SLOW_BURN_SHORT_WINDOW:30m}
+      # The population a burn rate needs before it is information. Two slow requests out of three is a
+      # burn rate of 66 and is not news; on a sandbox this is what keeps every idle morning quiet.
+      burn-minimum-requests: ${ALERTS_BURN_MINIMUM_REQUESTS:20}
   # The immutable audit trail (step 43). settlement-service is the platform's audit writer: it consumes
   # the ONLY unfiltered subscription on pix-events (audit-queue, step 42) and appends every event as a
   # JSON line to S3. Audit does not act on events, it records that they happened — which is why the

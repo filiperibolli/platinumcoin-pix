@@ -22,6 +22,18 @@ services:
     ports:
       - "8081:8081"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # HS256 shared secret (>= 32 bytes). Dev-only value; a real deployment injects a managed
       # secret. Every service that later VALIDATES tokens must share this exact value.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -49,6 +61,18 @@ services:
     ports:
       - "8082:8082"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET — account-service only validates tokens.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
       # Reach LocalStack (SNS/SQS — account-service uses neither today, kept for parity with the other
@@ -98,6 +122,18 @@ services:
     ports:
       - "8085:8085"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET — ledger-service only validates tokens. Every one of
       # its endpoints is authenticated (/internal/** is not on jwt.public-paths).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -162,6 +198,18 @@ services:
     ports:
       - "8084:8084"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET — payment-service only validates tokens. The debtor
       # account is read from the token's accountId claim (Domain Safety Rule #1), never the body.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -240,6 +288,18 @@ services:
     ports:
       - "8083:8083"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET — fraud-service only validates tokens (step 25 forwards the
       # caller's bearer token to it).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -283,6 +343,18 @@ services:
     ports:
       - "9090:9090"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # The boot values of the dial; POST /admin/config moves them while the stack runs, which is the only
       # way to express a drill like "fail the next five attempts" (docs/local-dev.md §5.5).
       BACEN_LATENCY_MS: "2000"          # the real SPI settles within 10s; 2s keeps a demo honest but brisk
@@ -322,6 +394,28 @@ services:
     ports:
       - "8086:8086"
     environment:
+      # ── Error-budget tunables (step 72, ADR-0021) ────────────────────────────────────────────
+      # Surfaced here — with the application.yml defaults as the fallback — so a DRILL can tighten the
+      # objective from the shell and watch a burn-rate rule fire and resolve, without a rebuild and
+      # without editing a number in Java. That is the whole reason AlertProperties exists (step 44); a
+      # knob that only lives in application.yml is a knob no operator can reach in a container.
+      # See docs/local-dev.md §5.9.1 for the drill these four make possible.
+      ALERTS_LATENCY_OBJECTIVE: "${ALERTS_LATENCY_OBJECTIVE:-0.99}"
+      ALERTS_FAST_BURN_FACTOR: "${ALERTS_FAST_BURN_FACTOR:-14.4}"
+      ALERTS_SLOW_BURN_FACTOR: "${ALERTS_SLOW_BURN_FACTOR:-6}"
+      ALERTS_BURN_MINIMUM_REQUESTS: "${ALERTS_BURN_MINIMUM_REQUESTS:-20}"
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET. No token authenticates anything here — the inbound webhook
       # of step 37 is JWT-exempt (BACEN holds no PlatinumCoin token) and guarded by SPI_WEBHOOK_TOKEN
       # instead — but the platform keeps ONE authentication posture rather than a per-service opt-out,
@@ -408,6 +502,18 @@ services:
     ports:
       - "8087:8087"
     environment:
+      # ── Tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────────
+      # The only two things a DEPLOYMENT gets to decide about tracing; every policy — the sampler, the
+      # span-to-log join, the queue propagation — is inherited from common-lib and configured nowhere
+      # else (ADR-0021: no service wires tracing itself).
+      # The application speaks OTLP and nothing else; where the spans are stored is the collector's
+      # business, which is what makes the backend swappable without touching a service.
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
+      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
+      # a load test run with tracing off would measure a system nobody operates. Failures are kept
+      # whatever this says (AsymmetricSampler).
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       # Must match auth-service's JWT_SECRET. This service only VALIDATES tokens — the SSE route is
       # fully protected, and the ?access_token= handshake a browser's EventSource needs is resolved by
       # rewriting the parameter into an Authorization header before the shared filter runs, never by
@@ -631,6 +737,42 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # ── Distributed tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────
+  # Two containers, always on, exactly like Prometheus and Grafana in step 44 — an observability stack a
+  # reader has to opt into is an observability stack nobody sees. Neither is on any service's
+  # `depends_on`: a payment must never wait for the trace pipeline to be healthy, which is the same
+  # priority ADR-0021 states and the same one that keeps settlement-service off `depends_on: prometheus`.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      # Published so a service run outside compose (`mvn spring-boot:run`, docs/local-dev.md §4) can
+      # still export. Inside pix-net the services reach it by name.
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - pix-net
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    environment:
+      # Accept OTLP directly, so the collector needs no jaeger-specific exporter — one protocol from the
+      # JVM all the way to storage.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # The UI. Storage is in-memory and deliberately so: like Prometheus' 24h retention, these traces
+      # answer "what just happened during the drill I ran", never "what did last quarter look like", and
+      # keeping it volume-less means `down -v` really does reset everything.
+      - "16686:16686"
+    networks:
+      - pix-net
 
 networks:
   pix-net:

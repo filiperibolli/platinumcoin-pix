@@ -1,6 +1,11 @@
 package com.platinumcoin.pix.payment.infra.client;
 
 import com.platinumcoin.pix.common.security.InternalApi;
+import com.platinumcoin.pix.common.tracing.ForceSample;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
 import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
@@ -105,6 +110,12 @@ public class HttpLedgerClient implements LedgerClient {
     private final RestClient restClient;
     private final ServiceTokenIssuer serviceTokens;
 
+    /** For the one manual span this adapter draws (step 72). Nullable — money never waits on tracing. */
+    private final Tracer tracer;
+
+    /** The total span factory — never throws, may return {@code null} (ADR-0021). */
+    private final TracePropagation tracing;
+
     /** Wire shape of a ledger posting request — mirrors ledger-service's {@code PostingRequest}. */
     record PostingRequest(
             String txId,
@@ -158,12 +169,32 @@ public class HttpLedgerClient implements LedgerClient {
         }
     }
 
+    /**
+     * Direct construction without tracing, for unit tests and for any caller that already decided this
+     * adapter runs untraced. Kept as a separate constructor rather than a nullable parameter so the
+     * Spring path stays the one annotated {@code @Autowired} and nothing has to guess.
+     */
+    public HttpLedgerClient(
+            RestClient.Builder builder,
+            String baseUrl,
+            long connectTimeoutMs,
+            long readTimeoutMs,
+            ServiceTokenIssuer serviceTokens) {
+        this(builder, baseUrl, connectTimeoutMs, readTimeoutMs, serviceTokens,
+                (ObjectProvider<Tracer>) null, (ObjectProvider<TracePropagation>) null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
     public HttpLedgerClient(
             RestClient.Builder builder,
             @Value("${services.ledger-service.base-url}") String baseUrl,
             @Value("${services.ledger-service.connect-timeout-ms:2000}") long connectTimeoutMs,
             @Value("${services.ledger-service.read-timeout-ms:3000}") long readTimeoutMs,
-            ServiceTokenIssuer serviceTokens) {
+            ServiceTokenIssuer serviceTokens,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        this.tracer = tracer == null ? null : tracer.getIfAvailable();
+        this.tracing = tracing == null ? null : tracing.getIfAvailable();
         this.serviceTokens = serviceTokens;
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofMillis(connectTimeoutMs));
@@ -312,6 +343,42 @@ public class HttpLedgerClient implements LedgerClient {
      * answer this method is forbidden to invent is a confident one it does not have.
      */
     private LedgerOutcome post(
+            String txId,
+            String debitAccount,
+            String creditAccount,
+            long amountCents,
+            String entryType,
+            String description) {
+        // null covers tracing off, no propagation bean, and a failed span creation with one branch —
+        // and all three mean "post the money untraced", never "do not post it" (ADR-0021).
+        Span posting = tracing == null ? null : tracing.newSpan("pix.ledger.post");
+        if (posting == null || tracer == null) {
+            return doPost(txId, debitAccount, creditAccount, amountCents, entryType, description);
+        }
+        // THE interval of a send: the atomic double-entry posting. The HTTP client span underneath
+        // measures one call; this one is named for what the call MEANS, so a p99 breach can be attributed
+        // to "the money moved slowly" rather than to "a socket was slow" (ADR-0021 decision 3).
+        posting.tag("pix.entry_type", entryType);
+        posting.tag("pix.tx_id", txId);
+        try (Tracer.SpanInScope scope = tracer.withSpan(posting)) {
+            LedgerOutcome outcome =
+                    doPost(txId, debitAccount, creditAccount, amountCents, entryType, description);
+            // POSTED vs REPLAYED vs a refusal — the enum IS the answer, and it is what an engineer
+            // opening this span wants to see first (ADR-0015: a replay means the money moved earlier).
+            posting.tag("pix.ledger.outcome", outcome.name());
+            return outcome;
+        } catch (RuntimeException e) {
+            posting.error(e);
+            // A posting that did not clearly succeed is one of the traces ADR-0021 always keeps: it is
+            // either a refusal the payer will see or the ambiguous outcome ADR-0015 exists to resolve.
+            ForceSample.mark("the ledger posting failed or its result was unknown");
+            throw e;
+        } finally {
+            posting.end();
+        }
+    }
+
+    private LedgerOutcome doPost(
             String txId,
             String debitAccount,
             String creditAccount,

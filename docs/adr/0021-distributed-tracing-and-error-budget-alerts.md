@@ -87,6 +87,50 @@ it a blip?* — has no source.
   does not survive contact with 5M transactions a day. The asymmetric policy is the lesson worth
   keeping.
 
+## Implementation note (added when step 72 was built, 2026-08-24)
+
+**Decision 5 says "always sample a trace that reaches an error". What shipped is head sampling plus an
+explicit mark, and the difference is worth stating rather than glossing.**
+
+A head sampler decides at span creation. At that instant there is no error yet, so the only way to *always*
+keep an errored trace **including its root** is to decide at the end — tail sampling, in the collector,
+after the whole trace has arrived. What `AsymmetricSampler` + `ForceSample` deliver instead is: the moment
+the platform learns something notable happened (a fail-open, a `FRAUD_ERROR`, a ledger result that is
+unknown, a rail refusal, a reconciliation that found work), **every span created from that point on — on
+this thread and on every downstream hop — is kept**, whatever the ratio says.
+
+The practical consequence: a failure discovered at a later hop yields a **complete failure subtree with a
+possibly missing ancestor**, not a complete trace. At the sandbox's ratio of 1.0 there is no difference at
+all; at a production ratio there is.
+
+This was chosen over 100%-in-the-app-plus-`tail_sampling`-in-the-collector for two reasons. First, decision
+5's own rejection of always-on sampling stands: creating and exporting every span for every request is the
+option that distorts the step-47 measurements. Second, a policy expressed in Java is a policy with a unit
+test (`SamplingPolicyTest` pins it at ratio 0.0, where a passing assertion cannot be luck), while the same
+policy in collector YAML is a configuration nobody can prove fires.
+
+**Decision 3 says auto-instrumentation "covers HTTP server/client and the AWS SDK". Only the HTTP half is
+true.** The Micrometer Tracing bridge instruments Spring's server and client sides; it does not touch the
+AWS SDK, which would need the separate `opentelemetry-aws-sdk-2.2` instrumentation library and an
+`ExecutionInterceptor` on every client builder. What shipped instead measures the AWS calls as a
+**metric** — `pix.dependency.seconds`, via an SDK `MetricPublisher` — which is the better instrument for
+the question decision 3 was serving (*p99 per dependency*) for the reason recorded in
+`docs/observability.md` §2.2: a p99 derived from deliberately failure-biased samples is skewed by
+construction, while a meter sees every call. DynamoDB and Redis therefore appear on the **dashboard**, not
+in the trace. Adding the AWS instrumentation library later would enrich the trace without changing the
+panel.
+
+**Decision 3 also names "the settlement finalization" as a manual span; it is the consumer span
+(`pix.settlement.consume`) that covers it.** Finalization is a use case in `domain/`, and `domain/` may not
+import a tracer (ADR-0010). The interval is the same one — the span opens on receive and closes on ack,
+with the fence, the postings and the guarded transition inside it — and it is drawn in the `api/` adapter
+where the message enters, which is where ADR-0010 says a boundary belongs.
+
+**The production evolution is the collector's `tail_sampling` processor**, and
+`infra/observability/otel-collector.yaml` documents where it goes. Adding it does not replace the app-side
+policy — the two compose: the mark keeps the failure hop even if the collector is unreachable, and tail
+sampling recovers the ancestor.
+
 ## Consequences
 
 - `docker-compose.yml` gains a collector and a Jaeger UI; `docs/local-dev.md` §2 gains their ports.

@@ -69,6 +69,45 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- Distributed tracing (step 72, ADR-0021), NOT optional — unlike the web types and Micrometer
+             core, a service that skips tracing is a hole in the trace, not a valid configuration. Same
+             posture as the shared logback config: you depend on common-lib, you are instrumented. Two
+             artifacts, one job each: the bridge implements Micrometer's Tracer/Propagator API on top of
+             the OpenTelemetry SDK, and the OTLP exporter is the only wire format the application speaks
+             (where the spans are stored is a compose concern — ADR-0021 decision 7). Versions come from
+             micrometer-tracing-bom / opentelemetry-bom, both already imported by spring-boot-dependencies
+             in the parent, so no version is declared by hand here either. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- Boot's actuator auto-configuration, OPTIONAL (step 72): CommonTracingAutoConfiguration is
+             ordered `before` Boot's OpenTelemetryAutoConfiguration and reads its TracingProperties, so it
+             must compile against both. `optional` keeps it off the transitive classpath exactly like
+             micrometer-core below — every service already brings it via spring-boot-starter-actuator, and
+             the auto-configuration is @ConditionalOnClass, so a consumer without actuator simply gets no
+             tracing beans instead of a startup failure. common-lib stays THIN. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-actuator-autoconfigure</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Lettuce, OPTIONAL (step 72): CommonRedisMetricsAutoConfiguration turns on Lettuce's command
+             latency recorder and renames its meter into the platform's pix.dependency.seconds vocabulary,
+             so the per-dependency panel is one query rather than three. Only payment-service and
+             ledger-service touch Redis; `optional` + @ConditionalOnClass keeps everyone else clean. -->
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Micrometer core, OPTIONAL (step 44): common-lib compiles the shared MeterFilter that gives
              every service the same latency-histogram posture (CommonMetricsAutoConfiguration), the
              metrics counterpart of the shared logback config. `optional` keeps it off the transitive
@@ -99,6 +138,15 @@
             <groupId>jakarta.servlet</groupId>
             <artifactId>jakarta.servlet-api</artifactId>
             <scope>provided</scope>
+        </dependency>
+
+        <!-- OTel SDK test harness (step 72): TracePropagationTest exercises the queue-crossing helper
+             against a real SDK with an in-memory exporter, so a propagation bug is found in milliseconds
+             instead of inside a Testcontainers IT. TEST scope. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <!-- JUnit 5 (managed by the Spring Boot BOM) -->

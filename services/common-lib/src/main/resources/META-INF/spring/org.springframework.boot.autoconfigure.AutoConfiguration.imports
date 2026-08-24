@@ -1,2 +1,6 @@
 com.platinumcoin.pix.common.autoconfigure.CommonWebAutoConfiguration
 com.platinumcoin.pix.common.autoconfigure.CommonMetricsAutoConfiguration
+com.platinumcoin.pix.common.autoconfigure.CommonTracingAutoConfiguration
+com.platinumcoin.pix.common.autoconfigure.CommonTracePropagationAutoConfiguration
+com.platinumcoin.pix.common.autoconfigure.CommonRedisMetricsAutoConfiguration
+com.platinumcoin.pix.common.autoconfigure.CommonAwsMetricsAutoConfiguration

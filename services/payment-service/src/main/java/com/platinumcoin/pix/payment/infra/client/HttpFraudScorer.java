@@ -2,7 +2,12 @@ package com.platinumcoin.pix.payment.infra.client;
 
 import com.platinumcoin.pix.common.security.InternalApi;
 import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
+import com.platinumcoin.pix.common.tracing.ForceSample;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
 import com.platinumcoin.pix.payment.domain.port.FraudScorer;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
@@ -76,6 +81,15 @@ public class HttpFraudScorer implements FraudScorer {
     private final RestClient restClient;
     private final ServiceTokenIssuer serviceTokens;
 
+    /**
+     * The tracer, for the one manual span this adapter draws (step 72, ADR-0021 decision 3). Nullable —
+     * scoring a payment must never depend on the observability stack.
+     */
+    private final Tracer tracer;
+
+    /** The total span factory — never throws, may return {@code null} (ADR-0021). */
+    private final TracePropagation tracing;
+
     /** Wire shape of the score request — mirrors fraud-service's {@code ScoreRequest}. */
     record ScoreRequest(String accountId, String pixKey, long amountCents, Instant timestamp) {
     }
@@ -88,12 +102,32 @@ public class HttpFraudScorer implements FraudScorer {
     record ScoreResultView(FraudDecision decision) {
     }
 
+    /**
+     * Direct construction without tracing, for unit tests and for any caller that already decided this
+     * adapter runs untraced. Kept as a separate constructor rather than a nullable parameter so the
+     * Spring path stays the one annotated {@code @Autowired} and nothing has to guess.
+     */
+    public HttpFraudScorer(
+            RestClient.Builder builder,
+            String baseUrl,
+            long connectTimeoutMs,
+            long readTimeoutMs,
+            ServiceTokenIssuer serviceTokens) {
+        this(builder, baseUrl, connectTimeoutMs, readTimeoutMs, serviceTokens,
+                (ObjectProvider<Tracer>) null, (ObjectProvider<TracePropagation>) null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
     public HttpFraudScorer(
             RestClient.Builder builder,
             @Value("${services.fraud-service.base-url}") String baseUrl,
             @Value("${services.fraud-service.connect-timeout-ms:50}") long connectTimeoutMs,
             @Value("${services.fraud-service.read-timeout-ms:150}") long readTimeoutMs,
-            ServiceTokenIssuer serviceTokens) {
+            ServiceTokenIssuer serviceTokens,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        this.tracer = tracer == null ? null : tracer.getIfAvailable();
+        this.tracing = tracing == null ? null : tracing.getIfAvailable();
         this.serviceTokens = serviceTokens;
         // connect 50ms + read 150ms = the 200ms hard budget (ADR-0005). A hung fraud-service surfaces as
         // a ResourceAccessException the transient branch below turns into SKIPPED — never as a pinned
@@ -106,6 +140,27 @@ public class HttpFraudScorer implements FraudScorer {
 
     @Override
     public FraudDecision score(String accountId, String pixKey, long amountCents, Instant timestamp) {
+        // A manual span, even though the RestClient call underneath is already auto-instrumented, because
+        // the two measure different things: the HTTP span measures a request, this one measures THE 200ms
+        // BUDGET (ADR-0005) — connect + read + classify + decide. When a send breaches its 2s SLO, "did
+        // fraud eat the budget?" is a question about this interval, not about one socket.
+        //
+        // null covers three cases with one branch — tracing off, no propagation bean, or span creation
+        // failed — and all three mean the same thing: score the payment untraced (ADR-0021).
+        Span budget = tracing == null ? null : tracing.newSpan("pix.fraud.budget");
+        if (budget == null || tracer == null) {
+            return doScore(accountId, pixKey, amountCents, timestamp);
+        }
+        try (Tracer.SpanInScope scope = tracer.withSpan(budget)) {
+            FraudDecision decision = doScore(accountId, pixKey, amountCents, timestamp);
+            budget.tag("pix.fraud.decision", decision.name());
+            return decision;
+        } finally {
+            budget.end();
+        }
+    }
+
+    private FraudDecision doScore(String accountId, String pixKey, long amountCents, Instant timestamp) {
         ScoreRequest body = new ScoreRequest(accountId, pixKey, amountCents, timestamp);
         log.debug("POST /internal/fraud/score | accountId={} pixKey={} amountCents={} timestamp={}",
                 accountId, pixKey, amountCents, timestamp);
@@ -123,6 +178,7 @@ public class HttpFraudScorer implements FraudScorer {
                 // renamed field in fraud-service's ScoreResult, or a box in front of it answering 200 with
                 // something else. Nothing about it improves next minute, and the deploy that caused it
                 // looks green — which is exactly why it must not hide in the fail-open bucket (ADR-0018).
+                ForceSample.mark("fraud-service answered 2xx with a body this adapter cannot read");
                 log.error("Fraud-service answered 2xx with no decision this adapter can read, the "
                                 + "contract has drifted, the send proceeds UNSCORED and is flagged "
                                 + "FRAUD_ERROR | accountId={} pixKey={} amountCents={} body={}",
@@ -210,6 +266,10 @@ public class HttpFraudScorer implements FraudScorer {
     /** Fail-open, class one: WARN, {@code SKIPPED}, and the payment proceeds (ADR-0005 unchanged). */
     private static FraudDecision transientFailure(
             String accountId, String pixKey, long amountCents, String why, String detail) {
+        // A fail-open is one of the five things ADR-0021 decision 5 always keeps: a payment that went out
+        // UNSCORED is precisely the trace an analyst opens, and it is also the rarest, so a head ratio is
+        // most likely to have thrown it away.
+        ForceSample.mark("the fraud check failed open, this payment went out unscored");
         log.warn("Fraud check could not complete, {}, failing open, the send proceeds unscored and "
                         + "flagged | accountId={} pixKey={} amountCents={} class=TRANSIENT detail={}",
                 why, accountId, pixKey, amountCents, detail);
@@ -223,6 +283,7 @@ public class HttpFraudScorer implements FraudScorer {
      */
     private static FraudDecision brokenCheck(
             String accountId, String pixKey, long amountCents, String why, String detail) {
+        ForceSample.mark("the fraud check is broken (FRAUD_ERROR), the control is off for every payment");
         log.error("Fraud check is BROKEN, not slow — {}; the send still proceeds (ADR-0018 keeps "
                         + "ADR-0005's availability choice) but goes out UNSCORED and is flagged "
                         + "FRAUD_ERROR for async re-scoring | accountId={} pixKey={} amountCents={} "

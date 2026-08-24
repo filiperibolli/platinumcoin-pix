@@ -1,6 +1,8 @@
 package com.platinumcoin.pix.payment.infra.persistence;
 
 import com.platinumcoin.pix.common.event.EventEnvelope;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import org.springframework.beans.factory.ObjectProvider;
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
@@ -85,8 +87,35 @@ public class DynamoTransactionRepository implements TransactionRepository {
 
     private final DynamoDbClient dynamo;
 
-    public DynamoTransactionRepository(DynamoDbClient dynamo) {
+    /**
+     * How the accepting request's trace context is captured onto each outbox item (step 72, ADR-0021
+     * decision 4). Nullable so a service running with tracing disabled writes items with no
+     * {@code traceparent} and everything else behaves identically.
+     *
+     * <p><b>Why the adapter captures it and the domain event does not carry it.</b> {@code OutboxEvent} is
+     * a business contract — the facts a consumer acts on — and a W3C trace context is not a business fact;
+     * it is transport metadata about the request that produced the event, exactly like the HTTP header it
+     * came in on. Threading it through {@code domain/} would put an observability concern in the one layer
+     * ADR-0010 keeps free of them, and buy nothing: the outbox item is written on the request thread, so
+     * the adapter can read the very same context the domain would have had to pass it.
+     */
+    private final TracePropagation tracing;
+
+    /**
+     * {@code ObjectProvider}, not a plain parameter: {@link TracePropagation} exists only when Boot's
+     * tracing auto-configuration is active, and writing a transaction is the money path. A repository that
+     * refused to start because the observability stack was not wired would invert exactly the priority
+     * ADR-0021 sets — the same reasoning that gives settlement-service no {@code depends_on: prometheus}.
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public DynamoTransactionRepository(DynamoDbClient dynamo, ObjectProvider<TracePropagation> tracing) {
+        this(dynamo, tracing.getIfAvailable());
+    }
+
+    /** Direct construction, for tests and for a composition root that already holds the collaborator. */
+    public DynamoTransactionRepository(DynamoDbClient dynamo, TracePropagation tracing) {
         this.dynamo = dynamo;
+        this.tracing = tracing;
     }
 
     @Override
@@ -97,10 +126,17 @@ public class DynamoTransactionRepository implements TransactionRepository {
                 events.stream().map(OutboxEvent::eventType).toList(),
                 events.stream().map(OutboxEvent::eventId).toList());
 
+        // Captured ONCE for the whole write: every event this transaction emits belongs to the same
+        // accepting request, so they share one trace context. Null when tracing is off or this span was
+        // not sampled — the item is simply written without the attribute.
+        String traceparent = tracing == null ? null : tracing.currentTraceparent();
+
         List<TransactWriteItem> writes = new ArrayList<>(1 + events.size());
         writes.add(TransactWriteItem.builder().put(metaPut(transaction)).build());
         for (OutboxEvent event : events) {
-            writes.add(TransactWriteItem.builder().put(outboxPut(transaction.txId(), event)).build());
+            writes.add(TransactWriteItem.builder()
+                    .put(outboxPut(transaction.txId(), event, traceparent))
+                    .build());
         }
 
         try {
@@ -137,7 +173,7 @@ public class DynamoTransactionRepository implements TransactionRepository {
      * ({@link OutboxEvent#occurredAtKey()}), never {@code Instant.toString()}: the publisher drains
      * oldest-first, and that ordering is lexicographic on this key.
      */
-    private static Put outboxPut(String txId, OutboxEvent event) {
+    private static Put outboxPut(String txId, OutboxEvent event, String traceparent) {
         Map<String, AttributeValue> item = new LinkedHashMap<>();
         item.put("pk", AttributeValue.fromS("TX#" + txId));
         item.put("sk", AttributeValue.fromS(OUTBOX_SK_PREFIX + event.eventId()));
@@ -160,11 +196,17 @@ public class DynamoTransactionRepository implements TransactionRepository {
         if (event.correlationId() != null) {
             item.put("correlationId", AttributeValue.fromS(event.correlationId()));
         }
+        // The W3C trace context of the request that produced this event (step 72, ADR-0021). Stored, not
+        // sent: the publisher runs seconds later on a scheduler thread that has no trace of its own, so
+        // without this the trace would end at the 202 and the whole asynchronous half would be invisible.
+        if (traceparent != null) {
+            item.put("traceparent", AttributeValue.fromS(traceparent));
+        }
 
         log.debug("DynamoDB Put of an outbox event | table={} pk=TX#{} sk={}{} eventType={} lane={} "
-                        + "gsi3pk={} gsi3sk={} correlationId={} payload={}",
+                        + "gsi3pk={} gsi3sk={} correlationId={} traceparent={} payload={}",
                 TABLE, txId, OUTBOX_SK_PREFIX, event.eventId(), event.eventType(), lane.name(),
-                lane.gsi3pk(), event.occurredAtKey(), event.correlationId(),
+                lane.gsi3pk(), event.occurredAtKey(), event.correlationId(), traceparent,
                 EventEnvelope.payloadJson(event));
 
         return Put.builder().tableName(TABLE).item(item).build();

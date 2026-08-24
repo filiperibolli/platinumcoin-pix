@@ -45,6 +45,19 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                             behaviour, not a lifetime average that would take days to react
  * @param ratioMinimumSamples  how much traffic a ratio needs before it means anything (see
  *                             {@code AlertRule.Ratio}: {@code 0/0} has no safe convention)
+ * @param latencyObjective     the fraction of requests that must meet a latency SLO before the budget is
+ *                             overspent (step 72, ADR-0021). {@code 0.99} — the platform states its two
+ *                             budgets as p99s, and a p99 target IS "99% of requests inside the boundary"
+ * @param fastBurnFactor       burn rate that means "page someone": {@code 14.4} spends 2% of a 30-day
+ *                             budget in one hour
+ * @param fastBurnLongWindow   the measuring window of the fast pair
+ * @param fastBurnShortWindow  the confirming window of the fast pair — short enough that the alert stops
+ *                             promptly when the incident does
+ * @param slowBurnFactor       burn rate that means "open a ticket": {@code 6} spends 5% in six hours
+ * @param slowBurnLongWindow   the measuring window of the slow pair
+ * @param slowBurnShortWindow  the confirming window of the slow pair
+ * @param burnMinimumRequests  how many requests a window needs before a burn rate is information rather
+ *                             than arithmetic (same refusal to guess as {@code ratioMinimumSamples})
  * @param fraudBrokenWindow    the PromQL lookback the {@code fraud_broken} rule counts occurrences over
  *                             (ADR-0018). Shorter than {@code ratioWindow} on purpose: a broken fraud
  *                             check is a binary fact needing no traffic to become meaningful, so the
@@ -63,5 +76,13 @@ public record AlertProperties(
         double cacheHitFloor,
         String ratioWindow,
         double ratioMinimumSamples,
-        String fraudBrokenWindow) {
+        String fraudBrokenWindow,
+        double latencyObjective,
+        double fastBurnFactor,
+        String fastBurnLongWindow,
+        String fastBurnShortWindow,
+        double slowBurnFactor,
+        String slowBurnLongWindow,
+        String slowBurnShortWindow,
+        double burnMinimumRequests) {
 }

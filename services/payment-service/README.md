@@ -527,3 +527,12 @@ curl -s localhost:8084/actuator/prometheus | grep pix_outbox_lag_seconds   # one
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — verbose sandbox logging inherited
   from `common-lib`: `[cid=… tx=…]` on every record, English sentences plus `key=value`, amounts in
   cents and account/creditor ids in the clear (an LGPD trade-off production reverses).
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited whole from `common-lib`: this service configures none of it. What is specific here
+  is where the trace *leaves* the request — the accepting request's W3C `traceparent` is stored on the
+  outbox item in the same `TransactWriteItems` as the money, and the publisher resumes that trace seconds
+  later so `accept → outbox → SNS → SQS → settle` is one trace. Two manual spans name business intervals
+  no boundary marks: `pix.fraud.budget` (the 200ms budget, not one socket) and `pix.ledger.post` (the
+  atomic double-entry posting, tagged with its `LedgerOutcome`). A fail-open, a `FRAUD_ERROR` or a ledger
+  result that is unknown calls `ForceSample.mark(...)`, so those traces survive any head ratio.
