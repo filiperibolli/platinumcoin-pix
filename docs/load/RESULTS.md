@@ -434,6 +434,13 @@ unpublished `PixSettled` events**, ~37 minutes to drain at rest. An external `Pi
 queued behind that backlog stays `DEBITED` long enough to cross the 120s stuck threshold and be
 `REVERSED` by reconciliation instead of settling (exactly what happened to the smoke send above).
 
+> **Resolved in step 71 ([ADR-0019](../adr/0019-outbox-lanes-and-priority.md)).** This section is the
+> evidence that produced the ADR, and it is left verbatim. The fix is structural, not a bigger batch:
+> the drain is now partitioned into `settlement` / `notification` / `audit` lanes with a publisher and
+> a lag SLO each, so a flood of events with no subscriber can no longer sit in front of the one event
+> a payment's settlement depends on. `OutboxLanePriorityIT` reproduces the scenario below
+> deterministically and fails against the code as it stood here.
+
 **Correctness impact: none.** Publish-then-mark on the sparse GSI is at-least-once and loses
 nothing; the internal `PixSettled` events match no existing subscription (`settlement-queue` filters
 `eventType=PixDebited`), so they fan out to SNS and go nowhere until the Sprint 8/10 queues exist.
@@ -492,6 +499,10 @@ host shell exports it; S1 was the only scenario run under it (S0/S2/S3/S5 used t
 - settlement-service runs a **single-threaded, sequential** SQS consumer (batch 5); at BACEN's
   default 2s latency it settles only ~0.5/s. S5 lowered BACEN latency to keep the pipeline ahead of
   its 120s stuck threshold. A local sizing constraint, not a design limit.
+  > **No longer true as of step 71 (ADR-0019).** The consumer now handles a batch on a bounded worker
+  > pool (`SETTLEMENT_WORKERS`, default 5), and the outbox drain that fed it was split into lanes. The
+  > measurements above are kept exactly as they were taken — they are the record that motivated the
+  > change, not a live description of the system. **Context 2 is the incident ADR-0019 exists for.**
 - Only 2 of the 208 seeded accounts (alice/`acc-001`, bob/`acc-002`) are "real" fixtures; the other
   206 are load-test-only accounts from `tools/k6/seed/seed-load-test-fixtures.sh`.
 - fraud-service has no runtime fault-injection knob — S4 did not run.

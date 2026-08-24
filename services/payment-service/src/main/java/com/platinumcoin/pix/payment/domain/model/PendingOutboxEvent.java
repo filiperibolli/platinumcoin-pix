@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.model;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import java.time.Instant;
 import java.util.Objects;
 
@@ -24,6 +25,11 @@ import java.util.Objects;
  * @param correlationId the request that caused the event, carried across the asynchronous boundary so
  *                      one {@code grep} still reconstructs the path (ADR-0012); {@code null} when the
  *                      event was minted outside a request thread
+ * @param lane          which drain this event goes out on (step 71, ADR-0019). Derived from
+ *                      {@code eventType} by the writer and stored on the item, so the publisher never
+ *                      re-derives it — a lane the writer chose and a lane the reader guessed could
+ *                      disagree across a deploy, and the disagreement would strand events on an index
+ *                      nobody polls.
  */
 public record PendingOutboxEvent(
         String txId,
@@ -31,7 +37,8 @@ public record PendingOutboxEvent(
         String eventType,
         String payloadJson,
         Instant occurredAt,
-        String correlationId) {
+        String correlationId,
+        OutboxLane lane) {
 
     public PendingOutboxEvent {
         requireText(txId, "txId");
@@ -39,6 +46,7 @@ public record PendingOutboxEvent(
         requireText(eventType, "eventType");
         requireText(payloadJson, "payloadJson");
         Objects.requireNonNull(occurredAt, "occurredAt");
+        Objects.requireNonNull(lane, "lane");
     }
 
     private static void requireText(String value, String field) {

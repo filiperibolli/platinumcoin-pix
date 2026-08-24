@@ -155,7 +155,7 @@ Access patterns: get transaction by id (status query); find by endToEndId (recon
 | SK | `META` (the transaction) or `OUTBOX#<eventId>` (outbox items) |
 | GSI1 | PK `E2E#<endToEndId>` → lookup by Pix end-to-end id |
 | GSI2 | PK `STATUS#<status>`, SK `updatedAt` → reconciliation scan (`status IN (DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL) AND updatedAt < now-2min`) |
-| GSI3 (sparse) | PK `OUTBOX#UNPUBLISHED`, SK `occurredAt` → the publisher's work queue: only unpublished outbox items carry `gsi3pk`, so the index holds in-flight events only |
+| GSI3 (sparse, **lane-partitioned**) | PK `OUTBOX#UNPUBLISHED#<LANE>`, SK `occurredAt` → **one work queue per lane**: only unpublished outbox items carry `gsi3pk`, so the index holds in-flight events only, and each lane's publisher reads only its own partition (step 71, ADR-0019) |
 
 **Transaction item:**
 ```json
@@ -359,10 +359,50 @@ was disabled*" without touching a log file). A `DENY` never reaches the item: it
   "payload": "{\"amountCents\":12550,\"txId\":\"tx-9f1c\", ...}",
   "occurredAt": "2026-07-02T12:34:56.789Z",
   "correlationId": "3f9a...",
-  "gsi3pk": "OUTBOX#UNPUBLISHED",
+  "lane": "SETTLEMENT",
+  "gsi3pk": "OUTBOX#UNPUBLISHED#SETTLEMENT",
   "gsi3sk": "2026-07-02T12:34:56.789Z"
 }
 ```
+
+### The `lane` attribute and the lane-partitioned `gsi3` (step 71, ADR-0019)
+
+Until step 71 every outbox item carried the **same** `gsi3pk` — `OUTBOX#UNPUBLISHED` — which is another
+way of saying the whole platform shared one FIFO drained by one thread. `docs/load/RESULTS.md` Context 2
+records the price: an external `PixDebited` queued behind **55,538 internal `PixSettled` events that
+matched no subscription at all**, waited past the 120s stuck threshold, and was `REVERSED` by
+reconciliation instead of settling. Nothing was lost and nothing was incorrect; an unrelated event
+type's *latency* undid a correct payment.
+
+Each event now declares a **lane**, named for what waits on it rather than for who emits it:
+
+| Lane | Event types | What is blocked while it waits | Sizing (`pix.outbox.lanes.<lane>.*`) | Lag SLO |
+|---|---|---|---|---|
+| `SETTLEMENT` | `PixDebited` | **money** — the payer's cents sit in `SPI_CLEARING` with nothing on the way to release them, and the stuck scanner is counting | 200 ms tick · batch 100 · 8 in flight | **12 s** |
+| `NOTIFICATION` | `PixSettled`, `PixReceived`, `PixReversed` | **a person** — the SSE stream and the statement | 1 s tick · batch 100 · 4 in flight | 60 s |
+| `AUDIT` | `FraudCheckSkipped` | **only the trail** | 5 s tick · batch 50 · 1 in flight | 300 s |
+
+The lane is written **twice**, deliberately:
+
+- **`lane`** — a plain attribute that **survives publication**, so the outbox history left in the
+  partition still records which drain carried each event.
+- **`gsi3pk = OUTBOX#UNPUBLISHED#<LANE>`** — the lane inside the **partition key**, which is what makes
+  each lane an independent ordered queue. It is removed on publish, taking the index entry with it.
+
+Two properties are worth stating precisely:
+
+- **It is a partition split, not a filter.** A lane holding a million events is not read, not paged and
+  not paid for by another lane's poll. Filtering after the query would have kept the head-of-line
+  blocking intact — that distinction is exactly why ADR-0019 rejected "just raise the batch size".
+- **Ordering.** Within a lane the drain is still strictly oldest-first on `gsi3sk`, which is the only
+  place ADR-0004's ordering ever meant anything. **Cross-lane ordering is explicitly not guaranteed**,
+  and neither is strict oldest-first *delivery* inside a lane once `max-in-flight > 1` (the batch is
+  *claimed* oldest-first, but concurrent publishes may reach the broker in either order). Neither is a
+  loss: ADR-0004 never promised global ordering — consumers rely on guarded status transitions and
+  `eventId` dedup — and SNS → SQS standard queues do not preserve order regardless. Lanes make that
+  visible instead of accidental.
+- **An event type with no lane is refused** (`OutboxLane.forEventType` throws), so a new type cannot
+  silently land on the slowest drain. `OutboxWriteIT#everyEventTypeIsAssignedItsLane` pins the table.
 
 **The write (step 28).** The `META` item and its `OUTBOX#` siblings are written in **one
 `TransactWriteItems`** — never two writes. Persisting the state and announcing it are two systems, so a
@@ -394,8 +434,10 @@ audit act on it. And an **inbound** Pix announces **`PixReceived`** (step 37), w
 routing field the notification flow (steps 38–39) answers "whose stream is this?" from, without having to
 re-resolve the directory inside an asynchronous fan-out. Those three — `PixSettled`, `PixReversed`,
 `PixReceived` — are exactly the user-facing outcomes the `notification-queue` subscription filters for
-(step 36). The item is byte-identical in shape to payment-service's, which is what lets **one**
-publisher drain the whole sparse index: `gsi3` is a property of the table, not of the writer.
+(step 36). The item is byte-identical in shape to payment-service's — `lane` and the lane-scoped
+`gsi3pk` included — which is what lets payment-service's publishers drain events **this** service wrote:
+`gsi3` is a property of the table, not of the writer. Since step 71 those events land on the
+`NOTIFICATION` lane, which is why a flood of them can no longer delay a `PixDebited`.
 
 `correlationId` carries the request's id into the asynchronous half, so one `grep` still reconstructs the
 whole path once the flow leaves the request thread (ADR-0012); it is absent for an event minted outside a
@@ -408,7 +450,7 @@ needs no schema change and the publisher forwards it without parsing it.
 > `12:34:30Z`, sort *after* one 500 ms later (`'Z'` 0x5A > `'.'` 0x2E), and silently invert the drain
 > order.
 
-Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark ⇒ at-least-once; the item leaves the sparse index and the outbox history stays in the partition for audit). See ADR-0004.
+Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark ⇒ at-least-once; the item leaves the sparse index and the outbox history stays in the partition for audit). The `lane` attribute is **not** removed — it is what the surviving history says the event went out on. See ADR-0004 and ADR-0019.
 
 > **Learning note — sparse GSI:** an item only appears in a GSI if it has the index's key attributes. Removing `gsi3pk` is therefore a cheap, atomic "done" flag: the pending-work index stays O(in-flight), never O(history).
 

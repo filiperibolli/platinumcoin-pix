@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.infra.persistence;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.model.PendingOutboxEvent;
 import com.platinumcoin.pix.payment.domain.port.OutboxEventStore;
 import java.time.Instant;
@@ -19,12 +20,20 @@ import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedExce
  *
  * <h2>Why the sparse index is the whole trick</h2>
  * A DynamoDB item appears in a GSI only if it carries that index's key attributes. Every outbox item is
- * written with {@code gsi3pk = OUTBOX#UNPUBLISHED}; publishing it is a plain {@code UpdateItem REMOVE
+ * written with {@code gsi3pk = OUTBOX#UNPUBLISHED#<LANE>}; publishing it is a plain {@code UpdateItem REMOVE
  * gsi3pk}, after which the item <b>drops out of the index</b> while staying in its transaction's
  * partition for audit. So the publisher's Query is O(in-flight) and never O(history): the index holds
  * only events that have not gone out yet, whether that is 3 or 3 million, and five years of settled
  * payments cost the 1s poll exactly nothing. A {@code published = true} flag would have inverted that —
  * every poll would scan an ever-growing index and filter almost all of it away.
+ *
+ * <h2>Why the lane is in the partition key (step 71, ADR-0019)</h2>
+ * {@code gsi3pk} used to be one constant for the whole platform, which is another way of saying "one
+ * FIFO for the whole platform". Scoping it by lane splits the same index into three independent ordered
+ * queues at zero schema cost — the key was always a string — and it is a <i>partition</i> split, not a
+ * filter: a lane holding a million events is not read, not paged and not paid for by another lane's
+ * poll. Filtering after the query would have left the head-of-line blocking intact, which is the
+ * distinction between the sizing fix ADR-0019 rejected and the structural one it took.
  *
  * <h2>Two consistency notes</h2>
  * The Query is <b>eventually consistent</b> — a GSI cannot be read strongly consistent, at all. An
@@ -40,7 +49,6 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
 
     private static final String TABLE = "pix_transactions";
     private static final String INDEX = "gsi3";
-    private static final String UNPUBLISHED = "OUTBOX#UNPUBLISHED";
     private static final String TX_PREFIX = "TX#";
     private static final String OUTBOX_SK_PREFIX = "OUTBOX#";
 
@@ -51,17 +59,18 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
     }
 
     @Override
-    public List<PendingOutboxEvent> findUnpublished(int limit) {
-        log.debug("DynamoDB Query of the sparse outbox index | table={} index={} gsi3pk={} "
-                        + "scanIndexForward=true limit={}",
-                TABLE, INDEX, UNPUBLISHED, limit);
+    public List<PendingOutboxEvent> findUnpublished(OutboxLane lane, int limit) {
+        String lanePartition = lane.gsi3pk();
+        log.debug("DynamoDB Query of one lane's partition of the sparse outbox index | table={} "
+                        + "index={} lane={} gsi3pk={} scanIndexForward=true limit={}",
+                TABLE, INDEX, lane, lanePartition, limit);
 
         List<PendingOutboxEvent> pending = dynamo.query(request -> request
                         .tableName(TABLE)
                         .indexName(INDEX)
-                        .keyConditionExpression("gsi3pk = :unpublished")
+                        .keyConditionExpression("gsi3pk = :lane")
                         .expressionAttributeValues(
-                                Map.of(":unpublished", AttributeValue.fromS(UNPUBLISHED)))
+                                Map.of(":lane", AttributeValue.fromS(lanePartition)))
                         // Ascending on gsi3sk = occurredAt: oldest first, so a backlog drains fairly.
                         .scanIndexForward(true)
                         .limit(limit))
@@ -70,8 +79,9 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
                 .toList();
 
         if (!pending.isEmpty()) {
-            log.debug("DynamoDB Query returned unpublished outbox items | count={} eventIds={}",
-                    pending.size(), pending.stream().map(PendingOutboxEvent::eventId).toList());
+            log.debug("DynamoDB Query returned unpublished outbox items for a lane | lane={} count={} "
+                            + "eventIds={}",
+                    lane, pending.size(), pending.stream().map(PendingOutboxEvent::eventId).toList());
         }
         return pending;
     }
@@ -105,8 +115,8 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
         }
 
         log.info("Outbox item marked published, it left the sparse index and stays in its "
-                        + "transaction's partition for audit | eventId={} eventType={} txId={}",
-                event.eventId(), event.eventType(), event.txId());
+                        + "transaction's partition for audit | lane={} eventId={} eventType={} txId={}",
+                event.lane(), event.eventId(), event.eventType(), event.txId());
     }
 
     /**
@@ -126,6 +136,10 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
                 // The stored form is fixed-width milliseconds so that the INDEX sorts correctly;
                 // reading it back needs no special parser, it is a valid ISO-8601 instant.
                 Instant.parse(item.get("occurredAt").s()),
-                item.containsKey("correlationId") ? item.get("correlationId").s() : null);
+                item.containsKey("correlationId") ? item.get("correlationId").s() : null,
+                // Read from the item, never re-derived from the eventType: the writer already decided,
+                // and a reader that decided again could disagree with it across a deploy — stranding
+                // events on a partition no publisher polls.
+                OutboxLane.of(item.get("lane").s()));
     }
 }

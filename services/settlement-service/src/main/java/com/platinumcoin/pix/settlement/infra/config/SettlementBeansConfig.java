@@ -236,13 +236,40 @@ public class SettlementBeansConfig {
                         "max(pix_reconciliation_oldest_seconds)",
                         alerts.reconciliationAge().getSeconds(), Comparison.ABOVE, "seconds"),
 
+                // ONE RULE PER LANE (step 71, ADR-0019), and the reason is the incident itself. Until
+                // this step there was a single rule over max(pix_outbox_lag_seconds) with one 60s
+                // bound — and `max` across lanes cannot answer the question that mattered, because
+                // "which drain is behind?" is precisely what was lost when 55,538 notification events
+                // buried one settlement event. Three rules, three budgets, three runbook entries:
+                // the settlement lane's 12s is an order of magnitude under the 120s stuck threshold
+                // that reversed the payment, so the alert fires with ~108s left to act; the audit
+                // lane's 300s is deliberately generous, because nothing observable waits on it.
                 new AlertRule.Threshold(
-                        "outbox_publisher_lag",
-                        "the outbox publisher is falling behind — events that trigger settlement are "
-                                + "committed but unpublished",
+                        "outbox_publisher_lag_settlement",
+                        "the settlement outbox lane is falling behind — a money flow is blocked: "
+                                + "PixDebited events are committed but unpublished, so the payer's "
+                                + "money sits in clearing with nothing on its way to release it while "
+                                + "reconciliation counts toward a reversal",
                         "docs/local-dev.md §5.4 (outbox & publisher)",
-                        "max(pix_outbox_lag_seconds)",
-                        alerts.outboxLag().getSeconds(), Comparison.ABOVE, "seconds"),
+                        "max(pix_outbox_lag_seconds{lane=\"settlement\"})",
+                        alerts.outboxLag().get("settlement").getSeconds(), Comparison.ABOVE, "seconds"),
+
+                new AlertRule.Threshold(
+                        "outbox_publisher_lag_notification",
+                        "the notification outbox lane is falling behind — users are not being told what "
+                                + "happened to their payments; the SSE stream and the statement lag, "
+                                + "though no balance is wrong",
+                        "docs/local-dev.md §5.4 (outbox & publisher)",
+                        "max(pix_outbox_lag_seconds{lane=\"notification\"})",
+                        alerts.outboxLag().get("notification").getSeconds(), Comparison.ABOVE, "seconds"),
+
+                new AlertRule.Threshold(
+                        "outbox_publisher_lag_audit",
+                        "the audit outbox lane is falling behind — nothing a user can observe is "
+                                + "affected, but the record of what happened is not being written",
+                        "docs/local-dev.md §5.4 (outbox & publisher)",
+                        "max(pix_outbox_lag_seconds{lane=\"audit\"})",
+                        alerts.outboxLag().get("audit").getSeconds(), Comparison.ABOVE, "seconds"),
 
                 // A ceiling, not a floor: fail-open is a deliberate design (ADR-0005), so the alert is not
                 // "it happened" but "it is now the norm" — at which point sends are routinely unscored and

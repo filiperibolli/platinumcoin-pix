@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.infra.config;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.port.BalanceCache;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
@@ -19,7 +20,10 @@ import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -31,6 +35,7 @@ import org.springframework.context.annotation.Configuration;
  * framework home.
  */
 @Configuration
+@EnableConfigurationProperties(OutboxLaneProperties.class)
 public class PaymentBeansConfig {
 
     /**
@@ -106,18 +111,62 @@ public class PaymentBeansConfig {
     }
 
     /**
-     * The outbox drain (step 29). The batch size is configuration because it is a throughput knob, not
-     * a rule: it bounds how much one tick may publish, so a backlog is worked off in bounded chunks
-     * instead of one unbounded write storm. The default (25) drains ~25 events/second per instance,
-     * comfortably above the platform's 58 TPS target once the ticks overlap in effect, and well under
-     * anything that would starve the request threads.
+     * The outbox drains — <b>one publisher per lane</b> (step 71, ADR-0019), each with its own batch
+     * size, in-flight ceiling and thread pool.
+     *
+     * <p><b>Why three beans and not one parameterised by a runtime argument.</b> The lane is not a
+     * choice a tick makes; it is which publisher this is. Three instances mean three independent
+     * sizings, three gauges and three alert thresholds — and, because each polls a different partition
+     * of the sparse index, a lane's backlog is not merely deprioritised but <i>never read</i> by the
+     * others. That is the difference between the sizing mitigation ADR-0019 rejected (raise the batch,
+     * the reversal recurs at the next throughput) and the structural fix it took.
      */
     @Bean
-    PublishOutboxEventsUseCase publishOutboxEventsUseCase(
-            OutboxEventStore outbox,
-            EventPublisher eventPublisher,
-            @Value("${pix.outbox.publisher.batch-size}") int batchSize,
+    PublishOutboxEventsUseCase settlementLanePublisher(
+            OutboxEventStore outbox, EventPublisher eventPublisher, OutboxLaneProperties lanes,
             Clock clock) {
-        return new PublishOutboxEventsUseCase(outbox, eventPublisher, clock, batchSize);
+        return lanePublisher(OutboxLane.SETTLEMENT, lanes, outbox, eventPublisher, clock);
+    }
+
+    @Bean
+    PublishOutboxEventsUseCase notificationLanePublisher(
+            OutboxEventStore outbox, EventPublisher eventPublisher, OutboxLaneProperties lanes,
+            Clock clock) {
+        return lanePublisher(OutboxLane.NOTIFICATION, lanes, outbox, eventPublisher, clock);
+    }
+
+    @Bean
+    PublishOutboxEventsUseCase auditLanePublisher(
+            OutboxEventStore outbox, EventPublisher eventPublisher, OutboxLaneProperties lanes,
+            Clock clock) {
+        return lanePublisher(OutboxLane.AUDIT, lanes, outbox, eventPublisher, clock);
+    }
+
+    /**
+     * One lane's publisher and the pool it publishes on.
+     *
+     * <p>The pool is sized to the lane's in-flight ceiling and no larger — the semaphore in the use case
+     * already bounds concurrency, so a bigger pool would only add idle threads, and a smaller one would
+     * make the ceiling a lie. Threads are daemons and named after the lane, so a thread dump during an
+     * incident says which drain is busy without anyone having to correlate ids.
+     *
+     * <p>A ceiling of 1 yields a same-thread executor: no pool, no context switch, and behaviour
+     * byte-for-byte identical to step 29's sequential publisher. That is the honest default for a lane
+     * whose latency nobody is waiting on.
+     */
+    private static PublishOutboxEventsUseCase lanePublisher(
+            OutboxLane lane, OutboxLaneProperties lanes, OutboxEventStore outbox,
+            EventPublisher eventPublisher, Clock clock) {
+        OutboxLaneProperties.Lane settings = lanes.of(lane);
+        Executor executor = settings.maxInFlight() == 1
+                ? Runnable::run
+                : Executors.newFixedThreadPool(settings.maxInFlight(), runnable -> {
+                    Thread thread = new Thread(runnable, "outbox-" + lane.name().toLowerCase());
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        return new PublishOutboxEventsUseCase(
+                outbox, eventPublisher, clock, lane, settings.batchSize(), settings.maxInFlight(),
+                executor);
     }
 }

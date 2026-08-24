@@ -7,12 +7,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
-import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxOutcome;
 import com.platinumcoin.pix.payment.support.PaymentTestSupport;
 import com.platinumcoin.pix.payment.support.StubLedgerClient;
@@ -94,9 +94,6 @@ class OutboxPublisherIT extends LocalStackTestBase {
     OutboxPublisher publisher;
 
     @Autowired
-    PublishOutboxEventsUseCase publishOutboxEvents;
-
-    @Autowired
     TransactionRepository transactions;
 
     @Autowired
@@ -146,7 +143,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
         // Before: the event is waiting on the index the publisher polls.
         assertThat(unpublishedEventIds()).contains(eventId);
 
-        publisher.publishPendingEvents();
+        publisher.publishLane(OutboxLane.SETTLEMENT);
 
         Message delivered = receiveUntil(eventId);
         // Routing lives in the message ATTRIBUTES: SNS filters on those, never on the body, which is
@@ -195,7 +192,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
         String txId = sendAccepted(debtor, "17.00", "corr-publish-2");
         String eventId = onlyOutboxItem(txId).get("eventId").s();
 
-        publisher.publishPendingEvents();
+        publisher.publishLane(OutboxLane.SETTLEMENT);
         assertThat(receiveUntil(eventId)).isNotNull();
 
         // The crash: SNS took the event, the process died before REMOVE gsi3pk ran — so the item is
@@ -203,7 +200,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
         restoreSparseIndexKey(txId, eventId);
         assertThat(unpublishedEventIds()).contains(eventId);
 
-        publisher.publishPendingEvents();
+        publisher.publishLane(OutboxLane.SETTLEMENT);
 
         Message duplicate = receiveUntil(eventId);
         assertThat(duplicate.messageAttributes().get("eventId").stringValue())
@@ -220,7 +217,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
     @Test
     void theLagGaugeReportsTheAgeOfTheOldestWaitingEvent() {
         // A drained outbox is not "infinitely behind" — nothing is waiting.
-        publisher.publishPendingEvents();
+        publisher.publishLane(OutboxLane.SETTLEMENT);
         assertThat(lagSeconds()).isZero();
 
         Instant fiveMinutesAgo = Instant.now().minus(Duration.ofMinutes(5));
@@ -232,7 +229,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
                 List.of(new OutboxEvent("evt-" + UUID.randomUUID(), "PixDebited", Map.of("txId", txId),
                         fiveMinutesAgo, "corr-publish-lag")));
 
-        publisher.publishPendingEvents();
+        publisher.publishLane(OutboxLane.SETTLEMENT);
 
         assertThat(lagSeconds())
                 .as("how far behind the publisher was when the tick woke up")
@@ -241,15 +238,22 @@ class OutboxPublisherIT extends LocalStackTestBase {
 
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
-    /** Publish until the index is empty — other ITs' transactions leave events here too. */
+    /**
+     * Publish until <b>every lane's</b> index is empty — other ITs' transactions leave events here too,
+     * and since step 71 they are spread across three partitions rather than one.
+     */
     private void drainOutbox() {
         for (int tick = 0; tick < 50; tick++) {
-            PublishOutboxOutcome outcome = publishOutboxEvents.execute();
-            if (outcome.found() == 0) {
-                return;
+            int found = 0;
+            for (OutboxLane lane : OutboxLane.values()) {
+                PublishOutboxOutcome outcome = publisher.publishLane(lane);
+                found += outcome.found();
+                if (outcome.found() > 0 && outcome.published() == 0) {
+                    throw new AssertionError("the outbox is not draining: " + outcome);
+                }
             }
-            if (outcome.published() == 0) {
-                throw new AssertionError("the outbox is not draining: " + outcome);
+            if (found == 0) {
+                return;
             }
         }
         throw new AssertionError("the outbox did not drain in 50 ticks");
@@ -289,7 +293,7 @@ class OutboxPublisherIT extends LocalStackTestBase {
                         .indexName("gsi3")
                         .keyConditionExpression("gsi3pk = :p")
                         .expressionAttributeValues(
-                                Map.of(":p", AttributeValue.fromS("OUTBOX#UNPUBLISHED"))))
+                                Map.of(":p", AttributeValue.fromS(OutboxLane.SETTLEMENT.gsi3pk()))))
                 .items().stream()
                 .map(item -> item.get("eventId").s())
                 .toList();
@@ -303,12 +307,13 @@ class OutboxPublisherIT extends LocalStackTestBase {
                         "pk", AttributeValue.fromS("TX#" + txId),
                         "sk", AttributeValue.fromS("OUTBOX#" + eventId)))
                 .updateExpression("SET gsi3pk = :unpublished")
-                .expressionAttributeValues(
-                        Map.of(":unpublished", AttributeValue.fromS("OUTBOX#UNPUBLISHED"))));
+                .expressionAttributeValues(Map.of(
+                        ":unpublished", AttributeValue.fromS(OutboxLane.SETTLEMENT.gsi3pk()))));
     }
 
+    /** The settlement lane's gauge — the tag is what makes the SLO per-lane (step 71, ADR-0019). */
     private double lagSeconds() {
-        return meterRegistry.get("pix.outbox.lag").gauge().value();
+        return meterRegistry.get("pix.outbox.lag").tag("lane", "settlement").gauge().value();
     }
 
     /**

@@ -223,9 +223,10 @@ is `REMOVE gsi3pk`, so the index stays O(in-flight)), a fixed-width millisecond 
 key, and the request's `correlationId`, so one `grep` still follows a payment after it goes asynchronous.
 The envelope itself (`OutboxEvent` + `EventEnvelope`) lives in `common-lib` and names no broker.
 
-**Outbox polling publisher (step 29, ADR-0004).** Every second (`fixedDelay`, so ticks never overlap)
-`OutboxPublisher` asks `PublishOutboxEventsUseCase` for a bounded batch of waiting events — a Query on
-the sparse `gsi3`, oldest first — publishes each to SNS `pix-events` with `eventType`/`eventId`/
+**Outbox polling publishers — one per lane (step 29, ADR-0004; split in step 71, ADR-0019).** On each
+lane's own `fixedDelay` tick (so ticks never overlap), `OutboxPublisher` asks that lane's
+`PublishOutboxEventsUseCase` for a bounded batch of waiting events — a Query on **that lane's partition**
+of the sparse `gsi3`, oldest first — publishes each to SNS `pix-events` with `eventType`/`eventId`/
 `correlationId` as **message attributes** (SNS filter policies match attributes, never the body), and
 only **then** removes `gsi3pk` so the item leaves the index. The order is the decision: a crash after the
 publish costs a *duplicate* (every consumer dedupes by `eventId` via `common-lib`'s
@@ -233,10 +234,31 @@ publish costs a *duplicate* (every consumer dedupes by `eventId` via `common-lib
 parked in clearing with nothing to settle it. So delivery is deliberately **at-least-once**. A failed
 publish leaves its event in the index for the next tick and does not stop the batch (no ordering is
 promised across redeliveries; blocking would only add head-of-line blocking), and the
-`pix.outbox.lag` gauge — the age of the oldest waiting event — is what exposes one that is stuck.
-Polling, not DynamoDB Streams: against a 10s SPI SLA a 1s poll is invisible, and a sparse index makes it
-O(in-flight) rather than O(history); Streams remains the documented evolution, and swapping it in
-replaces `OutboxPublisher` + `SnsEventPublisher` and nothing else.
+`pix.outbox.lag{lane=…}` gauge — the age of the oldest waiting event on that lane — is what exposes one
+that is stuck. Polling, not DynamoDB Streams: against a 10s SPI SLA a sub-second poll is invisible, and a
+sparse index makes it O(in-flight) rather than O(history); Streams remains the documented evolution, and
+swapping it in replaces `OutboxPublisher` + `SnsEventPublisher` and nothing else.
+
+**Why there are three drains and not one (step 71, ADR-0019).** A single FIFO means the queue's
+occupants set each other's latency regardless of who is waiting on what — and this platform has the
+receipt: `docs/load/RESULTS.md` Context 2 records a correct external payment `REVERSED` by
+reconciliation because its `PixDebited` queued behind **55,538 internal `PixSettled` events with no
+subscriber at all**, crossing the 120s stuck threshold while it waited. Each event now declares a
+**lane** (`OutboxLane`, in `common-lib`), named for *what waits on it*:
+
+| Lane | Events | What is blocked | Tick · batch · in-flight | Lag SLO |
+|---|---|---|---|---|
+| `settlement` | `PixDebited` | **money** — cents parked in `SPI_CLEARING` with nothing releasing them | 200 ms · 100 · 8 | **12 s** |
+| `notification` | `PixSettled`, `PixReceived`, `PixReversed` | **a person** — the SSE stream, the statement | 1 s · 100 · 4 | 60 s |
+| `audit` | `FraudCheckSkipped` | **only the trail** | 5 s · 50 · 1 | 300 s |
+
+`gsi3pk` is `OUTBOX#UNPUBLISHED#<LANE>`, so a lane's backlog is not deprioritised by another lane's poll
+— it is **never read** by it. `max-in-flight` is real backpressure: a lane that cannot drain waits for a
+permit instead of growing memory, and reports `saturated` before its SLO is breached. Two things it
+deliberately does **not** do: it never slows acceptance (the outbox *write* is inside the payment's
+atomic transaction and shares nothing with the drain), and it does not promise **cross-lane ordering** —
+ADR-0004 never offered global ordering, and lanes make that explicit rather than accidental. An event
+type with no lane is **refused**, so a new type cannot silently land on the slowest drain.
 
 ### The balance read — cache-aside, and why a stale cache is harmless (step 40, ADR-0008)
 
@@ -282,7 +304,8 @@ api/    PaymentController (POST /v1/payments/pix, GET /v1/payments/{id}), SendPi
         PaymentResponse (Transaction → Payment schema; exhaustive internal→external status switch),
         AccountBalanceController (GET /v1/accounts/me/balance) + BalanceResponse (cents → decimal),
         PaymentExceptionHandler (domain exception → problem+json),
-        OutboxPublisher (@Scheduled 1s tick → PublishOutboxEventsUseCase, `pix.outbox.lag` gauge)
+        OutboxPublisher (one @Scheduled tick per lane → that lane's PublishOutboxEventsUseCase,
+                         `pix.outbox.lag{lane=…}` gauge — ADR-0019)
                                                                                    (inbound adapters)
 domain/model/     Transaction (record), AccountBalance (cents + the instant they were true),
                   PendingOutboxEvent (a stored event awaiting publication),
@@ -352,8 +375,15 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
 | `SNS_TOPIC_ARN` / `pix.events.topic-arn` | `arn:aws:sns:us-east-1:000000000000:pix-events` | The topic the outbox publisher drains into (step 29). Injected, never looked up by name: a deployed service holds `sns:Publish` on exactly this ARN and may not list topics (ADR-0013). |
-| `OUTBOX_PUBLISHER_DELAY_MS` / `pix.outbox.publisher.fixed-delay-ms` | `1000` | Poll interval of the outbox publisher. `fixedDelay` (not rate), so a slow tick never overlaps the next and cannot publish the same event twice. |
-| `OUTBOX_PUBLISHER_BATCH_SIZE` / `pix.outbox.publisher.batch-size` | `25` | Max events one tick may publish — a backlog drains in bounded chunks, never one unbounded write storm. |
+| `OUTBOX_SETTLEMENT_DELAY_MS` / `…lanes.settlement.fixed-delay-ms` | `200` | Poll interval of the **settlement** lane. `fixedDelay` (not rate), so a slow tick never overlaps the next and cannot publish the same event twice. |
+| `OUTBOX_SETTLEMENT_BATCH_SIZE` / `…lanes.settlement.batch-size` | `100` | Max events one settlement tick may claim — a backlog drains in bounded chunks, never one unbounded write storm. |
+| `OUTBOX_SETTLEMENT_MAX_IN_FLIGHT` / `…lanes.settlement.max-in-flight` | `8` | Concurrent publishes allowed on the settlement lane, and its backpressure bound: past it the tick **waits** rather than growing memory, and reports it. |
+| `OUTBOX_NOTIFICATION_DELAY_MS` / `…lanes.notification.fixed-delay-ms` | `1000` | Same, for the lane a person is waiting on. |
+| `OUTBOX_NOTIFICATION_BATCH_SIZE` / `…lanes.notification.batch-size` | `100` | |
+| `OUTBOX_NOTIFICATION_MAX_IN_FLIGHT` / `…lanes.notification.max-in-flight` | `4` | |
+| `OUTBOX_AUDIT_DELAY_MS` / `…lanes.audit.fixed-delay-ms` | `5000` | Same, for the lane only the trail reads. |
+| `OUTBOX_AUDIT_BATCH_SIZE` / `…lanes.audit.batch-size` | `50` | |
+| `OUTBOX_AUDIT_MAX_IN_FLIGHT` / `…lanes.audit.max-in-flight` | `1` | A ceiling of 1 means no thread pool at all — the step-29 sequential publisher, on its own schedule. |
 | `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis for the balance cache (step 40); compose overrides the host to `redis`. A Redis outage degrades balance reads to ledger speed — every read becomes a miss — and never to errors. |
 | `BALANCE_CACHE_TTL` / `pix.balance-cache.ttl` | `5s` | How long a cached balance may be served. It does two jobs: caps ordinary staleness, and — when ledger-service's post-commit eviction is lost (it is best-effort) — is the backstop that bounds how long a wrong number can be displayed. |
 | `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs. Integration tests set it `false` and drive the tick explicitly (Spring caches contexts; a live poller would drain the shared table mid-assertion). |
@@ -458,7 +488,7 @@ aws --endpoint-url=http://localhost:4566 sqs receive-message --queue-url \
   $(aws --endpoint-url=http://localhost:4566 sqs get-queue-url --queue-name settlement-queue \
       --query QueueUrl --output text) | jq '.Messages[0] | {body: .Body, attrs: .MessageAttributes}'
 # publisher liveness: seconds the oldest unpublished event has waited (0.0 on a drained outbox)
-curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
+curl -s localhost:8084/actuator/prometheus | grep pix_outbox_lag_seconds   # one series per lane
 ```
 
 > **Local Docker note:** the Docker Engine API version Testcontainers speaks is **pinned in the
@@ -474,6 +504,8 @@ curl -s localhost:8084/actuator/metrics/pix.outbox.lag | jq
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — the three-layer idempotency strategy
   (API `Idempotency-Key`, ledger `txId`, SPI `endToEndId`); step 18 mints the `endToEndId`, step 19
   adds the API layer.
+- [ADR-0019](../../docs/adr/0019-outbox-lanes-and-priority.md) — outbox lanes, one publisher each,
+  bounded backpressure and a per-lane queue-age SLO (step 71; amends ADR-0004).
 - [ADR-0004](../../docs/adr/0004-transactional-outbox-with-polling-publisher.md) — the transactional
   outbox and its polling publisher; step 28 implements the **guarantee** half (state + events in one
   `TransactWriteItems`), step 29 the delivery half.

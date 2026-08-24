@@ -74,9 +74,14 @@ costs. **This is not a hypothetical:** a correct external payment was reversed b
    already dedupes by `eventId` (`ProcessedEventStore`, step 29) and every finalization is fenced
    (step 67) — the two properties that make concurrency here a sizing decision instead of a
    correctness one. **Fixing the publisher alone would only move the bottleneck one hop.**
-7. **Docs in the same change:** `docs/data-model.md` §7 (the lane attribute and the lane-scoped
-   `gsi3pk`), `docs/messaging-kafka-appendix.md` (a lane maps to a topic — the portability claim gets
-   stronger, not weaker), `docs/observability.md` §2.2/§4, and ADR-0004 annotated to point at ADR-0019.
+7. **Docs in the same change:** `docs/data-model.md` **§4 `pix_transactions`** (the lane attribute and
+   the lane-scoped `gsi3pk`), `docs/messaging-kafka-appendix.md` (a lane maps to a topic — the
+   portability claim gets stronger, not weaker), `docs/observability.md` §2.2/§4, and ADR-0004
+   annotated to point at ADR-0019.
+
+   > **Spec corrected during implementation:** this task originally said `docs/data-model.md` **§7**.
+   > §7 is "Redis keys"; the outbox item, `gsi3` and the publish mechanics are documented in **§4
+   > `pix_transactions`**, which is what step 71 actually updated.
 8. **Write down what is not guaranteed.** Cross-lane ordering is explicitly not a guarantee. ADR-0004
    already says global ordering is not offered; lanes make that visible rather than accidental.
 
@@ -95,6 +100,15 @@ costs. **This is not a hypothetical:** a correct external payment was reversed b
   `notification`-lane events, then one `settlement`-lane event; run the publishers. **Assert the
   settlement event is published within its SLO budget.** Against `main` (one queue, one drain) it is
   published after all 10,000 — the reversal incident, reproduced deterministically.
+
+  > **Implemented with 1,000 rather than 10,000, and the budget expressed in *ticks*.** The mechanism
+  > does not depend on the magnitude — head-of-line blocking bites as soon as the backlog exceeds one
+  > batch, and 1,000 is ten full batches at any lane sizing this service ships. The assertion is "the
+  > settlement event is published after exactly **one** settlement-lane tick", which is the
+  > deterministic form of "within its SLO budget" (budget ÷ fixed-delay) and does not depend on a
+  > stopwatch against LocalStack. Against `main` it failed exactly as predicted, and a second test
+  > (`theNotificationBacklogIsStillThereAndStillOrdered`) pins that the settlement tick drained none of
+  > the other lane's work — which `main` also failed, having eaten 24 of the 1,000.
 
 Then:
 - `PublishOutboxEventsUseCaseTest#eachLaneDrainsIndependently`
@@ -132,7 +146,7 @@ curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN"
 - [ ] Bounded backpressure that never touches the acceptance path
 - [ ] Settlement consumer parallelised; conservation holds under concurrent consumption
 - [ ] The original incident (external send behind an internal flood) no longer reverses
-- [ ] `docs/data-model.md` §7, `docs/messaging-kafka-appendix.md`, `docs/observability.md` and the
+- [ ] `docs/data-model.md` §4, `docs/messaging-kafka-appendix.md`, `docs/observability.md` and the
       ADR-0004 pointer updated in this change
 
 ## CHANGELOG entry

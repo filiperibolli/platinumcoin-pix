@@ -3,6 +3,7 @@ package com.platinumcoin.pix.payment.api;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
@@ -18,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -103,7 +106,10 @@ class OutboxWriteIT extends LocalStackTestBase {
 
         // The sparse-index key: this is what makes the item visible to step 29's publisher, and what
         // the publisher REMOVEs to mark it published.
-        assertThat(event.get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
+        assertThat(event.get("gsi3pk").s()).isEqualTo(OutboxLane.SETTLEMENT.gsi3pk());
+        // …and the lane it went out on, as a plain attribute that SURVIVES publication — so the outbox
+        // history in this partition still says which drain carried the event once gsi3pk is gone.
+        assertThat(event.get("lane").s()).isEqualTo("SETTLEMENT");
         // Fixed-width milliseconds, so the publisher's oldest-first ordering is lexicographic.
         assertThat(event.get("gsi3sk").s()).matches("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z");
         assertThat(event.get("gsi3sk").s()).isEqualTo(event.get("occurredAt").s());
@@ -122,6 +128,63 @@ class OutboxWriteIT extends LocalStackTestBase {
         assertThat(payload.get("amountCents").asLong()).isEqualTo(20_000L);
     }
 
+    /**
+     * <b>Every event type this platform emits has a lane, and the build says so</b> (step 71, task:
+     * "a new event type without a lane fails the build rather than silently landing in {@code audit}").
+     *
+     * <p>Two halves, and the second is the one with teeth. The rows pin the <i>ranking</i> — which is a
+     * design decision, so it belongs in a test somebody reviews rather than in a lookup nobody reads.
+     * The last assertion pins the <i>completeness</i>: an unmapped type is refused outright, which is
+     * what turns "we forgot to classify PixSomethingNew" into a red build instead of a money-critical
+     * event quietly taking the slowest drain and surfacing months later as a reversed payment.
+     */
+    @ParameterizedTest(name = "{0} is written on the {1} lane")
+    @CsvSource({
+            "PixDebited,        SETTLEMENT",
+            "PixSettled,        NOTIFICATION",
+            "PixReceived,       NOTIFICATION",
+            "PixReversed,       NOTIFICATION",
+            "FraudCheckSkipped, AUDIT",
+    })
+    void everyEventTypeIsAssignedItsLane(String eventType, OutboxLane expectedLane) {
+        String txId = "tx-lane-" + UUID.randomUUID();
+        transactions.create(
+                transaction(txId, "acc-lane-map", TransactionStatus.DEBITED),
+                List.of(new OutboxEvent("evt-" + UUID.randomUUID(), eventType, Map.of("txId", txId),
+                        Instant.now(), "corr-lane-map")));
+
+        Map<String, AttributeValue> event = outboxItems(txId).get(0);
+
+        assertThat(event.get("lane").s()).isEqualTo(expectedLane.name());
+        assertThat(event.get("gsi3pk").s())
+                .as("the lane is what partitions the sparse index, so it must be IN the key")
+                .isEqualTo(expectedLane.gsi3pk());
+    }
+
+    /** The completeness half: nothing may be written without a lane. */
+    @Test
+    void anEventTypeWithNoLaneIsRefusedRatherThanWrittenToTheSlowestDrain() {
+        String txId = "tx-lane-" + UUID.randomUUID();
+
+        assertThatThrownBy(() -> transactions.create(
+                transaction(txId, "acc-lane-unmapped", TransactionStatus.DEBITED),
+                List.of(new OutboxEvent("evt-" + UUID.randomUUID(), "PixSomethingNew",
+                        Map.of("txId", txId), Instant.now(), "corr-lane-unmapped"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("No outbox lane is registered");
+
+        assertThat(outboxItems(txId))
+                .as("nothing is half-written: the whole TransactWriteItems never ran")
+                .isEmpty();
+    }
+
+    /** A minimal accepted external send, for the lane tests that care only about the outbox item. */
+    private static Transaction transaction(String txId, String debtor, TransactionStatus status) {
+        Instant now = Instant.now();
+        return new Transaction(txId, "E" + UUID.randomUUID(), debtor, EXTERNAL_KEY, null, false,
+                "SPI_CLEARING", 1_000L, status, "lane", FraudDecision.APPROVE, false, now, null, null);
+    }
+
     /** The event has to be reachable the way the publisher will reach it: through the sparse index. */
     @Test
     void theUnpublishedEventIsQueryableOnTheSparsePublisherIndex() throws Exception {
@@ -136,7 +199,7 @@ class OutboxWriteIT extends LocalStackTestBase {
                         .indexName("gsi3")
                         .keyConditionExpression("gsi3pk = :p")
                         .expressionAttributeValues(
-                                Map.of(":p", AttributeValue.fromS("OUTBOX#UNPUBLISHED"))))
+                                Map.of(":p", AttributeValue.fromS(OutboxLane.SETTLEMENT.gsi3pk()))))
                 .items();
 
         assertThat(unpublished)

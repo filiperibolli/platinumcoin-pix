@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.infra.persistence;
 
 import com.platinumcoin.pix.common.event.EventEnvelope;
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.settlement.domain.exception.InboundAlreadyRecordedException;
 import com.platinumcoin.pix.settlement.domain.model.InboundTransaction;
 import com.platinumcoin.pix.settlement.domain.model.TransactionStatus;
@@ -54,9 +55,6 @@ public class DynamoInboundTransactionStore implements InboundTransactionStore {
     private static final String OUTBOX_SK_PREFIX = "OUTBOX#";
     private static final String STATUS_PREFIX = "STATUS#";
     private static final String INBOUND = "INBOUND";
-
-    /** The sparse publisher index's single partition key — identical to every other outbox writer's. */
-    private static final String UNPUBLISHED = "OUTBOX#UNPUBLISHED";
 
     private final DynamoDbClient dynamo;
 
@@ -174,16 +172,25 @@ public class DynamoInboundTransactionStore implements InboundTransactionStore {
         item.put("eventType", AttributeValue.fromS(event.eventType()));
         item.put("payload", AttributeValue.fromS(EventEnvelope.payloadJson(event)));
         item.put("occurredAt", AttributeValue.fromS(event.occurredAtKey()));
-        item.put("gsi3pk", AttributeValue.fromS(UNPUBLISHED));
+        // The lane this event goes out on (step 71, ADR-0019). It is written TWICE, on purpose:
+        //  - `lane` is a plain attribute that SURVIVES publication, so the outbox history in the
+        //    partition still says which drain carried each event — the audit trail of a latency
+        //    incident, which is the only kind this design has ever produced.
+        //  - `gsi3pk` carries it into the sparse index's PARTITION KEY, which is what makes each lane
+        //    an independent queue; it is removed on publish, and with it the whole index entry.
+        OutboxLane lane = OutboxLane.forEventType(event.eventType());
+        item.put("lane", AttributeValue.fromS(lane.name()));
+        item.put("gsi3pk", AttributeValue.fromS(lane.gsi3pk()));
         item.put("gsi3sk", AttributeValue.fromS(event.occurredAtKey()));
         if (event.correlationId() != null) {
             item.put("correlationId", AttributeValue.fromS(event.correlationId()));
         }
 
-        log.debug("DynamoDB Put of an outbox event | table={} pk={}{} sk={}{} eventType={} gsi3pk={} "
-                        + "gsi3sk={} correlationId={} payload={}",
-                TABLE, TX_PREFIX, txId, OUTBOX_SK_PREFIX, event.eventId(), event.eventType(), UNPUBLISHED,
-                event.occurredAtKey(), event.correlationId(), EventEnvelope.payloadJson(event));
+        log.debug("DynamoDB Put of an outbox event | table={} pk={}{} sk={}{} eventType={} lane={} "
+                        + "gsi3pk={} gsi3sk={} correlationId={} payload={}",
+                TABLE, TX_PREFIX, txId, OUTBOX_SK_PREFIX, event.eventId(), event.eventType(),
+                lane.name(), lane.gsi3pk(), event.occurredAtKey(), event.correlationId(),
+                EventEnvelope.payloadJson(event));
 
         return Put.builder()
                 .tableName(TABLE)

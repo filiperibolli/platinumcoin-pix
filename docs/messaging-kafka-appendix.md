@@ -15,6 +15,7 @@ This platform uses **SNS fan-out + SQS queues** (the natural fit for the LocalSt
 | Replay: impossible (consumed = gone); recovery path is the reconciliation loop + S3 audit trail | Replay is native: rewind the group's offset, or spin a new group from offset 0 within retention | Kafka retention turns the topic itself into a short-term event store; our equivalent long-term store is the S3 audit log (step 43). |
 | Consumer dedup table by `eventId` (house rule) | **Still required.** Kafka is at-least-once end-to-end in practice; EOS (`transactional.id`, read-process-write) only covers Kafka-to-Kafka pipelines | Idempotent consumers are broker-agnostic hygiene — nothing changes. |
 | Outbox + polling publisher (ADR-0004) | **Identical pattern.** Delivery leg becomes Debezium/CDC or a poller producing to Kafka | The outbox write and the event envelope do not change — this seam is the whole point of ADR-0004. |
+| Outbox **lanes** (ADR-0019) | **One topic per lane** — `pix-events.settlement`, `pix-events.notification`, `pix-events.audit` | The portability claim gets *stronger*, not weaker: a lane is already the unit a Kafka topic is, with its own partitions, its own consumer group and its own lag metric. |
 | Message attributes (`eventType`, `eventId`) | Record **headers** + record **key** (partitioning + compaction identity) | The record key does double duty in Kafka: partition routing and log-compaction identity. |
 | Scaling consumers: add instances polling the queue (unbounded) | Max parallelism = **partition count** of the topic per group | Partition count is a capacity decision made up front (resizable, with key-distribution caveats). |
 
@@ -28,7 +29,12 @@ This platform uses **SNS fan-out + SQS queues** (the natural fit for the LocalSt
 
 ## If this platform migrated to Kafka tomorrow
 
-1. Replace the polling publisher's SNS client with a Kafka producer to `pix-events`, **keyed by `txId`** — the outbox table, the sparse-GSI drain loop and the envelope are untouched (ADR-0004's isolation goal, cashed in).
+1. Replace each lane publisher's SNS client with a Kafka producer to that lane's topic, **keyed by `txId`** — the outbox table, the lane-partitioned sparse-GSI drain loop and the envelope are untouched (ADR-0004's isolation goal, cashed in). The `lane` attribute is already the routing decision, so it maps onto the topic name with nothing to invent; on a single-topic Kafka it would be the header a consumer routes on instead.
+
+   > **The lag SLO maps cleanly too.** `pix_outbox_lag_seconds{lane=…}` is the DynamoDB-side analogue of
+   > per-topic consumer lag, so the three alert rules of step 71 survive the migration as three
+   > `kafka_consumergroup_lag` rules with the same budgets. What does *not* survive is nothing —
+   > cross-lane ordering was never guaranteed here either, and Kafka orders per partition, not per topic.
 2. Each consumer service becomes a consumer group; the dedup-by-`eventId` tables stay exactly as they are.
 3. Build the DLQ pattern (dead-letter topic + retry topics) that SQS gave us for free; alert on **consumer lag** instead of queue depth.
 4. Revisit the reconciliation loop's role: with replayable topics it stops being the only recovery path, but it remains the arbiter against the *external* source of truth (BACEN) — Kafka does not reconcile you with the outside world.

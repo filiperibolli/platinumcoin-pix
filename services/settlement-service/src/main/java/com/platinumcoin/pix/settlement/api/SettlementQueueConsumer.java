@@ -4,6 +4,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platinumcoin.pix.common.web.CorrelationId;
 import com.platinumcoin.pix.settlement.domain.usecase.SettleOutcome;
 import com.platinumcoin.pix.settlement.domain.usecase.SettlePixUseCase;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -23,6 +29,25 @@ import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
  * "delete the message or leave it". It holds no policy of its own; whether a payment may be settled and
  * whether a delivery is a duplicate are money decisions and they live in the use case, where a
  * plain-Java test pins them.
+ *
+ * <h2>A bounded worker pool, and why concurrency here is a sizing decision (step 71, ADR-0019)</h2>
+ * Until step 71 the messages of one receive were handled strictly one after another, so at BACEN's
+ * default 2s latency this consumer settled about <b>0.5 payments per second</b> — a ceiling that made
+ * fixing the outbox publisher pointless on its own, because the bottleneck would simply have moved one
+ * hop down. Messages are now handed to a bounded pool and the tick waits for all of them.
+ *
+ * <p>What makes that safe is not new: <b>every consumer already dedupes by {@code eventId}</b>
+ * ({@code ProcessedEventStore}, step 29) and <b>every finalization is fenced</b> by a CAS into
+ * {@code FINALIZING_*} before any posting (step 67, ADR-0016). Two workers handed the same payment
+ * therefore race for a fence exactly one of them can win, and the loser settles nothing — the same
+ * property that already had to hold for two <i>instances</i> of this service, which SQS has always been
+ * free to deliver to. Concurrency here changes the throughput, not the invariants, which is precisely
+ * why it belongs in a sizing knob and not in a design change.
+ *
+ * <p>The pool size interacts with the visibility timeout in the direction that helps: {@code batchSize}
+ * messages that used to be handled in {@code batchSize × latency} now take roughly
+ * {@code ceil(batchSize / workers) × latency}, so the batch is far less likely to outlive the 30s
+ * window while a message sits waiting for its turn.
  *
  * <h2>Long polling, and why the tick is a {@code fixedDelay}</h2>
  * The receive blocks up to 20s waiting for work (queue attribute of step 26), so an idle system costs
@@ -56,6 +81,8 @@ public class SettlementQueueConsumer {
     private final ObjectMapper mapper;
     private final SettlePixUseCase settlePix;
     private final int batchSize;
+    private final int workers;
+    private final ExecutorService pool;
     private final int waitTimeSeconds;
     private final int backoffBaseSeconds;
     private final int backoffCapSeconds;
@@ -75,6 +102,7 @@ public class SettlementQueueConsumer {
             SettlePixUseCase settlePix,
             @Value("${pix.settlement.queue-name}") String queueName,
             @Value("${pix.settlement.consumer.batch-size}") int batchSize,
+            @Value("${pix.settlement.consumer.workers}") int workers,
             @Value("${pix.settlement.consumer.wait-time-seconds}") int waitTimeSeconds,
             @Value("${pix.settlement.consumer.retry-backoff-base-seconds}") int backoffBaseSeconds,
             @Value("${pix.settlement.consumer.retry-backoff-cap-seconds}") int backoffCapSeconds) {
@@ -83,13 +111,24 @@ public class SettlementQueueConsumer {
         this.mapper = mapper;
         this.settlePix = settlePix;
         this.batchSize = batchSize;
+        this.workers = workers;
+        // A ceiling of 1 means no pool at all: the same sequential consumer step 31 shipped, which is
+        // what keeps the retry and DLQ ITs free of thread scheduling. Daemon threads named after the
+        // queue, so a thread dump during an incident says what is busy without correlating ids.
+        this.pool = workers == 1 ? null : Executors.newFixedThreadPool(workers, runnable -> {
+            Thread thread = new Thread(runnable, "settlement-consumer");
+            thread.setDaemon(true);
+            return thread;
+        });
         this.waitTimeSeconds = waitTimeSeconds;
         this.backoffBaseSeconds = backoffBaseSeconds;
         this.backoffCapSeconds = backoffCapSeconds;
-        log.info("Settlement consumer ready, it will long-poll this queue for PixDebited events | "
-                        + "queueName={} queueUrl={} batchSize={} waitTimeSeconds={} "
-                        + "retryBackoffBaseSeconds={} retryBackoffCapSeconds={}",
-                queueName, this.queueUrl, batchSize, waitTimeSeconds, backoffBaseSeconds, backoffCapSeconds);
+        log.info("Settlement consumer ready, it will long-poll this queue for PixDebited events and "
+                        + "handle each batch on a bounded worker pool | queueName={} queueUrl={} "
+                        + "batchSize={} workers={} waitTimeSeconds={} retryBackoffBaseSeconds={} "
+                        + "retryBackoffCapSeconds={}",
+                queueName, this.queueUrl, batchSize, workers, waitTimeSeconds, backoffBaseSeconds,
+                backoffCapSeconds);
     }
 
     /**
@@ -120,17 +159,52 @@ public class SettlementQueueConsumer {
                 return 0;
             }
 
-            log.info("Settlement queue poll received messages, handling them one by one | received={} "
-                    + "batchSize={}", messages.size(), batchSize);
-            for (Message message : messages) {
-                handle(message);
-            }
+            log.info("Settlement queue poll received messages, handling them concurrently on the "
+                            + "worker pool | received={} batchSize={} workers={}",
+                    messages.size(), batchSize, workers);
+            handleAll(messages);
             return messages.size();
         } catch (RuntimeException e) {
             log.error("The settlement consumer tick failed before it could handle its messages, nothing "
                     + "was acked so every message returns after the visibility timeout | queueUrl={}",
                     queueUrl, e);
             return 0;
+        }
+    }
+
+    /**
+     * Hand every message of one receive to the pool and <b>wait for the batch</b>.
+     *
+     * <p>Waiting is what keeps {@code fixedDelay} meaning what it says: returning early would let the
+     * next poll start while these messages are still in flight, so two ticks would hold overlapping
+     * work and the visibility timeout — not the code — would be deciding how much concurrency there is.
+     * A worker that throws is already impossible ({@link #handle} swallows everything), but the get()
+     * is still checked so a pool-level failure cannot silently ack nothing.
+     */
+    private void handleAll(List<Message> messages) {
+        if (pool == null) {
+            messages.forEach(this::handle);
+            return;
+        }
+        List<Future<?>> inFlight = new ArrayList<>(messages.size());
+        for (Message message : messages) {
+            inFlight.add(pool.submit(() -> handle(message)));
+        }
+        for (Future<?> future : inFlight) {
+            try {
+                future.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                // Shutdown. Nothing was acked that should not have been; whatever did not finish is
+                // still on the queue and returns after its visibility timeout.
+                log.warn("The settlement consumer was interrupted while awaiting its batch, unacked "
+                        + "messages return after the visibility timeout | queueUrl={}", queueUrl);
+                return;
+            } catch (ExecutionException e) {
+                log.error("A settlement worker failed outside its own error handling, its message was "
+                        + "not acked and returns after the visibility timeout | queueUrl={}",
+                        queueUrl, e.getCause());
+            }
         }
     }
 

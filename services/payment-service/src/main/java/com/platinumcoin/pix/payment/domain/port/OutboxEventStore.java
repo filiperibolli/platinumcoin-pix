@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.port;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.model.PendingOutboxEvent;
 import java.util.List;
 
@@ -13,15 +14,23 @@ import java.util.List;
 public interface OutboxEventStore {
 
     /**
-     * The events still waiting to be published, <b>oldest first</b>, at most {@code limit} of them.
+     * The events still waiting on <b>this lane</b>, <b>oldest first</b>, at most {@code limit} of them.
      *
      * <p>The adapter reads them off a sparse index that only ever holds in-flight events, so this is
      * O(unpublished) and never O(history) — the reason a 1s poll is affordable at all. Oldest-first is
      * the index's sort order, and it is what keeps a backlog draining fairly rather than starving the
      * events that have waited longest. The bound is what keeps one tick from turning into an unbounded
      * write storm; the remainder is simply the next tick's work.
+     *
+     * <p><b>The lane is a query parameter, not a filter</b> (step 71, ADR-0019). It selects the index
+     * partition, so a lane holding a million events costs another lane's poll <i>nothing</i> — no read
+     * capacity, no latency, no page to skip. Filtering after the read would have kept exactly the
+     * head-of-line blocking this exists to remove: the reversed payment of
+     * {@code docs/load/RESULTS.md} Context 2 would still have been paged past 55,538 times.
+     * Oldest-first survives partitioning because the sort key is untouched — and within a lane is the
+     * only place ADR-0004's ordering ever meant anything.
      */
-    List<PendingOutboxEvent> findUnpublished(int limit);
+    List<PendingOutboxEvent> findUnpublished(OutboxLane lane, int limit);
 
     /**
      * Flag an event as published, so no later tick picks it up again.

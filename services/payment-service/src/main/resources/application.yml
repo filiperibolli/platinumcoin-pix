@@ -87,17 +87,41 @@ pix:
     # topic (account 000000000000); ITs override it with the disposable container's real ARN.
     topic-arn: ${SNS_TOPIC_ARN:arn:aws:sns:${AWS_REGION:us-east-1}:000000000000:pix-events}
   outbox:
-    # The polling publisher of ADR-0004 (step 29): it drains the sparse gsi3 index to SNS, publishing
-    # each event BEFORE marking it published — so a crash in between costs a duplicate (consumers dedupe
-    # by eventId) rather than a lost event (money stuck in clearing that nobody settles).
-    publisher:
-      # 1s: invisible against a SPI that settles in up to 10s, and cheap because the index it polls only
-      # ever holds in-flight events. fixedDelay, so a slow tick never overlaps the next one.
-      fixed-delay-ms: ${OUTBOX_PUBLISHER_DELAY_MS:1000}
-      # Upper bound on how much ONE tick may publish — a backlog drains in bounded chunks instead of a
-      # single unbounded write storm; the remainder is the next tick's work.
-      batch-size: ${OUTBOX_PUBLISHER_BATCH_SIZE:25}
-  # Master switch for every background job in this service (today: the outbox publisher). True in every
+    # The polling publisher of ADR-0004 (step 29), SPLIT INTO THREE LANES in step 71 (ADR-0019). Each
+    # lane drains its own partition of the sparse gsi3 index — gsi3pk = OUTBOX#UNPUBLISHED#<LANE> — so a
+    # backlog on one lane is not merely deprioritised by another lane's poll, it is never read by it.
+    # Every lane publishes BEFORE marking published, so a crash in between costs a duplicate (consumers
+    # dedupe by eventId) rather than a lost event (money stuck in clearing that nobody settles).
+    #
+    # Why this exists: docs/load/RESULTS.md Context 2. A single FIFO at batch 25 / 1s ≈ 25 events/s put
+    # one external PixDebited behind 55,538 internal PixSettled events THAT HAD NO SUBSCRIBER, and the
+    # payment crossed the 120s stuck threshold and was REVERSED by reconciliation instead of settling.
+    # Raising the batch clears that number and preserves the failure mode; lanes remove it.
+    lanes:
+      # A MONEY FLOW IS BLOCKED. Until a PixDebited is published the payer's money sits in the clearing
+      # account with nothing on its way to release it. Sized to stay ahead of the send rate and to keep
+      # the lag an order of magnitude under the 120s stuck threshold that reversed the payment:
+      # 200ms tick × batch 100 with 8 concurrent publishes is ~500 events/s of headroom against a
+      # platform target of 58 TPS, so this lane empties every tick under any load step 47 profiles.
+      settlement:
+        fixed-delay-ms: ${OUTBOX_SETTLEMENT_DELAY_MS:200}
+        batch-size: ${OUTBOX_SETTLEMENT_BATCH_SIZE:100}
+        max-in-flight: ${OUTBOX_SETTLEMENT_MAX_IN_FLIGHT:8}
+      # A PERSON IS WAITING TO SEE IT — the SSE stream and the statement. Late is a bad experience, not
+      # a wrong balance, so this lane is sized generously but not urgently. It is also the lane the
+      # internal-send flood lands on, which is exactly why it must not share a drain with settlement.
+      notification:
+        fixed-delay-ms: ${OUTBOX_NOTIFICATION_DELAY_MS:1000}
+        batch-size: ${OUTBOX_NOTIFICATION_BATCH_SIZE:100}
+        max-in-flight: ${OUTBOX_NOTIFICATION_MAX_IN_FLIGHT:4}
+      # ONLY THE TRAIL READS IT. Minutes here cost nothing anyone can observe, so max-in-flight is 1 —
+      # which means no thread pool at all, just the step-29 sequential publisher, on its own schedule.
+      audit:
+        fixed-delay-ms: ${OUTBOX_AUDIT_DELAY_MS:5000}
+        batch-size: ${OUTBOX_AUDIT_BATCH_SIZE:50}
+        max-in-flight: ${OUTBOX_AUDIT_MAX_IN_FLIGHT:1}
+  # Master switch for every background job in this service (today: the three outbox lane publishers).
+  # True in every
   # real run; integration tests set it false and drive the tick explicitly, because Spring caches
   # contexts across test classes and a live poller would drain the shared tables mid-assertion.
   schedulers:

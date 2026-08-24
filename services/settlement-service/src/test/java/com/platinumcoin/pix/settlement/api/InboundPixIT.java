@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.support.SettlementTestSupport;
 import com.platinumcoin.pix.settlement.support.StubLedgerClient;
@@ -105,7 +106,7 @@ class InboundPixIT extends LocalStackTestBase {
         assertThat(events).hasSize(1);
         assertThat(events.get(0).get("eventType").s()).isEqualTo("PixReceived");
         // It sits in the sparse index, so the SAME publisher that drains outbound events delivers it.
-        assertThat(events.get(0).get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
+        assertThat(events.get(0).get("gsi3pk").s()).isEqualTo(OutboxLane.NOTIFICATION.gsi3pk());
         // The routing field step 38/39 needs to find whose SSE stream this push belongs on.
         assertThat(events.get(0).get("payload").s()).contains("\"creditorAccountId\":\"" + PAYEE + "\"");
         assertThat(events.get(0).get("payload").s()).contains("\"amountCents\":" + AMOUNT);

@@ -1026,6 +1026,40 @@ watch -n1 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOK
 awsl sqs receive-message --queue-url $(awsl sqs get-queue-url --queue-name settlement-queue --output text --query QueueUrl) --visibility-timeout 0 | jq
 ```
 
+**Outbox lanes & publisher (step 71, ADR-0019)** — the target of the `outbox_publisher_lag_<lane>`
+alerts. Since step 71 there are **three** drains, each with its own tick, batch, in-flight ceiling and
+lag budget, so the first question during an incident is *which lane*:
+
+```bash
+# one gauge series per lane — settlement / notification / audit
+curl -s localhost:8084/actuator/prometheus | grep pix_outbox_lag_seconds
+
+# what each lane is doing, in the INFO layer (ADR-0012: the sentence, then the values)
+docker compose -f infra/docker-compose.yml logs payment-service | grep -i 'lane='
+# a lane at its in-flight ceiling says so BEFORE its SLO is breached:
+docker compose -f infra/docker-compose.yml logs payment-service | grep 'in-flight ceiling'
+
+# what is still waiting, per lane, straight off the sparse index
+for LANE in SETTLEMENT NOTIFICATION AUDIT; do
+  printf '%s: ' "$LANE"
+  awsl dynamodb query --table-name pix_transactions --index-name gsi3 \
+    --key-condition-expression 'gsi3pk = :p' \
+    --expression-attribute-values "{\":p\":{\"S\":\"OUTBOX#UNPUBLISHED#$LANE\"}}" \
+    --select COUNT --output text --query Count
+done
+```
+
+> **Budgets, and why the settlement one is 12s.** `pix.settlement.reconciliation.stuck-after-seconds`
+> is 120s: a `PixDebited` still unpublished by then is a payment heading for a `REVERSED` from
+> reconciliation instead of a settlement (this happened — `docs/load/RESULTS.md` Context 2). The
+> settlement lane's budget therefore sits an order of magnitude under it, so the alert leaves ~108s to
+> act. `notification` is 60s (a person waiting, not a wrong balance) and `audit` is 300s.
+>
+> **A saturated lane never touches acceptance.** If `POST /v1/payments/pix` slows while a lane is
+> backed up, the publisher is *not* the cause — the outbox write is inside the payment's atomic
+> transaction and shares nothing with the drain (ADR-0019 decision 4, pinned by
+> `SendPixUseCaseTest#outboxSaturationDoesNotSlowAcceptance`). Look at the ledger or DynamoDB instead.
+
 ### 5.5 Failure & DLQ drill
 
 ```bash

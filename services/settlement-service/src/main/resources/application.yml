@@ -77,6 +77,16 @@ pix:
       # one tick can hold messages invisible: 10 × 12s worst case is far past the 30s visibility timeout,
       # which is exactly what step 32 has to fix (batch size, visibility extension, or both).
       batch-size: ${SETTLEMENT_BATCH_SIZE:5}
+      # How many messages of one receive are handled CONCURRENTLY (step 71, ADR-0019). Until this step
+      # the batch was handled strictly one at a time, so at BACEN's default 2s latency this consumer
+      # settled ~0.5 payments/s — the ceiling that made fixing the outbox publisher alone pointless,
+      # because the bottleneck would just have moved one hop down. Safe to raise because every consumer
+      # already dedupes by eventId (ProcessedEventStore, step 29) and every finalization is fenced by a
+      # CAS into FINALIZING_* before any posting (step 67, ADR-0016): two workers handed the same
+      # payment race for a fence exactly one can win. So this is a SIZING knob, not a correctness one.
+      # 5 = the whole batch in parallel, which also keeps a slow batch inside the 30s visibility window.
+      # Set to 1 for the step-31 sequential behaviour (no pool at all).
+      workers: ${SETTLEMENT_WORKERS:5}
       # Gap between polls. Small because the long poll already does the waiting; fixedDelay, so a slow
       # batch never overlaps the next tick.
       fixed-delay-ms: ${SETTLEMENT_CONSUMER_DELAY_MS:500}
@@ -144,7 +154,20 @@ pix:
       # How far the outbox publisher may fall behind. Past this, PixDebited events are committed but
       # unpublished (ADR-0004) — settlement is not failing, it is not being ASKED, which looks identical
       # on every technical panel and is exactly what a silence-shaped rule is for.
-      outbox-lag: ${ALERTS_OUTBOX_LAG:60s}
+      # PER-LANE budgets (step 71, ADR-0019) — one rule each, never an average across lanes.
+      # SETTLEMENT is derived, not chosen: pix.settlement.reconciliation.stuck-after-seconds is 120s,
+      # and a PixDebited that has not been published by then is a payment on its way to being REVERSED
+      # by reconciliation instead of settling (docs/load/RESULTS.md Context 2 — it happened). ADR-0019
+      # requires this budget to sit an ORDER OF MAGNITUDE under that threshold, so 12s: the alert fires
+      # with ~108 seconds still on the clock to act. Raising it toward 120s makes the alert and the
+      # incident simultaneous, which is another way of saying useless.
+      # NOTIFICATION keeps the old global 60s — a user waiting a minute for their SSE ping is a bad
+      # experience, not a wrong balance. AUDIT is deliberately generous: nothing observable waits on it,
+      # and a tight bound there would only train someone to ignore the channel.
+      outbox-lag:
+        settlement: ${ALERTS_OUTBOX_LAG_SETTLEMENT:12s}
+        notification: ${ALERTS_OUTBOX_LAG_NOTIFICATION:60s}
+        audit: ${ALERTS_OUTBOX_LAG_AUDIT:300s}
       # The fail-open CEILING (ADR-0005). Skipping the fraud check under timeout is a deliberate design,
       # so the alert is not "it happened" but "it is now routine": above 5% of decisions, sends are
       # regularly unscored and the 200ms budget needs attention rather than tolerance. Since ADR-0018 this

@@ -286,4 +286,65 @@ class AlertEvaluatorTest {
         assertThat(statuses).extracting(status -> status.rule().name())
                 .containsExactly("settlement_silence", "settlement_dlq_depth", "balance_cache_hit_rate");
     }
+    // ── Per-lane outbox lag (step 71, ADR-0019) ───────────────────────────────────────────────────
+
+    /**
+     * <b>A healthy lane must not mask a stalled one</b> — the whole reason the single
+     * {@code outbox_publisher_lag} rule became three.
+     *
+     * <p>The old rule was {@code max(pix_outbox_lag_seconds)} against one 60s bound. Even that `max`,
+     * which is the <i>friendliest</i> aggregate for catching a problem, cannot say <b>which</b> drain
+     * is behind — and the incident in {@code docs/load/RESULTS.md} Context 2 is precisely a case where
+     * the answer to "which one?" decided whether a payment reversed. Worse, the three lanes have
+     * budgets an order of magnitude apart: a settlement lane 30 seconds behind is an emergency and an
+     * audit lane 30 seconds behind is Tuesday, so no single number can be right for both.
+     *
+     * <p>Here the settlement lane is 20s behind (past its 12s budget) while notification and audit are
+     * comfortably inside theirs. Exactly one rule fires, and it names the lane.
+     */
+    @Test
+    void outboxLagAlertsPerLane() {
+        var settlement = (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_settlement");
+        var notification =
+                (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_notification");
+        var audit = (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_audit");
+        var evaluator = new AlertEvaluator(List.of(settlement, notification, audit));
+
+        List<AlertStatus> statuses = evaluator.evaluate(T0, samples(
+                settlement.query(), 20,      // past its 12s budget — a payment is heading for a reversal
+                notification.query(), 5,     // fine
+                audit.query(), 120));        // 2 minutes behind, and well inside its generous 300s
+
+        assertThat(statuses).extracting(status -> status.rule().name(), AlertStatus::state)
+                .containsExactly(
+                        org.assertj.core.api.Assertions.tuple(
+                                "outbox_publisher_lag_settlement", State.FIRING),
+                        org.assertj.core.api.Assertions.tuple(
+                                "outbox_publisher_lag_notification", State.RESOLVED),
+                        org.assertj.core.api.Assertions.tuple(
+                                "outbox_publisher_lag_audit", State.RESOLVED));
+    }
+
+    /**
+     * The budgets are not decoration: each rule selects <b>its own</b> lane's series, so a lane cannot
+     * be evaluated against another lane's number. A copy-paste that left all three on
+     * {@code lane="settlement"} would pass the test above and fail this one.
+     */
+    @Test
+    void eachOutboxLaneRuleSelectsItsOwnSeriesAndItsOwnBudget() {
+        var settlement = (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_settlement");
+        var notification =
+                (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_notification");
+        var audit = (AlertRule.Threshold) ShippedAlertRules.named("outbox_publisher_lag_audit");
+
+        assertThat(settlement.query()).isEqualTo("max(pix_outbox_lag_seconds{lane=\"settlement\"})");
+        assertThat(notification.query()).isEqualTo("max(pix_outbox_lag_seconds{lane=\"notification\"})");
+        assertThat(audit.query()).isEqualTo("max(pix_outbox_lag_seconds{lane=\"audit\"})");
+
+        // And the ranking ADR-0019 requires: the settlement budget is an ORDER OF MAGNITUDE under the
+        // 120s stuck threshold that reversed a payment, and strictly tighter than the other lanes'.
+        assertThat(settlement.bound()).isLessThanOrEqualTo(12);
+        assertThat(settlement.bound()).isLessThan(notification.bound());
+        assertThat(notification.bound()).isLessThan(audit.bound());
+    }
 }
