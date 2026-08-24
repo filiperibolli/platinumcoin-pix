@@ -1,5 +1,9 @@
 package com.platinumcoin.pix.payment.support;
 
+import com.platinumcoin.pix.payment.domain.port.IdempotencyRepository;
+import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
+import com.platinumcoin.pix.payment.infra.persistence.DynamoIdempotencyRepository;
+import com.platinumcoin.pix.payment.infra.persistence.DynamoTransactionRepository;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -12,6 +16,11 @@ import org.springframework.context.annotation.Primary;
  * ledger-service. Every payment IT imports this (identical config ⇒ one cached Spring context, so the
  * LocalStack singleton is shared and the suite stays fast); a test unconcerned with a port simply leaves
  * its stub at defaults.
+ *
+ * <p><b>The two persistence beans are decorators, not stubs</b> (step 69). They wrap the real Dynamo
+ * repositories and, unless a test has armed {@link CrashInjector}, delegate every call unchanged — so
+ * every IT in this module still writes to LocalStack exactly as before, and the crash scenarios get
+ * their kill points without a single test hook in {@code src/main}.
  */
 @TestConfiguration
 public class PaymentTestSupport {
@@ -38,5 +47,25 @@ public class PaymentTestSupport {
     @Primary
     public StubLedgerClient stubLedgerClient() {
         return new StubLedgerClient();
+    }
+
+    /** Disarmed by default, so it is inert for every IT that does not deliberately arm it. */
+    @Bean
+    public CrashInjector crashInjector() {
+        return new CrashInjector();
+    }
+
+    @Bean
+    @Primary
+    public IdempotencyRepository crashingIdempotencyRepository(
+            DynamoIdempotencyRepository real, CrashInjector crash) {
+        return new CrashingIdempotencyRepository(real, crash);
+    }
+
+    @Bean
+    @Primary
+    public TransactionRepository crashingTransactionRepository(
+            DynamoTransactionRepository real, CrashInjector crash) {
+        return new CrashingTransactionRepository(real, crash);
     }
 }

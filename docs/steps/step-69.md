@@ -90,9 +90,14 @@ Testcontainers throughout — never the compose stack.
 
 ## Verify locally
 ```bash
-mvn -q -pl services/payment-service    -Dit.test=RecoveryInvariantsIT verify
-mvn -q -pl services/settlement-service -Dit.test=FencingInvariantsIT  verify
-mvn -q -Dit.test=LateralAccessIT verify
+mvn -pl services/payment-service    -Dit.test=RecoveryInvariantsIT verify
+mvn -pl services/settlement-service -Dit.test=FencingInvariantsIT  verify
+# LateralAccessIT exists once per service that exposes an /internal/** port. Failsafe's
+# failIfNoSpecifiedTests defaults to true, so a reactor-wide `-Dit.test=LateralAccessIT` fails in
+# every module that does not contain the class ("No tests were executed!") — name the modules instead.
+mvn -pl services/account-service,services/ledger-service,services/fraud-service \
+    -Dit.test=LateralAccessIT verify
+
 mvn verify          # the whole suite runs in a normal build, not behind a flag
 ```
 
