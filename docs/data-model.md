@@ -328,10 +328,26 @@ treats a missing flag as "internal" (the presence of `creditorAccountId`).
 
 The `fraud*` fields are written on **every** send that reaches the fraud stage — internal ones included,
 since fraud scoring sits in the shared send path between the limit check and the debit (step 25,
-ADR-0005). `fraudDecision` is `APPROVE`/`REVIEW`, or `SKIPPED` when the 200ms check timed out or errored
-and the send failed open; it is written only when set. `fraudSkipped` is a boolean shorthand (`true` iff
-skipped) and is **always** written on a scored send — a boolean has no "absent" state. A `DENY` never
-reaches the item: it becomes `422 FRAUD_DENIED` before the transaction is written.
+ADR-0005). `fraudDecision` takes **four** persisted values (ADR-0018, step 70):
+
+| `fraudDecision` | Meaning | `fraudSkipped` |
+|---|---|---|
+| `APPROVE` | scored, below the review band | `false` |
+| `REVIEW` | scored, flagged for an analyst — proceeds | `false` |
+| `SKIPPED` | **not scored, transiently**: the 200ms budget expired, the host was unreachable, a `5xx`/`429` | `true` |
+| `FRAUD_ERROR` | **not scored, because the check is broken**: a `401`/`403`, another `4xx`, an unreadable body, an adapter bug | `true` |
+
+It is written only when set. `fraudSkipped` is the boolean shorthand for **"this send went out unscored"**
+— so it is `true` for *both* failure values, not just `SKIPPED` — and is **always** written on a scored
+send, since a boolean has no "absent" state. The division of labour is deliberate: **the flag drives
+behaviour** (it is what makes `PixOutboxEvents` emit the `FraudCheckSkipped` marker that triggers async
+re-scoring, and the async re-score is identical for both classes), while **the verdict drives diagnosis**
+(a scan for `fraudDecision = FRAUD_ERROR` answers "which payments went out unscored *because the control
+was disabled*" without touching a log file). A `DENY` never reaches the item: it becomes
+`422 FRAUD_DENIED` before the transaction is written.
+
+> Existing rows are unaffected — `FRAUD_ERROR` is purely additive, and a reader that only knows the three
+> older values still reads every historical item correctly.
 
 **Outbox item (same table, same partition as its transaction):**
 ```json
@@ -361,9 +377,11 @@ outbox items roll back with it.
 **Which events an accepted send writes** (`PixOutboxEvents`, payment-service): an **external** send
 announces `PixDebited` (the trigger the settlement-queue's filter policy subscribes to); an **internal**
 send announces `PixSettled` — the atomic posting was the settlement, and `PixDebited` would ask BACEN to
-settle a transfer that never left the bank; a **fail-open fraud skip** (ADR-0005) adds a second
-`FraudCheckSkipped` item to the same transaction, so "an unscored payment was let through" is as durable
-as the payment. Money in a payload is always integer cents.
+settle a transfer that never left the bank; a **send that went out unscored** — either failure class,
+ADR-0005/ADR-0018 — adds a second `FraudCheckSkipped` item to the same transaction, so "an unscored
+payment was let through" is as durable as the payment. The event name stays `FraudCheckSkipped` for a
+broken check too: the consumer's job ("score this one after the fact") is identical either way, and which
+class it was is on the transaction, where a query can ask. Money in a payload is always integer cents.
 
 **And which events a settlement writes** (`SettlementOutboxEvents`, settlement-service, step 31): a
 confirmed external settlement announces `PixSettled` too — the same event type, so consumers never have to

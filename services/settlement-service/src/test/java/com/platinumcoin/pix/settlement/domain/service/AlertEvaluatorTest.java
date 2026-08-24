@@ -4,6 +4,7 @@ import com.platinumcoin.pix.settlement.domain.model.AlertRule;
 import com.platinumcoin.pix.settlement.domain.model.AlertRule.Comparison;
 import com.platinumcoin.pix.settlement.domain.model.AlertStatus;
 import com.platinumcoin.pix.settlement.domain.model.AlertStatus.State;
+import com.platinumcoin.pix.settlement.infra.config.ShippedAlertRules;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
@@ -194,6 +195,84 @@ class AlertEvaluatorTest {
         AlertStatus back = only(evaluator.evaluate(T0.plusSeconds(30), samples("dlq", 5)));
         assertThat(back.state()).isEqualTo(State.FIRING);
         assertThat(back.changed()).isFalse();
+    }
+
+    // ── The fraud rules, evaluated against the rules the service ACTUALLY SHIPS ───────────────────
+    //
+    // These two are deliberately not written against hand-rolled rules like the ones above. What ADR-0018
+    // has to get right is the PromQL text — which series each rule selects — and a rule invented inside the
+    // test would assert that the test is self-consistent, not that the platform asks Prometheus the right
+    // question. So they build the real bean and read the real queries out of it.
+
+    /**
+     * A broken fraud check is a <b>binary fact, not a rate</b> — which is the entire reason ADR-0018 adds a
+     * rule instead of loosening the existing ceiling. One 401 in a whole window means the control is off
+     * and a human has to fix a credential; expressing that as "more than 5% of decisions" would require a
+     * fraud outage to become the majority of traffic before anyone was told.
+     */
+    @Test
+    void fraudBrokenFiresOnASingleOccurrence() {
+        AlertRule rule = ShippedAlertRules.named("fraud_broken");
+        var evaluator = new AlertEvaluator(List.of(rule));
+        String query = rule.queries().getFirst();
+
+        // Exactly one broken check in the window — the smallest possible signal.
+        AlertStatus status = only(evaluator.evaluate(T0, samples(query, 1)));
+
+        assertThat(status.state()).isEqualTo(State.FIRING);
+        assertThat(status.changed()).isTrue();
+        // And it selects the FRAUD_ERROR series specifically: a rule that watched the whole
+        // pix_fraud_decision_total would fire on every healthy payment.
+        assertThat(query).contains("decision=\"FRAUD_ERROR\"");
+    }
+
+    /** Zero occurrences is the only healthy value; the rule must still resolve rather than never clear. */
+    @Test
+    void fraudBrokenStaysQuietWhenNothingIsBroken() {
+        AlertRule rule = ShippedAlertRules.named("fraud_broken");
+        var evaluator = new AlertEvaluator(List.of(rule));
+
+        AlertStatus status = only(evaluator.evaluate(T0, samples(rule.queries().getFirst(), 0)));
+
+        assertThat(status.state()).isEqualTo(State.RESOLVED);
+    }
+
+    /**
+     * The other half of ADR-0018, and the reason the fix is worth anything: {@code fraud_fail_open_rate}
+     * must now measure <b>only</b> genuine capacity fail-opens. Before the split, a fraud-service answering
+     * 401 to every request drove this ratio to 100% and reported it as "the 200ms budget is being blown" —
+     * the operator was told the truth about the number and a lie about the cause.
+     */
+    @Test
+    void failOpenRateIgnoresFraudErrors() {
+        AlertRule.Ratio rule = (AlertRule.Ratio) ShippedAlertRules.named("fraud_fail_open_rate");
+        var evaluator = new AlertEvaluator(List.of(rule));
+
+        // A fraud engine that has been broken since the last deploy: 100 decisions in the window, 40 of
+        // them FRAUD_ERROR, and not one genuine timeout.
+        AlertStatus status = only(evaluator.evaluate(
+                T0, samples(rule.numeratorQuery(), 0, rule.denominatorQuery(), 100)));
+
+        // This rule stays quiet — correctly. The capacity question's answer is "capacity is fine", and
+        // fraud_broken is what is screaming next to it.
+        assertThat(status.state()).isEqualTo(State.RESOLVED);
+        // The numerator is what makes that true: it counts SKIPPED alone, so a FRAUD_ERROR can never
+        // inflate it. (It could only ever be counted before because both shared one enum value.)
+        assertThat(rule.numeratorQuery()).contains("decision=\"SKIPPED\"");
+        assertThat(rule.numeratorQuery()).doesNotContain("FRAUD_ERROR");
+    }
+
+    /** A genuine capacity problem must still fire — the classification narrowed the rule, not disabled it. */
+    @Test
+    void failOpenRateStillFiresOnGenuineTimeouts() {
+        AlertRule.Ratio rule = (AlertRule.Ratio) ShippedAlertRules.named("fraud_fail_open_rate");
+        var evaluator = new AlertEvaluator(List.of(rule));
+
+        // 12 of 100 decisions timed out: well past the documented 5% ceiling.
+        AlertStatus status = only(evaluator.evaluate(
+                T0, samples(rule.numeratorQuery(), 12, rule.denominatorQuery(), 100)));
+
+        assertThat(status.state()).isEqualTo(State.FIRING);
     }
 
     /** Every rule is evaluated on every round; one blind rule never suppresses the others. */

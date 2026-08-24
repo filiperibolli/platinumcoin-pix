@@ -103,6 +103,112 @@ class HttpFraudScorerTest {
                 .isEqualTo(FraudDecision.SKIPPED);
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // ADR-0018 (step 70): the failure classification. Not every failure is the same failure — a check
+    // that ran out of time and a check that is broken are different facts about the system, and the
+    // single catch-all used to report them under one name.
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    void anUnauthorizedResponseIsAFraudErrorNotASkip() throws IOException {
+        // A 401 is not slowness: the credential is wrong and will stay wrong. After ADR-0017 this is a
+        // live failure mode — a service token minted without the fraud:score scope — and reporting it as
+        // SKIPPED silently disables fraud screening platform-wide.
+        String baseUrl = startServer(0, 401, "{\"code\":\"UNAUTHORIZED\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.FRAUD_ERROR);
+    }
+
+    @Test
+    void aForbiddenResponseIsAFraudErrorToo() throws IOException {
+        // The exact shape step 68 made reachable: the token authenticates but lacks the scope.
+        String baseUrl = startServer(0, 403, "{\"code\":\"FORBIDDEN\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.FRAUD_ERROR);
+    }
+
+    @Test
+    void aReadTimeoutIsStillASkip() throws IOException {
+        // The behaviour that must NOT change, pinned from the other side of the boundary: a timeout is
+        // a capacity fact, and ADR-0005's fail-open still owns it.
+        String baseUrl = startServer(2_000, 200, "{\"decision\":\"APPROVE\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.SKIPPED);
+    }
+
+    @Test
+    void aFiveHundredIsTransient() throws IOException {
+        // A 5xx is fraud-service saying "not right now" — overload, a restarting pod, a dependency
+        // hiccup. It recovers on its own, so it stays on the capacity side of the line.
+        String baseUrl = startServer(0, 500, "{\"code\":\"BOOM\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.SKIPPED);
+    }
+
+    @Test
+    void aTooManyRequestsIsTransient() throws IOException {
+        // 429 is the one 4xx that is a capacity statement rather than a contract one — the server is
+        // explicitly saying "you are asking too fast", which load falling away fixes.
+        String baseUrl = startServer(0, 429, "{\"code\":\"TOO_MANY_REQUESTS\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.SKIPPED);
+    }
+
+    @Test
+    void aFourHundredIsNotTransient() throws IOException {
+        // The boundary stated from the other side: a 400 means the request we send is not the request
+        // fraud-service accepts. Retrying it, next minute or next week, produces the same 400.
+        String baseUrl = startServer(0, 400, "{\"code\":\"BAD_REQUEST\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.FRAUD_ERROR);
+    }
+
+    @Test
+    void anUnbindableBodyIsAFraudError() throws IOException {
+        // A 200 whose body carries no decision the adapter can read: fraud-service renamed a field, or
+        // an infrastructure box answered 200 with something else entirely. The deploy looks green and
+        // every payment goes unscored — precisely the silence ADR-0018 exists to break.
+        String baseUrl = startServer(0, 200, "{\"verdict\":\"APPROVE\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.FRAUD_ERROR);
+    }
+
+    @Test
+    void anUnknownDecisionValueIsAFraudError() throws IOException {
+        // The contract drifted the other way: fraud-service started answering a band this side has never
+        // heard of. Jackson cannot bind it, and guessing a verdict would be worse than saying so.
+        String baseUrl = startServer(0, 200, "{\"decision\":\"QUARANTINE\"}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 1_000L, Instant.now()))
+                .isEqualTo(FraudDecision.FRAUD_ERROR);
+    }
+
+    @Test
+    void aDenyIsNeverAFailure() throws IOException {
+        // The regression that would hurt most: a DENY is the engine looking and saying no. It is a
+        // business verdict on a healthy 200, and no amount of failure classification may touch it.
+        String baseUrl = startServer(0, 200, "{\"decision\":\"DENY\",\"score\":91,\"reasons\":[\"NEW_PAYEE\"]}");
+        HttpFraudScorer scorer = scorer(baseUrl);
+
+        assertThat(scorer.score("acc-001", "bob@platinum.com", 9_000_00L, Instant.now()))
+                .isEqualTo(FraudDecision.DENY);
+    }
+
     /** A {@link HttpFraudScorer} pointed at {@code baseUrl} with the test's tight connect/read budget. */
     private static HttpFraudScorer scorer(String baseUrl) {
         return new HttpFraudScorer(RestClient.builder(), baseUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS,

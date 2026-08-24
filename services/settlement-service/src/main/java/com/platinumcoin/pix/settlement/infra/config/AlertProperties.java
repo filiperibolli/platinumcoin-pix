@@ -39,6 +39,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *                             behaviour, not a lifetime average that would take days to react
  * @param ratioMinimumSamples  how much traffic a ratio needs before it means anything (see
  *                             {@code AlertRule.Ratio}: {@code 0/0} has no safe convention)
+ * @param fraudBrokenWindow    the PromQL lookback the {@code fraud_broken} rule counts occurrences over
+ *                             (ADR-0018). Shorter than {@code ratioWindow} on purpose: a broken fraud
+ *                             check is a binary fact needing no traffic to become meaningful, so the
+ *                             window exists only to make the counter's increase readable, not to build
+ *                             up a population
  */
 @ConfigurationProperties(prefix = "pix.settlement.alerts")
 public record AlertProperties(
@@ -51,5 +56,6 @@ public record AlertProperties(
         double fraudSkippedCeiling,
         double cacheHitFloor,
         String ratioWindow,
-        double ratioMinimumSamples) {
+        double ratioMinimumSamples,
+        String fraudBrokenWindow) {
 }

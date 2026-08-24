@@ -141,6 +141,28 @@ class SendPixFunnelMetricsTest {
         assertThat(funnel.fraudDecisions()).containsExactly(FraudDecision.SKIPPED);
     }
 
+    /**
+     * ADR-0018's funnel question, and the one that is easy to get wrong: a broken fraud check is
+     * <b>risk</b>, not a drop-off. The payment proceeded, so the stage advanced exactly as for a
+     * {@code SKIPPED} — counting it as {@code REJECTED} would report a working platform as one that is
+     * losing payments, and would hide the real loss (unscored money) inside a conversion metric.
+     *
+     * <p>The second assertion is the whole point of the enum value: the mix must show
+     * {@code FRAUD_ERROR}, not {@code SKIPPED}, or {@code fraud_fail_open_rate} keeps measuring a
+     * population of two different things and its 5% threshold keeps meaning nothing.
+     */
+    @Test
+    void fraudErrorAdvancesTheFunnelAndIsCountedSeparately() {
+        fraudScorer.returning(FraudDecision.FRAUD_ERROR);
+
+        useCase.execute(command("bob@platinum.com", "10.00", KEY));
+
+        assertThat(funnel.countOf(Stage.FRAUD_CHECKED, Outcome.OK)).isEqualTo(1);
+        assertThat(funnel.countOf(Stage.FRAUD_CHECKED, Outcome.REJECTED)).isZero();
+        assertThat(funnel.fraudDecisions()).containsExactly(FraudDecision.FRAUD_ERROR);
+        assertThat(funnel.fraudDecisions()).doesNotContain(FraudDecision.SKIPPED);
+    }
+
     /** Insufficient funds is the ledger's verdict, so the payment dies at {@code DEBITED}. */
     @Test
     void insufficientFundsIsRejectedAtTheDebitStage() {

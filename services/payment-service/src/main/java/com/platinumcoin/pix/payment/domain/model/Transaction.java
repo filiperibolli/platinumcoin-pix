@@ -40,11 +40,15 @@ import java.time.Instant;
  * one purpose: so the status endpoint can tell the payer <i>why</i> their money came back, rather than
  * being less informative than the push that announced it.
  *
- * <p><b>Scored in the path (step 25):</b> {@code fraudDecision} is the verdict the in-path fraud check
- * returned ({@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out or errored and
- * the send failed open), and {@code fraudSkipped} is its boolean shorthand — {@code true} iff the score
- * was skipped. A {@code DENY} never reaches here: it becomes a {@code 422} before the transaction is
- * written. Both are the durable record that the {@code RECEIVED → FRAUD_CHECKED} stage ran; on a
+ * <p><b>Scored in the path (step 25, classified by ADR-0018):</b> {@code fraudDecision} is the verdict
+ * the in-path fraud check returned — {@code APPROVE}/{@code REVIEW} when it ran, {@code SKIPPED} when it
+ * could not finish inside the 200ms budget, or {@code FRAUD_ERROR} when it was <i>broken</i> (a refused
+ * credential, a drifted contract). {@code fraudSkipped} is the boolean shorthand for <b>"this send went
+ * out unscored"</b>, so it is {@code true} for <i>both</i> failure verdicts: the two share one
+ * compensating control (the {@code FraudCheckSkipped} outbox event and the async re-score), and it is
+ * {@code fraudDecision} that says which of them happened. That is the split worth holding on to — the
+ * flag drives <i>behaviour</i>, the verdict drives <i>diagnosis</i>. A {@code DENY} never reaches here: it
+ * becomes a {@code 422} before the transaction is written. Both are the durable record that the {@code RECEIVED → FRAUD_CHECKED} stage ran; on a
  * transaction minted before scoring they are {@code null}/{@code false}. The settlement-confirmation
  * fields (step 31) remain deliberately absent.
  */

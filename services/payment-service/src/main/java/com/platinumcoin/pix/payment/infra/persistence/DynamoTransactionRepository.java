@@ -50,10 +50,14 @@ import software.amazon.awssdk.services.dynamodb.model.TransactionCanceledExcepti
  *   <li>{@code creditorInternal} — where the destination key resolved (step 27), written on
  *       <b>every</b> transaction. A boolean has no "absent" state, and the settlement/reconciliation
  *       queries that filter on it must not silently miss items that merely lack the attribute.</li>
- *   <li>{@code fraudDecision} + {@code fraudSkipped} — the in-path fraud verdict (step 25):
- *       {@code APPROVE}/{@code REVIEW}, or {@code SKIPPED} when the check timed out/errored and the send
- *       failed open. {@code fraudDecision} is written only when set; {@code fraudSkipped} is always
- *       written (a boolean has no "absent" — {@code false} is the honest default for a scored send).</li>
+ *   <li>{@code fraudDecision} + {@code fraudSkipped} — the in-path fraud verdict (step 25, ADR-0018):
+ *       {@code APPROVE}/{@code REVIEW} when the check ran, {@code SKIPPED} when it timed out, or
+ *       {@code FRAUD_ERROR} when it was broken. {@code fraudDecision} is written only when set;
+ *       {@code fraudSkipped} is always written (a boolean has no "absent" — {@code false} is the honest
+ *       default for a scored send) and is {@code true} for both unscored verdicts. Writing the verdict as
+ *       its own attribute is what makes "which payments went out unscored <i>because the control was
+ *       broken</i>" a query over {@code pix_transactions} instead of a search through logs that
+ *       rotate.</li>
  * </ul>
  * Fields a later step owns are deliberately not invented here: the settlement-confirmation fields
  * (step 31).
@@ -207,8 +211,8 @@ public class DynamoTransactionRepository implements TransactionRepository {
         if (transaction.clearingAccountId() != null) {
             item.put("clearingAccountId", AttributeValue.fromS(transaction.clearingAccountId()));
         }
-        // Step-25 fraud verdict: the enum name only when scored; the skipped flag always (a boolean's
-        // honest default is false, not absent).
+        // Step-25 fraud verdict, ADR-0018 classification: the enum name whenever the stage ran (including
+        // both unscored classes); the flag always (a boolean's honest default is false, not absent).
         if (transaction.fraudDecision() != null) {
             item.put("fraudDecision", AttributeValue.fromS(transaction.fraudDecision().name()));
         }

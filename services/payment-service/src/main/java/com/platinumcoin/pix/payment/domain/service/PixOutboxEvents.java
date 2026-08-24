@@ -29,7 +29,10 @@ import java.util.UUID;
  *       external settlement's, which is the point: the consumers never learn where the payee banks.</li>
  *   <li>{@code FraudCheckSkipped} — rides along, in the same atomic write, whenever the in-path check
  *       failed open (ADR-0005). The skip is a durable fact that async re-scoring picks up, not a log
- *       line that scrolls away.</li>
+ *       line that scrolls away. It is emitted for <b>both</b> unscored classes (ADR-0018): a broken
+ *       check needs the compensating re-score at least as much as a slow one does, and the event name
+ *       stays {@code FraudCheckSkipped} because the consumer's job — "score this one after the fact" —
+ *       is identical either way. Which class it was is on the transaction, where a query can ask.</li>
  * </ul>
  *
  * <p>The {@code correlationId} is read from the ambient request context rather than passed in: it is
@@ -48,7 +51,7 @@ public final class PixOutboxEvents {
 
     /**
      * The events a freshly accepted send writes into its outbox, in order: the state event first, then
-     * the fail-open marker when the fraud check was skipped. All of them are written in the <b>same</b>
+     * the fail-open marker when the send went out unscored (either failure class). All of them are written in the <b>same</b>
      * {@code TransactWriteItems} as the transaction itself.
      */
     public static List<OutboxEvent> forAcceptedSend(Transaction transaction, Instant occurredAt) {

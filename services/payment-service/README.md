@@ -150,12 +150,36 @@ scores the send against fraud-service (`POST /internal/fraud/score`) under a **h
 daily-limit reservation is **released** (a denied send leaves the counter as it found it); `REVIEW` ⇒
 proceed **flagged** (recorded for an analyst, not blocked); `APPROVE` ⇒ proceed. The single most debated
 call is the failure mode: on **timeout or error the check fails open** — the send proceeds unscored,
-flagged `fraudSkipped=true` / `fraudDecision=SKIPPED`, and a `FraudCheckSkipped` outbox event (step 28)
-triggers async re-scoring. Availability of payments wins *at this layer*; the
-residual risk is bounded by daily limits and the async re-score. Crucially the **fail-open lives in the
-adapter** (`HttpFraudScorer`), not the use case: only the boundary observes a timeout, so it translates
-one into `SKIPPED` and the use case stays a straight-line policy — `DENY` blocks, everything else
-proceeds. The verdict rides onto the persisted transaction (`fraudDecision` + `fraudSkipped`), which is
+flagged `fraudSkipped=true`, and a `FraudCheckSkipped` outbox event (step 28) triggers async re-scoring.
+Availability of payments wins *at this layer*; the residual risk is bounded by daily limits and the async
+re-score. Crucially the **fail-open lives in the adapter** (`HttpFraudScorer`), not the use case: only the
+boundary observes a timeout, so it translates one into a verdict and the use case stays a straight-line
+policy — `DENY` blocks, everything else proceeds.
+
+**Failures are classified, not merged (step 70, ADR-0018).** "Timeout or error" used to be one branch, and
+one branch is a claim that a slow check and a broken one are the same event. They are not: a `401` after
+ADR-0017 (a service token minted without `fraud:score`), a renamed field in fraud-service's `ScoreResult`,
+or a bug in the adapter disables fraud screening **platform-wide**, does not recover when load falls, and
+used to be reported under the same counter as a busy afternoon. So `HttpFraudScorer` now classifies where
+the transport fact is visible:
+
+| Class | What it is | Verdict | Log | Alert |
+|---|---|---|---|---|
+| **Transient** | connect/read timeout, unreachable host, reset, `5xx`, `429` | `SKIPPED` | `WARN` | `fraud_fail_open_rate` (ceiling, 5% / 10m) |
+| **Non-transient** | `401`/`403`, any other `4xx`, unreadable body on a `2xx`, adapter bug | `FRAUD_ERROR` | `ERROR` | `fraud_broken` (**any** occurrence / 5m) |
+
+**Both still proceed, deliberately** — ADR-0005's choice is untouched, because a bad fraud-service deploy
+must not become a payments outage. What the split buys is visibility: a distinct metric series, a distinct
+level, an alert that fires on the first occurrence rather than on a share, and a durable
+`fraudDecision=FRAUD_ERROR` on the item so "which payments went out unscored *because the control was
+broken*" is a query rather than a log search. `fraudSkipped` means "went out unscored" and is `true` for
+both classes — the flag drives behaviour (the outbox marker, the async re-score, identical either way),
+the verdict drives diagnosis. One implementation note worth knowing: the classification is **not** by
+exception type. `RestClient` reports a read timeout and an unreadable body through the *same* exception,
+and `JsonProcessingException` is itself an `IOException`, so the adapter asks the narrower honest question
+— did the network fail to deliver the bytes (`SocketTimeoutException`/`SocketException`/
+`UnknownHostException`)? — rather than the tidy-looking one that would file contract drift under
+"capacity". The verdict rides onto the persisted transaction (`fraudDecision` + `fraudSkipped`), which is
 how the `RECEIVED → FRAUD_CHECKED` stage is durably recorded on an internal send that otherwise jumps
 straight to `SETTLED`.
 
