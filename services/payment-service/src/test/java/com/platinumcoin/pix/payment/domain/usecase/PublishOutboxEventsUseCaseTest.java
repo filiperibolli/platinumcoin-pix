@@ -1,12 +1,21 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.model.PendingOutboxEvent;
+import com.platinumcoin.pix.payment.domain.port.EventPublisher;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -23,8 +32,24 @@ class PublishOutboxEventsUseCaseTest {
 
     private final FakeOutboxEventStore outbox = new FakeOutboxEventStore();
     private final FakeEventPublisher publisher = new FakeEventPublisher();
-    private final PublishOutboxEventsUseCase publishOutboxEvents =
-            new PublishOutboxEventsUseCase(outbox, publisher, CLOCK, 25);
+
+    /**
+     * The settlement lane, sequential. {@code maxInFlight = 1} on a same-thread executor is exactly
+     * step 29's publisher, which is what keeps the ordering assertions below free of thread
+     * scheduling — the concurrency is proven separately, where it is the subject rather than noise.
+     */
+    private final PublishOutboxEventsUseCase publishOutboxEvents = sequentialPublisher(
+            OutboxLane.SETTLEMENT, 25);
+
+    private PublishOutboxEventsUseCase sequentialPublisher(OutboxLane lane, int batchSize) {
+        return sequentialPublisher(lane, batchSize, publisher);
+    }
+
+    private PublishOutboxEventsUseCase sequentialPublisher(
+            OutboxLane lane, int batchSize, FakeEventPublisher eventPublisher) {
+        return new PublishOutboxEventsUseCase(
+                outbox, eventPublisher, CLOCK, lane, batchSize, 1, Runnable::run);
+    }
 
     /**
      * <b>Publish-then-mark, in that order.</b> The reverse ordering would fail in the unrecoverable
@@ -40,7 +65,7 @@ class PublishOutboxEventsUseCaseTest {
 
         assertThat(publisher.published()).containsExactly("evt-1");
         assertThat(outbox.published()).containsExactly("evt-1");
-        assertThat(outbox.stillUnpublished()).isEmpty();
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).isEmpty();
         assertThat(outcome.found()).isEqualTo(1);
         assertThat(outcome.published()).isEqualTo(1);
         assertThat(outcome.failed()).isZero();
@@ -74,14 +99,14 @@ class PublishOutboxEventsUseCaseTest {
         var outcome = publishOutboxEvents.execute();
 
         assertThat(outbox.published()).isEmpty();
-        assertThat(outbox.stillUnpublished()).containsExactly("evt-doomed");
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).containsExactly("evt-doomed");
         assertThat(outcome.published()).isZero();
         assertThat(outcome.failed()).isEqualTo(1);
 
         // The next tick, with the broker healthy again, drains it — no operator action, no lost event.
-        var retry = new PublishOutboxEventsUseCase(outbox, new FakeEventPublisher(), CLOCK, 25).execute();
+        var retry = sequentialPublisher(OutboxLane.SETTLEMENT, 25, new FakeEventPublisher()).execute();
         assertThat(retry.published()).isEqualTo(1);
-        assertThat(outbox.stillUnpublished()).isEmpty();
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).isEmpty();
     }
 
     /**
@@ -100,7 +125,7 @@ class PublishOutboxEventsUseCaseTest {
         var outcome = publishOutboxEvents.execute();
 
         assertThat(publisher.published()).containsExactly("evt-healthy");
-        assertThat(outbox.stillUnpublished()).containsExactly("evt-poison");
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).containsExactly("evt-poison");
         assertThat(outcome.found()).isEqualTo(2);
         assertThat(outcome.published()).isEqualTo(1);
         assertThat(outcome.failed()).isEqualTo(1);
@@ -147,7 +172,7 @@ class PublishOutboxEventsUseCaseTest {
      */
     @Test
     void aTickPublishesAtMostOneBatch() {
-        var bounded = new PublishOutboxEventsUseCase(outbox, publisher, CLOCK, 2);
+        var bounded = sequentialPublisher(OutboxLane.SETTLEMENT, 2);
         outbox.store(
                 event("evt-1", NOW.minusSeconds(30)),
                 event("evt-2", NOW.minusSeconds(20)),
@@ -155,11 +180,207 @@ class PublishOutboxEventsUseCaseTest {
 
         assertThat(bounded.execute().published()).isEqualTo(2);
         assertThat(publisher.published()).containsExactly("evt-1", "evt-2");
-        assertThat(outbox.stillUnpublished()).containsExactly("evt-3");
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).containsExactly("evt-3");
     }
 
     private static PendingOutboxEvent event(String eventId, Instant occurredAt) {
+        return event(eventId, occurredAt, OutboxLane.SETTLEMENT);
+    }
+
+    private static PendingOutboxEvent event(String eventId, Instant occurredAt, OutboxLane lane) {
+        String eventType = lane == OutboxLane.SETTLEMENT ? "PixDebited" : "PixSettled";
         return new PendingOutboxEvent(
-                "tx-" + eventId, eventId, "PixDebited", "{\"amountCents\":12550}", occurredAt, "corr-1");
+                "tx-" + eventId, eventId, eventType, "{\"amountCents\":12550}", occurredAt, "corr-1",
+                lane);
+    }
+    // ── step 71 (ADR-0019): lanes, ordering under partitioning, and backpressure ──────────────────
+
+    /**
+     * <b>The prioritisation claim, at the use-case level.</b> Each lane's publisher sees only its own
+     * lane's events — not "sees them first", <i>only</i>. That distinction is the whole of ADR-0019's
+     * argument against the rejected alternative: raising the batch would have let the settlement event
+     * out sooner while leaving it in the same queue, so the reversal recurs at the next throughput that
+     * outruns the new setting. A partition has no next throughput.
+     */
+    @Test
+    void eachLaneDrainsIndependently() {
+        outbox.store(
+                event("evt-notify-1", NOW.minusSeconds(300), OutboxLane.NOTIFICATION),
+                event("evt-notify-2", NOW.minusSeconds(200), OutboxLane.NOTIFICATION),
+                event("evt-settle", NOW.minusSeconds(1), OutboxLane.SETTLEMENT),
+                event("evt-audit", NOW.minusSeconds(400), OutboxLane.AUDIT));
+
+        var settlement = sequentialPublisher(OutboxLane.SETTLEMENT, 25).execute();
+
+        // The settlement tick published its one event even though three OLDER events were waiting —
+        // on a single oldest-first queue it would have been last.
+        assertThat(publisher.published()).containsExactly("evt-settle");
+        assertThat(settlement.found()).isEqualTo(1);
+        assertThat(settlement.lane()).isEqualTo(OutboxLane.SETTLEMENT);
+        // …and it left every other lane exactly as it found it. Prioritisation here is isolation, not
+        // preemption: the settlement lane never drains, delays or reorders anyone else's work.
+        assertThat(outbox.stillUnpublished(OutboxLane.NOTIFICATION))
+                .containsExactly("evt-notify-1", "evt-notify-2");
+        assertThat(outbox.stillUnpublished(OutboxLane.AUDIT)).containsExactly("evt-audit");
+
+        // Each other lane then drains on its own schedule, and only its own events.
+        var notification = sequentialPublisher(OutboxLane.NOTIFICATION, 25).execute();
+        assertThat(notification.found()).isEqualTo(2);
+        assertThat(outbox.stillUnpublished(OutboxLane.AUDIT)).containsExactly("evt-audit");
+    }
+
+    /**
+     * <b>Oldest-first survives partitioning.</b> ADR-0004's ordering property was never global — it was
+     * "a backlog drains fairly rather than starving what has waited longest", and that only ever meant
+     * anything within one queue. Splitting the index keeps it exactly where it mattered: the lane's
+     * sort key ({@code gsi3sk = occurredAt}) is untouched, so a lane is still strictly oldest-first,
+     * and interleaving another lane's older events changes nothing about this lane's order.
+     */
+    @Test
+    void orderingIsPreservedWithinALane() {
+        outbox.store(
+                event("evt-settle-newest", NOW.minusSeconds(1), OutboxLane.SETTLEMENT),
+                // Deliberately older than every settlement event: on a shared queue these would come
+                // first and this assertion would be about them.
+                event("evt-notify-ancient", NOW.minusSeconds(9_000), OutboxLane.NOTIFICATION),
+                event("evt-settle-oldest", NOW.minusSeconds(30), OutboxLane.SETTLEMENT),
+                event("evt-settle-middle", NOW.minusSeconds(10), OutboxLane.SETTLEMENT));
+
+        sequentialPublisher(OutboxLane.SETTLEMENT, 25).execute();
+
+        assertThat(publisher.published())
+                .containsExactly("evt-settle-oldest", "evt-settle-middle", "evt-settle-newest");
+    }
+
+    /**
+     * <b>Backpressure: bounded, and it drops nothing.</b> The in-flight ceiling is what keeps a lane
+     * whose broker has gone slow from growing memory — it waits instead. Two properties are asserted
+     * together because either alone would be a bug: a ceiling that leaks events is worse than no
+     * ceiling, and a ceiling nothing enforces is a comment.
+     *
+     * <p>The publisher counts concurrent publishes as they happen and records the peak, so the
+     * assertion is on <i>observed</i> concurrency rather than on the configured number — a semaphore
+     * that was acquired and never enforced would pass the second assertion and fail this one.
+     */
+    @Test
+    void backpressureBoundsInFlightWithoutDroppingEvents() throws Exception {
+        int maxInFlight = 3;
+        int events = 20;
+        for (int i = 0; i < events; i++) {
+            outbox.store(event("evt-pressure-" + i, NOW.minusSeconds(events - i)));
+        }
+
+        var slowPublisher = new ConcurrencyRecordingPublisher(Duration.ofMillis(20));
+        var pool = Executors.newFixedThreadPool(maxInFlight);
+        try {
+            var outcome = new PublishOutboxEventsUseCase(
+                    outbox, slowPublisher, CLOCK, OutboxLane.SETTLEMENT, events, maxInFlight, pool)
+                    .execute();
+
+            assertThat(slowPublisher.peakConcurrency())
+                    .as("the ceiling is enforced, not merely configured")
+                    .isLessThanOrEqualTo(maxInFlight);
+            // Nothing was dropped to relieve pressure: pressure costs TIME, never an event. Losing one
+            // here would be a PixDebited nobody consumes — money in clearing with no settlement flow.
+            assertThat(outcome.published()).isEqualTo(events);
+            assertThat(slowPublisher.published()).hasSize(events);
+            assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT)).isEmpty();
+            // And it says so: the tick had to wait for a permit, which is the earliest honest signal
+            // that this lane is sized below its arrival rate — before the lag SLO it would breach.
+            assertThat(outcome.saturated())
+                    .as("a lane at its ceiling reports the pressure rather than hiding it in latency")
+                    .isTrue();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
+     * The mirror of the above: a lane publishing comfortably under its ceiling is <b>not</b> saturated.
+     * Without this, "saturated" could be hard-coded true and every assertion above would still pass.
+     */
+    @Test
+    void aLaneUnderItsCeilingDoesNotReportBackpressure() {
+        outbox.store(event("evt-calm", NOW.minusSeconds(2)));
+
+        assertThat(publishOutboxEvents.execute().saturated()).isFalse();
+    }
+
+    /**
+     * <b>A lane whose pool refuses work must still finish its tick.</b> Found by the money-safety
+     * review of this step, and the reason it is not a nit: the tick holds a permit and a latch count
+     * for every event it submits, so a rejected submit that released neither would block the tick
+     * <i>forever</i> on the latch. The consequence is worse than a stuck thread — {@code OutboxPublisher}
+     * writes the lag gauge only <b>after</b> {@code execute()} returns, so a hung lane would FREEZE its
+     * gauge at the last value instead of letting it climb, and the per-lane threshold alert watching
+     * that lane would never fire. <b>A dead lane must look dead.</b>
+     *
+     * <p>The events are not lost either: nothing was published and nothing was marked, so they are
+     * still on the index for the next tick — the same recoverable direction every other failure here
+     * takes.
+     */
+    @Test
+    void aPoolThatRefusesWorkEndsTheTickInsteadOfHangingIt() {
+        outbox.store(
+                event("evt-rejected-1", NOW.minusSeconds(30)),
+                event("evt-rejected-2", NOW.minusSeconds(20)));
+
+        Executor refusing = runnable -> {
+            throw new RejectedExecutionException("pool is shut down");
+        };
+        var useCase = new PublishOutboxEventsUseCase(
+                outbox, publisher, CLOCK, OutboxLane.SETTLEMENT, 25, 2, refusing);
+
+        // The assertion IS that this returns at all. assertTimeoutPreemptively fails the test rather
+        // than hanging the build, which is what the un-fixed version did.
+        var outcome = assertTimeoutPreemptively(
+                Duration.ofSeconds(5), useCase::execute,
+                "the tick must end when its pool refuses work, never block on the latch");
+
+        assertThat(outcome.published()).isZero();
+        assertThat(outcome.failed()).isEqualTo(2);
+        // The lag is still reported, so the gauge keeps climbing and the alert can still fire.
+        assertThat(outcome.oldestUnpublishedAge()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(outbox.stillUnpublished(OutboxLane.SETTLEMENT))
+                .as("nothing published, nothing lost — the next tick retries them")
+                .containsExactly("evt-rejected-1", "evt-rejected-2");
+    }
+
+    /**
+     * A publisher that records how many publishes were in flight at once, so the ceiling can be
+     * asserted on observed behaviour rather than on the number that was passed in.
+     */
+    private static final class ConcurrencyRecordingPublisher implements EventPublisher {
+
+        private final Duration latency;
+        private final AtomicInteger inFlight = new AtomicInteger();
+        private final AtomicInteger peak = new AtomicInteger();
+        private final Set<String> published = ConcurrentHashMap.newKeySet();
+
+        ConcurrencyRecordingPublisher(Duration latency) {
+            this.latency = latency;
+        }
+
+        @Override
+        public void publish(PendingOutboxEvent event) {
+            int now = inFlight.incrementAndGet();
+            peak.accumulateAndGet(now, Math::max);
+            try {
+                Thread.sleep(latency.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                inFlight.decrementAndGet();
+            }
+            published.add(event.eventId());
+        }
+
+        int peakConcurrency() {
+            return peak.get();
+        }
+
+        Set<String> published() {
+            return published;
+        }
     }
 }

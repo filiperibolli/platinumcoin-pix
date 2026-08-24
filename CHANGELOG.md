@@ -27,6 +27,59 @@ The platform reached its halfway mark: **the full money path is built, tested an
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
 ### Changed
+- Outbox split into settlement/notification/audit lanes with independent prioritised publishers, bounded backpressure and a per-lane queue-age SLO, plus a parallel settlement consumer — an event with no subscriber can no longer delay one that money depends on (step 71, ADR-0019)
+  AI: est 5h / actual 0h50 / ~95% generated / 0 issues caught in human review
+  - **This closes a real incident, not a hypothetical.** `docs/load/RESULTS.md` Context 2 records a
+    correct external payment `REVERSED` by reconciliation because its `PixDebited` queued behind
+    **55,538 internal `PixSettled` events that matched no subscription at all**, crossing the 120s stuck
+    threshold while it waited. Nothing was lost and nothing was incorrect — an unrelated event type's
+    *latency* undid a payment. `OutboxLanePriorityIT#aSettlementEventIsNotDelayedByANotificationBacklog`
+    reproduces that shape deterministically and **failed against `main`** before this step.
+  - **Sizing vs. structure — the distinction the whole step turns on.** Raising `batch-size` clears the
+    measured number (`RESULTS.md` used 800 to drain in ~2 min) and preserves the failure mode: one
+    ordered queue still puts `PixDebited` behind whatever flood precedes it, so the reversal recurs at
+    the next throughput that outruns the new setting. `gsi3pk` is now `OUTBOX#UNPUBLISHED#<LANE>`, which
+    makes the lane a **partition** rather than a filter — another lane's million events are not read,
+    not paged, and not paid for by this lane's poll.
+  - **Named for who waits, not for who emits:** `settlement` (`PixDebited` — money is blocked in
+    clearing, 200 ms tick · batch 100 · 8 in flight · **12 s SLO**), `notification` (`PixSettled`,
+    `PixReceived`, `PixReversed` — a person is waiting, 1 s · 100 · 4 · 60 s), `audit`
+    (`FraudCheckSkipped` — only the trail, 5 s · 50 · 1 · 300 s). The settlement budget is **derived,
+    not chosen**: an order of magnitude under the 120s stuck threshold, so the alert fires with ~108
+    seconds still on the clock to act.
+  - **An event type with no lane is refused**, never defaulted to `audit` — a default would put the next
+    money-critical event type on the slowest drain silently, which is the same incident with a new
+    cause. It fails at construction time, so a missing entry is a red build.
+  - **Backpressure is real, not a comment.** Each lane publishes under a semaphore of `max-in-flight`;
+    a lane that cannot drain **waits** rather than growing memory, and reports `saturated` — an earlier
+    signal than the lag it will eventually breach. It never touches acceptance:
+    `SendPixUseCaseTest#outboxSaturationDoesNotSlowAcceptance` asserts *structurally* that the send path
+    takes no `OutboxEventStore` and no `EventPublisher`, so there is no code path, fast or slow, from a
+    payment to a drain.
+  - **The consumer was parallelised in the same step**, because fixing the publisher alone would have
+    moved the bottleneck one hop down to a sequential consumer settling ~0.5/s. Safe as a *sizing*
+    change: `eventId` dedup (ADR-0004) and finalization fencing (ADR-0016) already had to hold against
+    two instances, which SQS has always been free to create. `SettlementQueueConsumerIT` injects
+    duplicate deliveries under a real worker pool and asserts **conservation** (Σ balances invariant),
+    not merely that the calls returned.
+  - **What is given up, written down:** cross-lane ordering is explicitly not guaranteed, and with
+    `max-in-flight > 1` a lane's batch is *claimed* oldest-first while concurrent publishes may reach
+    the broker in either order. Neither is a loss — ADR-0004 never promised global ordering and SNS→SQS
+    standard queues do not preserve it — so lanes make it **visible instead of accidental** (ADR-0004
+    annotated to say so).
+  - **`pix_outbox_lag_seconds` gained a `lane` tag** and `outbox_publisher_lag` became three rules with
+    three budgets. A `max` across lanes cannot say *which* drain is behind, which is exactly the question
+    that decided the outcome in Context 2.
+  - **Caught by this step's own money-safety review, before commit:** a `RejectedExecutionException` on
+    submit would have left a permit and a latch count unreleased, hanging the tick forever — and because
+    the gauge is written only *after* the tick returns, a hung lane would have **frozen** its lag instead
+    of letting it climb, so the per-lane alert watching it would never have fired. A dead lane must look
+    dead. Fixed and pinned by `aPoolThatRefusesWorkEndsTheTickInsteadOfHangingIt`.
+  - Docs updated in the same change: `docs/data-model.md` §4 (the spec said §7, which is "Redis keys" —
+    corrected in the step file), `docs/observability.md` §2.2/§4, `docs/messaging-kafka-appendix.md`
+    (a lane maps to a Kafka topic, strengthening the portability claim), `docs/local-dev.md` §5.4,
+    ARCHITECTURE §6.6, both service READMEs, and `RESULTS.md` annotated — the measurements left verbatim
+    as the record that motivated the change.
 - Fraud failures are classified: fail-open stays for transient failures, while auth/contract/bug failures become a distinct FRAUD_ERROR with its own log level, metric series and alert instead of hiding behind the same SKIPPED counter (step 70, ADR-0018)
   AI: est 3h / actual 1h10 / ~93% generated / 1 issue caught in human review
   - **The behaviour is deliberately unchanged; only the silence is gone.** Both failure classes still let

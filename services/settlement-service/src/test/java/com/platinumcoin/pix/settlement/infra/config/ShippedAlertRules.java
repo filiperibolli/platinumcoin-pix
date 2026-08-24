@@ -3,6 +3,7 @@ package com.platinumcoin.pix.settlement.infra.config;
 import com.platinumcoin.pix.settlement.domain.model.AlertRule;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Test-side access to the alert rules {@link SettlementBeansConfig} <b>actually declares</b>, built with
@@ -29,7 +30,14 @@ public final class ShippedAlertRules {
                 Duration.ofSeconds(120),
                 0,
                 Duration.ofSeconds(300),
-                Duration.ofSeconds(60),
+                // Per-lane outbox budgets (step 71, ADR-0019), matching application.yml. Settlement's
+                // 12s is derived from the 120s stuck threshold that reversed a payment — an order of
+                // magnitude under it, so the alert fires with time left to act rather than alongside
+                // the incident.
+                Map.of(
+                        "settlement", Duration.ofSeconds(12),
+                        "notification", Duration.ofSeconds(60),
+                        "audit", Duration.ofSeconds(300)),
                 0.05,
                 0.70,
                 "10m",

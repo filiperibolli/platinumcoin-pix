@@ -169,7 +169,8 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | `SERVICE_TOKEN_TTL_SECONDS` / `jwt.service-token-ttl` | `60s` | Lifetime of a minted service token. Generous for a call whose own timeout budget is milliseconds; it absorbs clock skew between containers, not a token outliving its call. |
 | `SETTLEMENT_QUEUE_NAME` / `pix.settlement.queue-name` | `settlement-queue` | Queue consumed; its URL is resolved at startup (booting healthy while consuming nothing would be the worst failure mode) |
 | `SETTLEMENT_WAIT_TIME_SECONDS` | `20` | Long-poll wait — the SQS maximum, so an idle system costs one request per 20s |
-| `SETTLEMENT_BATCH_SIZE` | `5` | Messages per receive, handled sequentially |
+| `SETTLEMENT_BATCH_SIZE` | `5` | Messages per receive |
+| `SETTLEMENT_WORKERS` | `5` | Messages of one batch handled **concurrently** (step 71, ADR-0019). Safe as a sizing knob because `eventId` dedup and finalization fencing (ADR-0016) already had to hold against two instances; `1` restores the step-31 sequential consumer with no pool at all. |
 | `SETTLEMENT_CONSUMER_DELAY_MS` | `500` | Gap between polls (`fixedDelay`, so a slow batch never overlaps the next tick) |
 | `SETTLEMENT_RETRY_BACKOFF_BASE_SECONDS` | `5` | Retry backoff base — visibility reset to `base·2^(receiveCount-1)` on a rail failure (step 32); ITs set `0` for immediate redelivery |
 | `SETTLEMENT_RETRY_BACKOFF_CAP_SECONDS` | `60` | Upper bound on the retry backoff window |
@@ -180,12 +181,14 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | `RECONCILIATION_MAX_PER_TICK` / `…max-per-tick` | `200` | Per-tick bound (per status) on the GSI2 scan, so a backlog drains over ticks instead of blowing up one |
 | `RECONCILIATION_REVERSE_SAFETY_WINDOW_SECONDS` / `…reverse-safety-window-seconds` | `240` | How old an `UNKNOWN`-at-the-rail transaction must be before the resolver reverses it (step 35); past the retry/DLQ horizon, inside the SLO — `FAILED` reverses immediately |
 | `RECONCILIATION_SLO_BREACH_SECONDS` / `…slo-breach-seconds` | `300` | The <5-min SLO breach threshold; `pix.reconciliation.oldest.seconds` above it fires the in-code alert and (step 44) the Prometheus alert on the same gauge |
-| `PROMETHEUS_URL` / `pix.settlement.alerts.prometheus-url` | `http://localhost:9091` | Where the **alert watchdog** (step 44) reads platform-wide metrics from. Three of its seven rules watch metrics *other* services own, so it queries Prometheus rather than its own registry. **Soft dependency**: unreachable ⇒ rules report `SKIPPED`, never a false alarm — and compose deliberately gives this service no `depends_on: prometheus` |
+| `PROMETHEUS_URL` / `pix.settlement.alerts.prometheus-url` | `http://localhost:9091` | Where the **alert watchdog** (step 44) reads platform-wide metrics from. Five of its nine rules watch metrics *other* services own, so it queries Prometheus rather than its own registry. **Soft dependency**: unreachable ⇒ rules report `SKIPPED`, never a false alarm — and compose deliberately gives this service no `depends_on: prometheus` |
 | `ALERTS_FIXED_DELAY_MS` | `30000` | How often a watchdog round runs |
 | `ALERTS_SETTLEMENT_SILENCE` | `120s` | How long `SETTLED` may stand still **while debits flow** before that is an incident (ADR-0003 puts a normal settlement at ≤10s) |
 | `ALERTS_DLQ_DEPTH_BOUND` | `0` | The **first** DLQ message is the alert — a dead-lettered settlement is money parked in clearing |
 | `ALERTS_RECONCILIATION_AGE` | `300s` | Same <5-min SLO number as above, watched from the platform's vantage point |
-| `ALERTS_OUTBOX_LAG` | `60s` | Oldest unpublished outbox event (ADR-0004) — settlement not *failing* but not being *asked* |
+| `ALERTS_OUTBOX_LAG_SETTLEMENT` | `12s` | Oldest unpublished **settlement-lane** event (ADR-0019). Derived, not chosen: an order of magnitude under the 120s stuck threshold, so the alert fires with ~108s left before reconciliation would reverse the payment |
+| `ALERTS_OUTBOX_LAG_NOTIFICATION` | `60s` | Same for the lane a person is waiting on — a bad experience, not a wrong balance |
+| `ALERTS_OUTBOX_LAG_AUDIT` | `300s` | Same for the lane only the trail reads; deliberately generous |
 | `ALERTS_FRAUD_SKIPPED_CEILING` | `0.05` | Fail-open **ceiling**: above this, sends are routinely unscored (ADR-0005) |
 | `ALERTS_CACHE_HIT_FLOOR` | `0.70` | Balance-cache hit-rate **floor** — a latency risk, never a correctness one (ADR-0008) |
 | `ALERTS_RATIO_WINDOW` / `ALERTS_RATIO_MINIMUM_SAMPLES` | `10m` / `20` | Lookback for the two ratio rules, and the traffic they need before a proportion means anything (`0/0` has no safe convention) |
@@ -355,6 +358,9 @@ awsl s3api head-object --bucket pix-audit-log --key <key> \
 - [ADR-0016](../../docs/adr/0016-finalization-fencing-settle-xor-reverse.md) (amends ADR-0003) —
   finalization fencing: a CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` before any posting, so
   settle and reverse are mutually exclusive by condition expression rather than by timing.
+- [ADR-0019](../../docs/adr/0019-outbox-lanes-and-priority.md) — outbox lanes and the parallel
+  settlement consumer (step 71; amends ADR-0004). This service both **writes** lane-scoped outbox items
+  and **consumes** its queue on a bounded worker pool.
 - [ADR-0004](../../docs/adr/0004-transactional-outbox-with-polling-publisher.md) — transactional outbox,
   at-least-once delivery, dedup by `eventId`.
 - [ADR-0002](../../docs/adr/0002-idempotency-strategy.md) — `endToEndId` is the idempotency key toward

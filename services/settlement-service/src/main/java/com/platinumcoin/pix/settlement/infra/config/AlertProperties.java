@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
 import java.time.Duration;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -29,8 +30,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param reconciliationAge    the &lt;5-min SLO of ADR-0003, in seconds — the same number
  *                             {@code ReconciliationSloAlert} uses, so the code and the graph cannot
  *                             disagree on what "late" means
- * @param outboxLag            how far the outbox publisher may fall behind; past this, events that
- *                             trigger settlement are sitting unpublished (ADR-0004)
+ * @param outboxLag            how far each outbox LANE may fall behind, keyed by lane name (step 71,
+ *                             ADR-0019). One budget per lane, never an average: the settlement lane's
+ *                             is derived from the 120s stuck threshold that reversed a payment and must
+ *                             stay an order of magnitude under it, while the audit lane's is generous.
+ *                             A single global threshold across three lanes would hide exactly the
+ *                             incident this exists for — a healthy audit lane dragging the average down
+ *                             while settlement events pile up (ADR-0004, ADR-0019)
  * @param fraudSkippedCeiling  the fail-open share above which the 200ms fraud budget is being blown too
  *                             often to call it an exception (ADR-0005)
  * @param cacheHitFloor        the balance cache's hit-rate floor; below it the 300ms budget (KR2.2) is
@@ -52,7 +58,7 @@ public record AlertProperties(
         Duration settlementSilence,
         double dlqDepthBound,
         Duration reconciliationAge,
-        Duration outboxLag,
+        Map<String, Duration> outboxLag,
         double fraudSkippedCeiling,
         double cacheHitFloor,
         String ratioWindow,

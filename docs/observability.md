@@ -98,7 +98,7 @@ Who emits which stage:
 | Prometheus series | Type | Owner | Alert | Step |
 |---|---|---|---|---|
 | `pix_cache_hit_total` / `pix_cache_miss_total` | counter (`cache=balance`) | payment-service | hit-rate floor | 40 |
-| `pix_outbox_lag_seconds` | gauge | payment-service | `> 60s` | 29 |
+| `pix_outbox_lag_seconds` | gauge (`lane=settlement\|notification\|audit`) | payment-service | per lane: `> 12s` / `> 60s` / `> 300s` | 29, 71 |
 | `pix_settlement_dlq_depth_messages` | gauge | settlement-service | `> 0` | 32 |
 | `pix_reconciliation_oldest_seconds` | gauge | settlement-service | `> 300s` | 34/35/67 |
 | `pix_fraud_score_seconds` | timer | fraud-service | — (budget lives in ADR-0005) | 24 |
@@ -173,10 +173,29 @@ thresholds come from `pix.settlement.alerts.*` so a drill can tighten a window f
 | `settlement_silence` | silence | debits flowing **and** `SETTLED` unchanged | 120s | `docs/local-dev.md` §5.5 |
 | `settlement_dlq_depth` | threshold | DLQ depth `> 0` | 0 | `docs/local-dev.md` §5.5 |
 | `reconciliation_backlog_age` | threshold | oldest stuck `> 300s` | 300s | `docs/local-dev.md` §5.5 |
-| `outbox_publisher_lag` | threshold | oldest unpublished `> 60s` | 60s | `docs/local-dev.md` §5.4 |
+| `outbox_publisher_lag_settlement` | threshold | oldest unpublished on the **settlement** lane `> 12s` | 12s | `docs/local-dev.md` §5.4 |
+| `outbox_publisher_lag_notification` | threshold | oldest unpublished on the **notification** lane `> 60s` | 60s | `docs/local-dev.md` §5.4 |
+| `outbox_publisher_lag_audit` | threshold | oldest unpublished on the **audit** lane `> 300s` | 300s | `docs/local-dev.md` §5.4 |
 | `fraud_fail_open_rate` | ratio (ceiling) | `SKIPPED` share `> 5%` over 10m | 0.05 | this file, §4 |
 | `fraud_broken` | threshold | **any** `FRAUD_ERROR` over 5m | 0 | this file, §4 |
 | `balance_cache_hit_rate` | ratio (floor) | hit rate `< 70%` over 10m | 0.70 | `docs/local-dev.md` §5.7 |
+
+### Why the outbox lag rule became three (step 71, ADR-0019)
+`outbox_publisher_lag` was one rule over `max(pix_outbox_lag_seconds)` against one 60s bound, and the
+gauge carried no `lane` tag because there were no lanes. Both halves of that were wrong once the outbox
+was split, and for the same reason: **the three lanes have budgets an order of magnitude apart**. A
+settlement lane 30 seconds behind is a payment on its way to being reversed by reconciliation; an audit
+lane 30 seconds behind is Tuesday. No single threshold can be right for both, and no aggregate — not
+even `max`, the friendliest one for catching a problem — can say *which* drain is behind, which is
+precisely the question that decided the outcome in `docs/load/RESULTS.md` Context 2.
+
+The `settlement` budget is **derived, not chosen**: `pix.settlement.reconciliation.stuck-after-seconds`
+is 120s, so ADR-0019 requires this lane's budget to sit an order of magnitude under it. At 12s the alert
+fires with ~108 seconds still on the clock to act. Raising it toward 120s would make the alert and the
+incident simultaneous, which is another way of saying useless.
+
+Thresholds come from `pix.settlement.alerts.outbox-lag.<lane>`; `AlertEvaluatorTest#outboxLagAlertsPerLane`
+pins that a healthy lane cannot mask a stalled one.
 
 ### The two fraud rules, and why one of them is not a rate (ADR-0018)
 `fraud_fail_open_rate` was, until step 70, the only thing the platform said about fraud failing — and it
@@ -238,7 +257,7 @@ stopped" visible from inside the pipeline that stopped.
    Grafana tab open.
 
 ### Why the watchdog reads Prometheus, not its own registry
-Three of the seven rules watch metrics settlement-service does not own (`pix.outbox.lag`, the cache hit rate,
+Five of the nine rules watch metrics settlement-service does not own (`pix.outbox.lag` on each of its three lanes, the cache hit rate,
 the fail-open rate). A watchdog restricted to its local `MeterRegistry` could only ever see its own corner —
 and the failure it exists to catch is precisely a statement about **two services at once**. Prometheus
 already scrapes everything, so it is the one place a cross-service question can be asked.

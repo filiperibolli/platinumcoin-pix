@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.domain.exception.TransitionNotAllowedException;
 import com.platinumcoin.pix.settlement.domain.model.FinalizationActor;
@@ -136,7 +137,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         assertThat(events.get(0).get("eventType").s()).isEqualTo("PixSettled");
         assertThat(events.get(0).get("gsi3pk").s())
                 .as("the event sits in the sparse index until the publisher drains it")
-                .isEqualTo("OUTBOX#UNPUBLISHED");
+                .isEqualTo(OutboxLane.NOTIFICATION.gsi3pk());
     }
 
     /**
@@ -194,7 +195,7 @@ class SettlementTransitionsIT extends LocalStackTestBase {
         List<Map<String, AttributeValue>> events = outboxEvents(txId);
         assertThat(events).hasSize(1);
         assertThat(events.get(0).get("eventType").s()).isEqualTo("PixReversed");
-        assertThat(events.get(0).get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
+        assertThat(events.get(0).get("gsi3pk").s()).isEqualTo(OutboxLane.NOTIFICATION.gsi3pk());
     }
 
     /**

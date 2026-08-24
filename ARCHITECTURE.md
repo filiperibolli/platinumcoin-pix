@@ -138,7 +138,7 @@ graph TB
     LED --> DDB
     ACC --> DDB
     PAY --> DDB
-    PAY -->|outbox polling publisher<br/>sparse GSI, 1s tick| SNS
+    PAY -->|outbox lane publishers<br/>sparse GSI per lane, ADR-0019| SNS
     SNS --> SQ1
     SNS --> SQ2
     SNS --> SQ3
@@ -169,7 +169,7 @@ graph TB
 |---|---|---|
 | **auth-service** | users (credentials) | Login → JWT (HS256 locally; RS256 + JWKS in prod). No MFA in this build (ADR-0007). |
 | **account-service** | `accounts`, `pix_keys` tables | Account CRUD; Pix key register/list/delete with global uniqueness; key→account resolution (plays the role of BACEN's DICT for internal keys; delegates to mock-bacen for external keys). |
-| **payment-service** | `transactions`, `idempotency` tables | The orchestrator. Validates JWT (debited account **from token**), enforces idempotency and daily limits, calls fraud (200ms budget), resolves the key, commands the ledger debit, writes transaction + outbox atomically, exposes status query, runs the outbox polling publisher (sparse GSI → SNS). |
+| **payment-service** | `transactions`, `idempotency` tables | The orchestrator. Validates JWT (debited account **from token**), enforces idempotency and daily limits, calls fraud (200ms budget), resolves the key, commands the ledger debit, writes transaction + outbox atomically, exposes status query, runs the outbox polling publishers — one per lane, sparse GSI partition → SNS (ADR-0019). |
 | **ledger-service** | `ledger` table | **Single writer of money.** Double-entry postings via `TransactWriteItems`; conditional writes forbid negative balance; balance & statement reads; the only component allowed to mutate balances. |
 | **settlement-service** | settlement lifecycle | Consumes `settlement-queue`, calls BACEN SPI, retries with backoff, DLQ, confirms/reverses via ledger + payment status; **reconciliation job** (<5 min); receives inbound Pix from mock-bacen; writes immutable audit records to S3. |
 | **fraud-service** | fraud rules/state | Synchronous `/score` (rule-based: velocity, amount, new payee, odd hours) engineered for p99 < 150ms, leaving margin inside the 200ms budget. |
@@ -197,7 +197,7 @@ The rules are not aspirational — each service ships one **ArchUnit** `*Archite
 | `accounts` | `USER#<userId>` / `ACCOUNT#<accountId>` | Account metadata, daily limit config | GSI1: `accountId` lookup |
 | `pix_keys` | `KEY#<keyValue>` / `META` | Global key uniqueness via conditional `PutItem` | GSI1: `ACCOUNT#<accountId>` → list keys |
 | `ledger` | `ACCOUNT#<accountId>` / `BALANCE` and `ENTRY#<ts>#<txId>` | Balance item + immutable double-entry postings | GSI1: `TX#<txId>` → both legs of a posting |
-| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both); also hosts the daily-limit usage counters (`LIMIT#<accountId>` / `DAY#<date>`) and export requests (`EXPORT#<exportId>`, step 53) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan); GSI3 (sparse): unpublished outbox |
+| `transactions` | `TX#<txId>` / `META` and `OUTBOX#<eventId>` | Transaction state machine + **outbox items in the same table** (so one `TransactWriteItems` covers both); also hosts the daily-limit usage counters (`LIMIT#<accountId>` / `DAY#<date>`) and export requests (`EXPORT#<exportId>`, step 53) | GSI1: `E2E#<endToEndId>`; GSI2: `STATUS#<status>` + `updatedAt` (reconciliation scan); GSI3 (sparse): unpublished outbox, **partitioned by lane** (ADR-0019) |
 | `idempotency` | `IDEM#<accountId>#<key>` / `META` | Request hash + stored response, TTL 24h | — |
 | `processed_events` | `CONSUMER#<name>#EVT#<eventId>` / `META` | Consumer-side event dedup — what turns at-least-once delivery into effectively-once; TTL 7d | — |
 
@@ -606,7 +606,7 @@ sequenceDiagram
     PAY->>DDB: TransactWriteItems: tx=DEBITED + outbox(PixDebited)
     PAY-->>App: 202 Accepted {status: PROCESSING}
     Note over App,PAY: p99 < 2s — user is NOT waiting for BACEN
-    PAY->>DDB: poll sparse GSI3 (unpublished outbox, ~1s tick)
+    PAY->>DDB: poll sparse GSI3, settlement lane (200ms tick, ADR-0019)
     PAY->>SNS: publish PixDebited → fan-out, then REMOVE gsi3pk (mark published)
     SNS->>SET: settlement-queue
     SET->>SPI: POST /spi/settlements (endToEndId) — up to 10s
@@ -633,6 +633,22 @@ dual-write problem. The outbox item lives in the **same table/partition** as the
 commit in one transaction; the publisher publishes-then-marks on a **sparse GSI** (at-least-once), and
 consumers dedupe by `eventId`. DynamoDB Streams would be lower-latency but the most complex consumer in
 the project, buying nothing against a 10s SPI SLA — documented as the production evolution.
+
+**Why the drain is split into lanes (ADR-0019, step 71) — amended.** The guarantee above is untouched;
+its *capacity* was the problem. One sparse index drained by one thread is one FIFO, so any event type
+could delay any other — and `docs/load/RESULTS.md` Context 2 records the bill: a correct external
+`PixDebited` queued behind **55,538 internal `PixSettled` events that matched no subscription at all**,
+crossed the 120s stuck threshold and was `REVERSED` by reconciliation instead of settling. A latency
+problem produced a money outcome. The drain is therefore partitioned by **lane**, named for what waits
+on the event rather than for who emits it — `settlement` (money is blocked) · `notification` (a person
+is waiting) · `audit` (only the trail) — with `gsi3pk = OUTBOX#UNPUBLISHED#<LANE>`, one independently
+sized publisher per lane, a bounded in-flight ceiling per lane, and a **per-lane** lag SLO (settlement
+12s, an order of magnitude under the 120s stuck threshold). Raising the batch size would have cleared
+the measured number and preserved the failure mode; a partition removes it. The settlement consumer is
+parallelised in the same step, because fixing the publisher alone would only move the bottleneck one
+hop — safe as a *sizing* change, since `eventId` dedup (ADR-0004) and finalization fencing (ADR-0016)
+already had to hold against two instances. What is given up is written down: **cross-lane ordering is
+not guaranteed**, which ADR-0004 never offered anyway — lanes make it explicit instead of accidental.
 
 ---
 
@@ -914,7 +930,7 @@ graph LR
     PROM["Prometheus :9091"]
     GRAF["Grafana :3000<br/>Technical + Business-Funnel<br/>dashboards, provisioned as code"]
     TRACE["scripts/trace.sh &lt;correlationId&gt;<br/>full request path from logs"]
-    ALERT["AlertEvaluator, settlement-service<br/>silence rules · DLQ depth ·<br/>reconciliation age · outbox lag"]
+    ALERT["AlertEvaluator, settlement-service<br/>silence rules · DLQ depth ·<br/>reconciliation age · outbox lag per lane"]
     PROM -->|scrapes| SVCS
     GRAF -->|queries| PROM
     TRACE -->|greps by correlationId| SVCS
@@ -1026,7 +1042,7 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 - **Logs** (ADR-0012): SLF4J + Logback in every service, configured once in `common-lib` and inherited by depending on it. Each request gets a `correlationId` at the edge (generated if absent), propagated via header and MDC to every downstream call and every consumer (events carry it in the envelope), and printed by the **log pattern itself** (`[cid=… tx=…]` on every record, framework lines included) — so **the complete path of any transaction is reconstructable across all services** with one `grep`. Messages are English sentences followed by `key=value` pairs (*"Pix key resolved to a destination | normalizedValue=… accountId=…"*) rather than dotted event tokens: prose for the reader, pairs for the grep. Human-readable console is the default; the JSON encoder is one profile away (`json-logs`) for a log platform. **This is a sandbox posture: personal-shaped values (Pix keys, CPFs, e-mails) are logged in full and `com.platinumcoin.pix` runs at DEBUG by default — secrets (passwords, hashes, tokens, credentials) never are.** ADR-0012 states the LGPD trade-off and exactly what production reverses (masking/tokenization at the log boundary, INFO by default, JSON with retention + access control).
 - **Metrics**: Micrometer → Prometheus (scrapes every service's `/actuator/prometheus` every 10s). Every platform metric is prefixed `pix.`, and the exact Prometheus series names are pinned by a test (`PrometheusMetricNamesTest`) — a silently renamed series breaks every dashboard panel and PromQL rule *without failing anything*, which is the most expensive failure mode observability has. Latency is exported as a **percentile histogram** with explicit buckets on the two SLO boundaries (300ms, 2s), configured once in common-lib: a quantile computed inside each JVM cannot be aggregated across instances, so only buckets can honestly answer an SLO stated for the platform. Catalog: `docs/observability.md`.
 - **Dashboards (Grafana, provisioned as code)**: (1) *Technical* — latency p50/p99 per endpoint vs SLO lines (2s send, 300ms balance), throughput, error rates, queue depths + DLQ, cache hit rate, JVM basics; (2) *Business funnel* — payments by stage over time (RECEIVED → FRAUD_CHECKED → DEBITED → SENT_TO_SPI → FINALIZING_* → SETTLED, with REJECTED/REVERSED branches), conversion between stages, fraud decision mix, reconciliation actions, money volume settled. The funnel view is the one a product owner reads — observability that answers business questions, not only "is the CPU ok".
-- **Silence alerts** for async flows: a watchdog comparing an input-side counter against an output-side one (e.g., "no settlement completed in 120s **while debits are flowing**") — detecting the *absence* of expected events, which is how async systems usually fail: the consumer is wedged, nothing errors, and every error rate stays a healthy zero. DLQ depth > 0 alerts immediately. Reconciliation-age > 5 min alerts (SLO guard). Implemented as `AlertEvaluator` in settlement-service (step 44, extended by ADR-0018): seven rules in three shapes — threshold, ratio and silence — announced on **state transitions only**, with a `runbook=` on every line. Because three of the rules watch metrics *other* services own (outbox lag, cache hit-rate, fail-open rate), the evaluator reads **Prometheus** through a `MetricSource` port rather than its own registry: that is the only vantage point from which a cross-service question can be asked. The dependency is soft by construction — an unanswerable query yields `SKIPPED` and leaves the rule's remembered state untouched, so a monitoring outage can neither invent an incident nor silently close one — and nothing on the money path calls it. In production these rules are an Alertmanager rules file next to the same Prometheus; they are in code here so the platform can say something is wrong under plain `docker compose up`, and so each rule has a unit test proving it fires. Full catalog and reasoning: `docs/observability.md`.
+- **Silence alerts** for async flows: a watchdog comparing an input-side counter against an output-side one (e.g., "no settlement completed in 120s **while debits are flowing**") — detecting the *absence* of expected events, which is how async systems usually fail: the consumer is wedged, nothing errors, and every error rate stays a healthy zero. DLQ depth > 0 alerts immediately. Reconciliation-age > 5 min alerts (SLO guard). Implemented as `AlertEvaluator` in settlement-service (step 44, extended by ADR-0018 and ADR-0019): nine rules in three shapes — threshold, ratio and silence — announced on **state transitions only**, with a `runbook=` on every line. Because five of the rules watch metrics *other* services own (the three per-lane outbox lags, the cache hit-rate, the fail-open rate), the evaluator reads **Prometheus** through a `MetricSource` port rather than its own registry: that is the only vantage point from which a cross-service question can be asked. The dependency is soft by construction — an unanswerable query yields `SKIPPED` and leaves the rule's remembered state untouched, so a monitoring outage can neither invent an incident nor silently close one — and nothing on the money path calls it. In production these rules are an Alertmanager rules file next to the same Prometheus; they are in code here so the platform can say something is wrong under plain `docker compose up`, and so each rule has a unit test proving it fires. Full catalog and reasoning: `docs/observability.md`.
 - **Path tracing**: `scripts/trace.sh <correlationId|txId>` collates and time-orders every service's logs for one request or one payment — fifty lines of `grep`, not a tracing backend, precisely because the id is in the log *pattern*. Verified end to end in step 44: one external send is 48 lines across 7 services, spanning the synchronous request and the whole asynchronous settlement. It accepts a `txId` too, because work no request started (the reconciliation scan) honestly has no correlation id.
 - OpenTelemetry tracing is optional locally; correlation ids make manual trace-following possible without it.
 - **Load validation**: three k6 profiles (`load/k6/`) exercise the stated SLOs — low (quiet hours), standard (~58 TPS, the daily average), Black Friday (ramp to 500+ TPS peak) — with thresholds failing the run if p99 budgets or error rates are violated.
@@ -1066,6 +1082,7 @@ For the **transaction history** (statement): the ledger entries themselves, keye
 | DynamoDB ledger | PostgreSQL | ADR-0001; §8 |
 | Async settlement, `202` | Sync wait for SPI | 10s SLA makes sync UX and thread-pool math untenable; async + push notification is the industry pattern |
 | Outbox drained by polling publisher | Write-then-publish (dual write); Streams/CDC | Dual-write loses events or states. Streams would add the project's most complex consumer (shards, checkpoints) to gain subsecond latency that a 10s SPI SLA makes irrelevant — polling every 1–2s on a sparse GSI is simpler and sufficient; Streams documented as the production evolution (ADR-0004) |
+| Outbox drain **partitioned into 3 lanes** | Raise batch size / lower tick; DynamoDB Streams; a table per lane; publish to SNS inline for urgent events | Sizing clears the measured backlog and keeps the failure mode — a single FIFO still puts `PixDebited` behind any flood, and the reversal recurs at the next throughput. Streams is still one ordered log per shard, so head-of-line blocking survives it. A second table breaks the same-partition `TransactWriteItems` the outbox exists for; inline publishing reintroduces the dual write on the one path where a lost event parks money in clearing forever (ADR-0019) |
 | Fraud sync + fail-open | Fail-closed; fully async fraud | Fail-closed couples availability to fraud-service; fully async can't block a payment at all. Sync-with-budget + fail-open balances both (ADR-0005). Failures are classified rather than merged, so a *broken* check is loud without becoming a payments outage (ADR-0018) |
 | SNS+SQS | Kafka | Fits the LocalStack constraint; fan-out + DLQ + per-queue scaling with zero broker ops; Kafka would win for replay/stream processing at larger scope |
 | Microservices | Modular monolith | A monolith would be *simpler* and is a legitimate 3-month-deadline answer; chosen decomposition demonstrates the target-state design and independent failure domains (ADR-0006) |

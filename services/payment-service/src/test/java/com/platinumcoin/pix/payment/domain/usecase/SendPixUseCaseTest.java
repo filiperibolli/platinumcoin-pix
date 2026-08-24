@@ -18,10 +18,13 @@ import com.platinumcoin.pix.payment.domain.model.LimitDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
+import com.platinumcoin.pix.payment.domain.port.EventPublisher;
+import com.platinumcoin.pix.payment.domain.port.OutboxEventStore;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -770,6 +773,45 @@ class SendPixUseCaseTest {
         return new IdempotencyRecord(requestHash, "tx-" + java.util.UUID.randomUUID(),
                 "E12345678202607021234PLANTEDID0", IdempotencyStatus.CLAIMED, claimedAt,
                 claimedAt.plusSeconds(24 * 3600), 0, null);
+    }
+
+    /**
+     * <b>A saturated outbox must never slow acceptance</b> (step 71, ADR-0019 decision 4).
+     *
+     * <p>This is the constraint that makes the whole lane design safe to tune aggressively: whatever
+     * happens to a publisher — a lane at its in-flight ceiling, a broker refusing every publish, a
+     * thread pool wedged — a {@code POST /v1/payments/pix} must be unaffected. The outbox <i>write</i>
+     * is part of the payment's atomic transaction; the outbox <i>drain</i> is a background job that
+     * shares nothing with it. If publisher health could reach the request path, the outbox would have
+     * reintroduced the very coupling it exists to remove, and ADR-0019's rejected alternative
+     * ("publish to SNS directly from the request path when the lane is settlement") would be back by
+     * accident.
+     *
+     * <p><b>Asserted structurally, not by stopwatch.</b> A timing assertion here would be flaky and,
+     * worse, would pass for the wrong reason on a fast machine. The real guarantee is that the
+     * acceptance path <i>cannot</i> reach the publisher: {@link SendPixUseCase} takes no
+     * {@code OutboxEventStore} and no {@code EventPublisher}, so there is no code path, fast or slow,
+     * from a send to a drain. This test fails the day somebody wires one in — which is exactly the
+     * change that would need this conversation.
+     */
+    @Test
+    void outboxSaturationDoesNotSlowAcceptance() {
+        var collaborators = Arrays.stream(SendPixUseCase.class.getDeclaredConstructors())
+                .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes()))
+                .toList();
+
+        assertThat(collaborators)
+                .as("the acceptance path may not depend on the outbox DRAIN — only on the atomic write "
+                        + "that puts the event next to the transaction (ADR-0004, ADR-0019)")
+                .doesNotContain(OutboxEventStore.class, EventPublisher.class);
+
+        // And the behaviour that follows from it: a send is accepted, and its event is durable, with no
+        // publisher in the picture at all — nothing here has ever run one.
+        var outcome = useCase.execute(command("bob@platinum.com", "10.00", "lunch", "key-saturated"));
+
+        assertThat(outcome.httpStatus()).isEqualTo(202);
+        assertThat(transactions.findById(outcome.transactionId())).isPresent();
+        assertThat(transactions.outboxTypes()).contains("PixSettled");
     }
 
     /** The calendar day the use case reserves against, in the limit's zone (America/São Paulo). */

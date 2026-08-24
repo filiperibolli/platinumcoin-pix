@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.support.SettlementTestSupport;
 import com.platinumcoin.pix.settlement.support.StubLedgerClient;
@@ -142,7 +143,7 @@ class SettlementHappyIT extends LocalStackTestBase {
                 .isEqualTo("cid-happy-1");
         // gsi3pk present ⇒ the event is sitting in the sparse index, waiting for the polling publisher
         // that drains this table (ADR-0004). Settlement writes its event; it does not deliver it.
-        assertThat(event.get("gsi3pk").s()).isEqualTo("OUTBOX#UNPUBLISHED");
+        assertThat(event.get("gsi3pk").s()).isEqualTo(OutboxLane.NOTIFICATION.gsi3pk());
         assertThat(event.get("payload").s())
                 .contains("\"amountCents\":12550")
                 .contains("\"status\":\"SETTLED\"")
