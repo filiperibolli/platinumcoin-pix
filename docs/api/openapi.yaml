@@ -8,10 +8,28 @@ info:
     - The **debited account is always derived from the JWT** (`accountId` claim); it is never accepted in any request body.
     - Money in request/response bodies is a decimal string in BRL (e.g. "125.50"); stored internally as integer cents.
     - `POST /payments/pix` is asynchronous: `202 Accepted` means "accepted for processing", not settled.
-    - Errors follow RFC 7807 (application/problem+json).
+    - Errors follow RFC 7807 (application/problem+json) and **every** non-2xx carries `code` and
+      `correlationId` — including the ones the framework produces before a handler runs (unknown
+      route, wrong method, unsupported media type, unparseable body). See the `Problem` schema.
     - There is no API gateway in the local build: each path group is served by its own service
       (per-path `servers` overrides below) — auth :8081, pix-keys :8082, payments/accounts :8084,
       notifications :8087. The default server is payment-service.
+
+    **Versioning (ARCHITECTURE §7.8).** URI versioning: every public route lives under `/v1`, enforced
+    at build time by an ArchUnit rule in each service. Changes within `/v1` are **additive only** — a
+    new optional request field, a new response field, a new endpoint, a new error `code` on an existing
+    status. Anything a client written against the previous contract would not survive (a new *required*
+    field, a removed or renamed field, a changed type or format, a different status for an existing
+    condition) is a breaking change and gets a `/v2` served side by side, because mobile clients cannot
+    be migrated on our schedule.
+
+    **What a client must therefore tolerate:** unknown response fields, and unknown values in
+    server-controlled enums (`status`, `code`). Treat an unrecognised payment `status` as
+    non-terminal and keep polling; treat an unrecognised error `code` as its HTTP status class. A
+    client that switches exhaustively on either will break on a change this policy calls additive.
+
+    Nothing is deprecated today. When something is, it keeps serving and starts answering with
+    `Deprecation` and `Sunset` headers (RFC 8594), with the sunset date recorded on the endpoint here.
 
 servers:
   - url: http://localhost:8084/v1
@@ -572,14 +590,43 @@ components:
         keyValue: { type: string }
         createdAt: { type: string, format: date-time }
     Problem:
+      description: |
+        RFC 7807 problem detail. The platform adds two members to every error it returns, without
+        exception — `scripts/error-contract-audit.sh` walks the running stack and asserts it, and
+        `ErrorContractIT` asserts it in-process.
+
+        `code` is the machine contract: branch on it, never on `detail`, which is English prose written
+        for a human and may be reworded at any time. `correlationId` is the id echoed on the
+        `X-Correlation-Id` response header; quoting it in a support ticket is what makes one `grep`
+        reconstruct the request across every service (ADR-0012).
+
+        New `code` values may appear within `/v1` — that is an additive change (ARCHITECTURE §7.8), so
+        treat an unrecognised code as its HTTP status class rather than as a parse failure.
       type: object
+      required: [type, title, status, code, correlationId]
       properties:
-        type: { type: string }
-        title: { type: string }
-        status: { type: integer }
-        detail: { type: string }
-        code: { type: string, example: LIMIT_EXCEEDED }
-        correlationId: { type: string }
+        type: { type: string, example: 'about:blank' }
+        title: { type: string, example: Unprocessable Entity }
+        status: { type: integer, example: 422 }
+        detail:
+          description: Human-readable explanation. Not a contract — do not parse or branch on it.
+          type: string
+        code:
+          description: |
+            Stable, machine-readable reason. Domain codes come from the service that owns the rule
+            (`LIMIT_EXCEEDED`, `INSUFFICIENT_FUNDS`, `FRAUD_DENIED`, `IDEMPOTENCY_KEY_REUSED`,
+            `KEY_NOT_FOUND`, `PAYMENT_NOT_FOUND`, `DIRECTORY_UNAVAILABLE`, `LEDGER_UNAVAILABLE`, …).
+            Rejections that happen before any handler runs are derived from the status
+            (`NOT_FOUND`, `METHOD_NOT_ALLOWED`, `UNSUPPORTED_MEDIA_TYPE`, …), with two named
+            exceptions on 400, where one status carries two meanings a client fixes differently:
+            `MALFORMED_REQUEST` (the body did not parse) and `VALIDATION_ERROR` (it parsed and its
+            fields, query parameters or required headers were wrong).
+          type: string
+          example: LIMIT_EXCEEDED
+        correlationId:
+          description: Same value as the `X-Correlation-Id` response header.
+          type: string
+          format: uuid
   responses:
     BadRequest:
       description: Malformed request

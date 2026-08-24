@@ -8,6 +8,7 @@ import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.exception.TransactionWriteConflictException;
 import com.platinumcoin.pix.payment.domain.model.FraudDecision;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionDirection;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import java.time.Instant;
@@ -319,12 +320,29 @@ public class DynamoTransactionRepository implements TransactionRepository {
      * (ADR-0006), and {@code valueOf} on a constant missing here throws — which is precisely how every
      * reversed payment came to answer {@code 500} on its own status endpoint until {@code REVERSED} was
      * added. A consumer of somebody else's state machine has to know all of its states.
+     *
+     * <p><b>And every shape it can write, which is the harder half (step 45).</b> settlement-service also
+     * <i>creates</i> items here — inbound arrivals (step 37) — and an arrival carries <b>no
+     * {@code debtorAccountId}</b> (the payer banks elsewhere; the clearing account is the debit side) and
+     * no {@code description} (the rail sends none). Reading either unguarded threw a
+     * {@code NullPointerException} <i>before</i> {@code valueOf} was ever reached, so
+     * {@code GET /v1/payments/in-<endToEndId>} — the poll the payee's own {@code PixReceived}
+     * notification points them at (ARCHITECTURE §6.8) — answered {@code 500}. Worse than the outage: an
+     * unknown id answered {@code 404} and a real one answered {@code 500}, so the two were tellable
+     * apart, which is exactly the existence leak the uniform {@code 404} exists to prevent.
+     *
+     * <p>{@code direction} therefore defaults to {@code OUTBOUND} rather than being required: items
+     * written before step 27 predate the attribute and were sends by construction — the same honest
+     * fallback {@code creditorInternal} already uses below.
      */
     private static Transaction toTransaction(Map<String, AttributeValue> item) {
         return new Transaction(
                 item.get("txId").s(),
                 item.get("endToEndId").s(),
-                item.get("debtorAccountId").s(),
+                item.containsKey("direction")
+                        ? TransactionDirection.valueOf(item.get("direction").s())
+                        : TransactionDirection.OUTBOUND,
+                item.containsKey("debtorAccountId") ? item.get("debtorAccountId").s() : null,
                 item.get("creditorKey").s(),
                 item.containsKey("creditorAccountId") ? item.get("creditorAccountId").s() : null,
                 // Absent only on items written before step 27, which were internal sends by
@@ -335,7 +353,7 @@ public class DynamoTransactionRepository implements TransactionRepository {
                 item.containsKey("clearingAccountId") ? item.get("clearingAccountId").s() : null,
                 Long.parseLong(item.get("amountCents").n()),
                 TransactionStatus.valueOf(item.get("status").s()),
-                item.get("description").s(),
+                item.containsKey("description") ? item.get("description").s() : null,
                 item.containsKey("fraudDecision")
                         ? FraudDecision.valueOf(item.get("fraudDecision").s()) : null,
                 item.containsKey("fraudSkipped") && Boolean.TRUE.equals(item.get("fraudSkipped").bool()),

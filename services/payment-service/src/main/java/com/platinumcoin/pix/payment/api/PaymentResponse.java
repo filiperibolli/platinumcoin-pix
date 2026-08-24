@@ -67,7 +67,10 @@ public record PaymentResponse(
         return switch (status) {
             case RECEIVED, DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL
                     -> "PROCESSING";
-            case SETTLED -> "SETTLED";
+            // An arrival is SETTLED, not a sixth word (ARCHITECTURE §6.8): the direction is carried by
+            // the notification's `type`, and giving the state a name of its own would put one fact in
+            // two fields — and would make every client learn a word for something they can already see.
+            case SETTLED, RECEIVED_SETTLED -> "SETTLED";
             // Terminal and visible, unlike DEBITED/SENT_TO_SPI: a reversal is something the payer must be
             // able to see and act on — their money came back, and failureReason says why.
             case REVERSED -> "REVERSED";

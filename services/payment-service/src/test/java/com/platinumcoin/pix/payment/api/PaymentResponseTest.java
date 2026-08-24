@@ -6,6 +6,7 @@ import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
+import static com.platinumcoin.pix.payment.domain.model.TransactionDirection.OUTBOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -22,7 +23,7 @@ class PaymentResponseTest {
     @Test
     void receivedMapsToProcessingWithNoSettlement() {
         Transaction received = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", null, true, null, 12_550L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@platinum.com", null, true, null, 12_550L,
                 TransactionStatus.RECEIVED, "lunch", null, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(received);
@@ -35,7 +36,8 @@ class PaymentResponseTest {
     @Test
     void settledMapsToSettledWithSettledAt() {
         Transaction settled = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, null, 12_550L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@platinum.com", "acc-bob", true, null,
+                12_550L,
                 TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED, null);
 
         PaymentResponse response = PaymentResponse.from(settled);
@@ -57,7 +59,8 @@ class PaymentResponseTest {
     @Test
     void reversedMapsToReversedAndCarriesTheReason() {
         Transaction reversed = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 5_510L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@otherbank.com", null, false,
+                "SPI_CLEARING", 5_510L,
                 TransactionStatus.REVERSED, "rent", FraudDecision.APPROVE, false, CREATED, null,
                 "CREDITOR_KEY_NOT_IN_DICT");
 
@@ -75,7 +78,8 @@ class PaymentResponseTest {
         // The external send (step 27): debited to clearing, awaiting settlement. The client sees the
         // same PROCESSING it saw at 202 — the internal DEBITED/SENT_TO_SPI distinction is ours, not its.
         Transaction debited = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 20_000L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@otherbank.com", null, false,
+                "SPI_CLEARING", 20_000L,
                 TransactionStatus.DEBITED, "rent", FraudDecision.APPROVE, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(debited);
@@ -91,7 +95,8 @@ class PaymentResponseTest {
         // the edge is what keeps that mechanics change invisible to every client: settlement is our
         // problem, and a status the client cannot act on has no business in the contract.
         Transaction sentToSpi = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@otherbank.com", null, false, "SPI_CLEARING", 20_000L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@otherbank.com", null, false,
+                "SPI_CLEARING", 20_000L,
                 TransactionStatus.SENT_TO_SPI, "rent", FraudDecision.APPROVE, false, CREATED, null, null);
 
         PaymentResponse response = PaymentResponse.from(sentToSpi);
@@ -103,7 +108,8 @@ class PaymentResponseTest {
     @Test
     void rendersIdentityAmountAndKeyFromTheTransaction() {
         Transaction settled = new Transaction(
-                "tx-1", "E2E-1", "acc-alice", "bob@platinum.com", "acc-bob", true, null, 12_550L,
+                "tx-1", "E2E-1", OUTBOUND, "acc-alice", "bob@platinum.com", "acc-bob", true, null,
+                12_550L,
                 TransactionStatus.SETTLED, "lunch", FraudDecision.APPROVE, false, CREATED, SETTLED, null);
 
         PaymentResponse response = PaymentResponse.from(settled);

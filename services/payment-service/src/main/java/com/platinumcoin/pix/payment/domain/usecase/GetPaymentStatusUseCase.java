@@ -10,7 +10,14 @@ import org.slf4j.LoggerFactory;
 /**
  * Read a send-Pix transaction for its owner: the single business operation behind {@code GET
  * /v1/payments/{transactionId}} (step 22). The one decision that lives here (ADR-0011 — not in the
- * controller) is <b>ownership</b>: the caller may only read a transaction they debited.
+ * controller) is <b>ownership</b>: the caller may only read a transaction that is theirs.
+ *
+ * <p><b>Whose it is depends on which way the money went</b> (step 45). The endpoint also serves the
+ * arrivals settlement-service writes into the same table (step 37), because ARCHITECTURE §6.8 makes this
+ * poll the authoritative view behind the best-effort push — for the payee's {@code PixReceived} too. So
+ * ownership is {@link Transaction#ownerAccountId()}: the payer for a send, the payee for an arrival, and
+ * deliberately <b>not</b> "the debtor or the creditor", which would additionally expose an internal
+ * send's record to its payee.
  *
  * <p><b>Not-found and not-yours are the same answer (Domain Safety Rule #1).</b> A transaction that
  * does not exist and one that belongs to another account both raise {@link PaymentNotFoundException},
@@ -36,7 +43,7 @@ public class GetPaymentStatusUseCase {
     /**
      * Load the transaction {@code txId} on behalf of {@code callerAccountId}.
      *
-     * @throws PaymentNotFoundException the transaction does not exist, or exists but was debited from a
+     * @throws PaymentNotFoundException the transaction does not exist, or exists but belongs to a
      *                                  different account (uniform 404 — no existence leak)
      */
     public Transaction execute(String txId, String callerAccountId) {
@@ -48,18 +55,21 @@ public class GetPaymentStatusUseCase {
         }
 
         Transaction transaction = found.get();
-        if (!transaction.debtorAccountId().equals(callerAccountId)) {
+        if (!callerAccountId.equals(transaction.ownerAccountId())) {
             // Exists, but not the caller's — answer exactly as we would for a missing id so the caller
-            // cannot tell the difference and enumerate other accounts' transactions.
+            // cannot tell the difference and enumerate other accounts' transactions. Compared with the
+            // caller's id on the left: an arrival whose creditor attribute were somehow absent must be
+            // refused, never crash into a 500 that would itself distinguish it from an unknown id.
             log.warn("Payment status refused, the transaction belongs to another account, returning 404 "
-                            + "| transactionId={} callerAccountId={} ownerAccountId={}",
-                    txId, callerAccountId, transaction.debtorAccountId());
+                            + "| transactionId={} callerAccountId={} direction={} ownerAccountId={}",
+                    txId, callerAccountId, transaction.direction(), transaction.ownerAccountId());
             throw new PaymentNotFoundException();
         }
 
-        log.info("Payment status served to its owner | transactionId={} callerAccountId={} status={} "
-                        + "settledAt={}",
-                txId, callerAccountId, transaction.status(), transaction.settledAt());
+        log.info("Payment status served to its owner | transactionId={} callerAccountId={} direction={} "
+                        + "status={} settledAt={}",
+                txId, callerAccountId, transaction.direction(), transaction.status(),
+                transaction.settledAt());
         return transaction;
     }
 }

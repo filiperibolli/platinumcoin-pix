@@ -373,7 +373,8 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | `FRAUD_SERVICE_BASE_URL` / `services.fraud-service.base-url` | `http://localhost:8083` | fraud-service base URL for in-path scoring (step 25); compose overrides to `http://fraud-service:8083`. Connect/read timeouts default **50/150 ms** = the 200ms budget (`services.fraud-service.*-timeout-ms`); a slow/down fraud-service fails open (`SKIPPED`). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder credentials, read **only under the `local` profile** (ADR-0013). LocalStack validates no signature and reads the key only to derive the account id — a signing formality, not authentication. |
+| `SPRING_PROFILES_ACTIVE` | `local` (set by compose) | **Load-bearing since step 45 (ADR-0013).** The `local` profile is the only thing that hands this service's AWS clients an endpoint override and the placeholder credentials; without it the SDK's `DefaultCredentialsProvider` chain looks for an ambient role (ECS task role / EKS IRSA / EC2 instance profile), finds none locally, and the service **fails loudly at startup** rather than quietly reaching the emulator while looking production-configured. Running this module by hand needs `SPRING_PROFILES_ACTIVE=local`; if you set the variable yourself, include it (`json-logs,local`). |
 | `SNS_TOPIC_ARN` / `pix.events.topic-arn` | `arn:aws:sns:us-east-1:000000000000:pix-events` | The topic the outbox publisher drains into (step 29). Injected, never looked up by name: a deployed service holds `sns:Publish` on exactly this ARN and may not list topics (ADR-0013). |
 | `OUTBOX_SETTLEMENT_DELAY_MS` / `…lanes.settlement.fixed-delay-ms` | `200` | Poll interval of the **settlement** lane. `fixedDelay` (not rate), so a slow tick never overlaps the next and cannot publish the same event twice. |
 | `OUTBOX_SETTLEMENT_BATCH_SIZE` / `…lanes.settlement.batch-size` | `100` | Max events one settlement tick may claim — a backlog drains in bounded chunks, never one unbounded write storm. |
@@ -387,6 +388,17 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis for the balance cache (step 40); compose overrides the host to `redis`. A Redis outage degrades balance reads to ledger speed — every read becomes a miss — and never to errors. |
 | `BALANCE_CACHE_TTL` / `pix.balance-cache.ttl` | `5s` | How long a cached balance may be served. It does two jobs: caps ordinary staleness, and — when ledger-service's post-commit eviction is lost (it is best-effort) — is the backstop that bounds how long a wrong number can be displayed. |
 | `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs. Integration tests set it `false` and drive the tick explicitly (Spring caches contexts; a live poller would drain the shared table mid-assertion). |
+
+### AWS credentials & IAM (ADR-0013)
+
+This service's deployed role is [`infra/iam/payment-service-policy.json`](../../infra/iam/payment-service-policy.json) —
+least-privilege over pix_transactions, pix_idempotency + the pix-events topic, with concrete ARNs and no `"Resource": "*"`. **LocalStack enforces
+none of it** (`ENFORCE_IAM` is off by default and gated as a paid feature), so the policy is reviewed as
+a document, not proven by any test; `docs/security-checklist.md` §7 says exactly which rows that leaves
+unprovable. What *is* tested here is the credential posture: `AwsCredentialPostureTest` asserts that
+without the `local` profile no override bean exists, and the shared ArchUnit rule
+`PlatformArchRules.noServiceCarriesAStaticAwsCredential()` fails the build if a new client ever
+reintroduces a static key.
 
 ## Run
 

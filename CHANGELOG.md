@@ -27,6 +27,100 @@ The platform reached its halfway mark: **the full money path is built, tested an
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
 ### Changed
+- Hardening: guarded-transition sweep, scripted error-contract audit, versioning review and security checklist (step 45)
+  AI: est 6h / actual 3h10 / ~93% generated / 0 issues caught in human review
+  <!-- The four defects below were found by THIS step's own audit — they are its deliverable, not
+       human-review catches. The human reviewed at the mid-point checkpoint (tasks 1-2 green) and
+       approved without changes; the one fix that came out of the money-safety review was
+       self-found. Counting audit findings as review catches would inflate the only metric here
+       that is meant to measure the human. -->
+  - **A gate that found things.** Three defects, none of them in the code the step set out to verify:
+    - **Four framework-generated statuses escaped the RFC 7807 contract.** Unknown route (404), wrong
+      method (405), unsupported media type (415) and unparseable body (400) returned Spring's bare
+      `ProblemDetail` — right status, right content type, and **neither `code` nor `correlationId`**.
+      They are rejected before any controller runs, so nothing in the application layer was ever in a
+      position to stamp them: a client branching on `code` read `null`, and a support ticket about "the
+      API rejected my request" arrived with no id to grep. Fixed once in
+      `GlobalExceptionHandler#handleExceptionInternal` — one file in common-lib, auto-configured into
+      all eight services. The `code` is **derived from the status** rather than looked up in a table of
+      exception types, because `HttpStatus`'s own constant names already *are* the vocabulary and a
+      table's failure mode is the very `null` being eliminated. Only 400 is explicit, since it is the
+      one status this platform gives two meanings a client fixes differently: `MALFORMED_REQUEST` (the
+      body did not parse) versus `VALIDATION_ERROR` (it parsed; its fields were wrong).
+    - **`GET /v1/payments/in-<endToEndId>` answered 500** — the poll the payee's own `PixReceived`
+      notification hands them, and which ARCHITECTURE §6.8 makes *authoritative* behind the best-effort
+      push. An inbound transaction (step 37) carries **no `debtorAccountId`** and no `description`, and
+      payment-service read both unguarded. The security consequence is sharper than the outage: an
+      unknown id answered `404` and a real inbound id answered `500`, so **the two were
+      distinguishable** — precisely the existence leak the uniform 404 exists to prevent. Fixed with a
+      `TransactionDirection` on the `Transaction` record and `Transaction.ownerAccountId()`: an
+      outbound payment is the payer's, an inbound one is the payee's. Deliberately **narrower** than
+      "the debtor or the creditor", which would have handed the payee of an *internal send* the payer's
+      record — a new disclosure in the name of fixing a 500.
+    - **The fourth state this platform learned the hard way.** `REVERSED` (step 33) and the two
+      `FINALIZING_*` states (step 67) were each a missing *constant*, and `PaymentResponse`'s
+      `switch`-with-no-`default` eventually forced each to be given an external face. This one arrived
+      with a missing *shape* as well, so it threw before `valueOf` was ever reached. The lesson worth
+      keeping: **the compile-time guard covers the vocabulary; nothing covers an attribute the other
+      writer simply omits.**
+  - **A fourth finding is recorded and deliberately not fixed.** On `POST /v1/inbound/pix`, bean
+    validation runs *before* the shared-token check, so an empty body answers `400 VALIDATION_ERROR`
+    and only a well-formed one reaches `401 WEBHOOK_UNAUTHORIZED` — an unauthenticated caller can probe
+    the schema of a money-crediting route. Low severity (nothing is resolved, credited or persisted,
+    and the schema is published in the OpenAPI anyway), and the correct fix is *ordering* — authenticate
+    ahead of argument resolution — which is a behavioural change to a money route and belongs in a step
+    that can test it. `docs/security-checklist.md` §6.4 carries it; the audit probe is commented so a
+    green run cannot lose it.
+  - **The guarded-transition sweep found nothing, and that is the honest report.** `GuardedTransitionIT`
+    is the full product — 8 stored states × 5 transitions = **40 cells**, plus 5 "transaction does not
+    exist" rows and 3 property assertions. Every refused cell asserts three things, not one: that the
+    operation refused *in the shape that operation refuses in* (an exception for the terminal
+    transitions, `false` for the fences — losing a fence is the expected outcome of a race, not an
+    error), that the item is **byte-identical** to before (the whole attribute map, since a guard that
+    moved `updatedAt` or `gsi2sk` while refusing would hide a stalled payment from the reconciliation
+    scan), and that **nothing reached the outbox**. `RECEIVED` is swept although settlement's enum has no
+    such constant: the status is a *string* in a table payment-service writes, so the guards must refuse
+    it for not being whitelisted, not for being unnameable. `everyStatusIsClassified()` fails the build
+    when a state is added without a decision about it.
+  - **Versioning stopped being a paragraph.** `PlatformArchRules.everyControllerIsMountedUnderAVersioned
+    OrInternalPrefix()` is checked by all seven `*ArchitectureTest`s, and a negative control confirmed it
+    bites. `/internal/**` is named as unversioned *on purpose* (its callers deploy with it — ADR-0017),
+    so the distinction is explicit rather than a gap. ARCHITECTURE §7.8 now carries the additive-only
+    table, the enum row that this platform has hit twice, and the RFC 8594 deprecation policy — written
+    now so the first deprecation is not also the moment the policy is invented.
+  - **ADR-0013 swept in one change, across every service.** `StaticCredentialsProvider` now appears in
+    **exactly one production class** — common-lib's `LocalStackAwsOverride`, produced only by a
+    `@Profile("local")` bean — and the six client-configuration classes pass neither an endpoint nor a
+    credential by default, so the SDK's `DefaultCredentialsProvider` chain resolves the ambient role.
+    **The absence of the bean is the production configuration.** `forcePathStyle` moved into the same
+    profile branch as the endpoint it belongs to, instead of staying switched on in production. Guarded
+    two ways: `AwsCredentialPostureTest` (× 5) asserts the *negative* — no override bean without the
+    profile, which is exactly what a happy-path test never checks — and `PlatformArchRules
+    .noServiceCarriesAStaticAwsCredential()` stops a new client from reintroducing the shape.
+    `infra/iam/<service>-policy.json` (× 5) are valid IAM with concrete ARNs and no `"Resource": "*"`;
+    payment-service holds **no `sqs:*`** and settlement-service **no `sns:Publish`**, which is what makes
+    the outbox topology an authorization boundary rather than a diagram. `infra/iam/README.md` opens by
+    saying LocalStack enforces none of it, because "it works locally" is not evidence a policy is right —
+    locally every call is allowed, including the ones these policies exist to deny.
+  - **The loud-failure trade-off is deliberate and documented.** A service started without the `local`
+    profile now fails at boot on the credential chain instead of quietly reaching the emulator. Compose
+    defaults it, `LocalStackTestBase` sets it for every IT, and `docs/local-dev.md` §3/§4/§7 spell out
+    the one footgun: export `SPRING_PROFILES_ACTIVE` yourself and you must include `local`
+    (`json-logs,local`).
+  - **`scripts/error-contract-audit.sh` — 24 probes across 7 services, PASS.** The outer half of the
+    audit: the same four assertions applied across process boundaries, reaching the domain codes that
+    live in six different processes and that no single-module test can produce. Three of its probes were
+    red on first run because the *expectation* was wrong, not the platform (`INVALID_PIX_KEY` is a 422 —
+    the body parsed, a business rule failed; a zero amount answers the domain's `INVALID_AMOUNT`, not the
+    generic `VALIDATION_ERROR`; the webhook path is `/v1/inbound/pix`). Recorded in the checklist,
+    because on a first audit a red probe is about as likely to be a wrong assumption as a real defect.
+  - **CVE posture: Dependabot, not the OWASP plugin, and the reason is written down.** `dependency-check`
+    downloads the NVD data set and needs an API key, which would make `mvn verify` depend on the network
+    and break CLAUDE.md's "an IT runs on a plain `mvn verify`" — a scanner that turns a red build into
+    "was the NVD reachable today?" trains everyone to ignore the build. `.github/dependabot.yml` runs
+    weekly Maven, monthly Actions and monthly Docker base images (the half a Maven scanner cannot see),
+    grouped so the AWS SDK's eight artifacts arrive as one PR. A `versions:display-dependency-updates`
+    run is recorded in the checklist §8 with its date and result.
 - Outbox split into settlement/notification/audit lanes with independent prioritised publishers, bounded backpressure and a per-lane queue-age SLO, plus a parallel settlement consumer — an event with no subscriber can no longer delay one that money depends on (step 71, ADR-0019)
   AI: est 5h / actual 0h50 / ~95% generated / 0 issues caught in human review
   - **This closes a real incident, not a hypothetical.** `docs/load/RESULTS.md` Context 2 records a

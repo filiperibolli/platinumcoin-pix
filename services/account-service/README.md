@@ -131,9 +131,21 @@ interface in `domain/` — which is what makes "a controller may not reach a rep
 | `jwt.internal-routes` | see `application.yml` | The per-route scope map: `GET /internal/pix-keys/resolve` → `keys:resolve`, `GET /internal/accounts/**` → `accounts:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder credentials, read **only under the `local` profile** (ADR-0013). LocalStack validates no signature and reads the key only to derive the account id — a signing formality, not authentication. |
+| `SPRING_PROFILES_ACTIVE` | `local` (set by compose) | **Load-bearing since step 45 (ADR-0013).** The `local` profile is the only thing that hands this service's AWS clients an endpoint override and the placeholder credentials; without it the SDK's `DefaultCredentialsProvider` chain looks for an ambient role (ECS task role / EKS IRSA / EC2 instance profile), finds none locally, and the service **fails loudly at startup** rather than quietly reaching the emulator while looking production-configured. Running this module by hand needs `SPRING_PROFILES_ACTIVE=local`; if you set the variable yourself, include it (`json-logs,local`). |
 | `BACEN_BASE_URL` / `services.bacen.base-url` | `http://localhost:9090` | mock-bacen's DICT, for keys not held locally (step 30). No bearer token is forwarded on this hop — BACEN is outside our trust domain. |
 | `BACEN_CONNECT_TIMEOUT_MS` / `BACEN_READ_TIMEOUT_MS` | `500` / `1500` | Hard budget for the DICT call; it is on the synchronous send path, so a gone container must surface as a timeout (→ `503`), never a pinned request thread. |
+
+### AWS credentials & IAM (ADR-0013)
+
+This service's deployed role is [`infra/iam/account-service-policy.json`](../../infra/iam/account-service-policy.json) —
+least-privilege over pix_accounts, pix_keys, with concrete ARNs and no `"Resource": "*"`. **LocalStack enforces
+none of it** (`ENFORCE_IAM` is off by default and gated as a paid feature), so the policy is reviewed as
+a document, not proven by any test; `docs/security-checklist.md` §7 says exactly which rows that leaves
+unprovable. What *is* tested here is the credential posture: `AwsCredentialPostureTest` asserts that
+without the `local` profile no override bean exists, and the shared ArchUnit rule
+`PlatformArchRules.noServiceCarriesAStaticAwsCredential()` fails the build if a new client ever
+reintroduces a static key.
 
 ## Run
 

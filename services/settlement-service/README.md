@@ -211,7 +211,20 @@ watch the transaction reach `SETTLED`; see *Test* below.
 | `AUDIT_BATCH_MAX_EVENTS` / `AUDIT_BATCH_MAX_AGE_SECONDS` | `100` / `30` | Flush when the batch holds 100 events **or** its *oldest* one has waited 30s. The cost/latency dial of the trail |
 | `AUDIT_LEASE_SECONDS` | `120` | Visibility this writer extends buffered messages to. **Must exceed** the max age plus the write — the batch outlives the queue's 30s visibility timeout, and whoever holds a message owns its lease |
 | `AUDIT_BATCH_SIZE` / `AUDIT_WAIT_TIME_SECONDS` / `AUDIT_CONSUMER_DELAY_MS` | `10` / `20` / `500` | audit-queue long-poll tuning; the wait is capped at runtime by the time left before the flush deadline |
-| `AWS_ENDPOINT_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | LocalStack defaults | AWS SDK wiring (SQS **and**, since step 43, S3) |
+| `AWS_ENDPOINT_URL`, `AWS_REGION` | LocalStack defaults | AWS SDK wiring (SQS **and**, since step 43, S3) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder credentials, read **only under the `local` profile** (ADR-0013) — a signing formality LocalStack uses to derive the account id, not authentication |
+| `SPRING_PROFILES_ACTIVE` | `local` (set by compose) | **Load-bearing since step 45 (ADR-0013).** The `local` profile is the only thing that hands this service's AWS clients an endpoint override and the placeholder credentials; without it the SDK's `DefaultCredentialsProvider` chain looks for an ambient role, finds none locally, and the service **fails loudly at startup** rather than quietly reaching the emulator while looking production-configured. Running this module by hand needs `SPRING_PROFILES_ACTIVE=local`; if you set the variable yourself, include it (`json-logs,local`). |
+
+### AWS credentials & IAM (ADR-0013)
+
+This service's deployed role is [`infra/iam/settlement-service-policy.json`](../../infra/iam/settlement-service-policy.json) —
+least-privilege over pix_transactions, pix_processed_events, the settlement/audit queues + the pix-audit-log bucket, with concrete ARNs and no `"Resource": "*"`. **LocalStack enforces
+none of it** (`ENFORCE_IAM` is off by default and gated as a paid feature), so the policy is reviewed as
+a document, not proven by any test; `docs/security-checklist.md` §7 says exactly which rows that leaves
+unprovable. What *is* tested here is the credential posture: `AwsCredentialPostureTest` asserts that
+without the `local` profile no override bean exists, and the shared ArchUnit rule
+`PlatformArchRules.noServiceCarriesAStaticAwsCredential()` fails the build if a new client ever
+reintroduces a static key.
 
 ## Architecture (ADR-0010 + ADR-0011, hexagonal-lite with explicit use cases)
 

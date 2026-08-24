@@ -1,0 +1,57 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DriveTheGuardedTransitions",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query",
+        "dynamodb:TransactWriteItems"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_transactions",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_transactions/index/gsi1",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_transactions/index/gsi2"
+      ]
+    },
+    {
+      "Sid": "UseTheSharedConsumerDedupGate",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_processed_events"
+      ]
+    },
+    {
+      "Sid": "ConsumeTheSettlementAndAuditQueues",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": [
+        "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:settlement-queue",
+        "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:audit-queue"
+      ]
+    },
+    {
+      "Sid": "AppendToTheImmutableAuditTrail",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pix-audit-log/*"
+      ]
+    }
+  ]
+}

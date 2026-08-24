@@ -5,6 +5,7 @@ import static com.tngtech.archunit.core.domain.JavaClass.Predicates.INTERFACES;
 import static com.tngtech.archunit.core.domain.JavaClass.Predicates.resideInAPackage;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
+import com.platinumcoin.pix.common.testsupport.PlatformArchRules;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -62,5 +63,30 @@ class NotificationArchitectureTest {
                 .as("api/ must call use cases, never an outbound port (ADR-0011)");
 
         rule.check(NOTIFICATION_CLASSES);
+    }
+
+    /**
+     * <b>ARCHITECTURE §7.8 — no public route escapes {@code /v1}</b> (step 45). Shared with every other
+     * service ({@link PlatformArchRules}) because it is the same sentence everywhere; a versioning
+     * convention that holds in six services and not the seventh is not a convention.
+     *
+     * <p>The failure it prevents is mundane and permanent: one controller mounted at {@code /payments}
+     * instead of {@code /v1/payments}, shipped, and then un-shippable — because the fix is a breaking
+     * change for whoever already integrated. Versioning costs nothing on the day the route is written.
+     */
+    @Test
+    void everyPublicRouteIsVersioned() {
+        PlatformArchRules.everyControllerIsMountedUnderAVersionedOrInternalPrefix().check(NOTIFICATION_CLASSES);
+    }
+
+    /**
+     * <b>ADR-0013 — no static AWS credential outside common-lib's {@code local}-profile override</b>
+     * (step 45). The regression guard the per-service {@code AwsCredentialPostureTest} cannot be: that
+     * test proves today's wiring is right, this one stops tomorrow's new client from quietly
+     * reintroducing the shape the sweep removed.
+     */
+    @Test
+    void noStaticAwsCredentialLivesInThisService() {
+        PlatformArchRules.noServiceCarriesAStaticAwsCredential().check(NOTIFICATION_CLASSES);
     }
 }

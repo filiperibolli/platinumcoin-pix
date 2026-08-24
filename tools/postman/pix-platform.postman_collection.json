@@ -934,6 +934,53 @@
           }
         },
         {
+          "name": "Get payment status — a Pix RECEIVED (200, in-<endToEndId>)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The poll behind the best-effort push (ARCHITECTURE §6.8). The PixReceived notification hands the",
+                  "// payee transactionId: in-<endToEndId>, so this is the exact call their app makes on reconnect.",
+                  "// Until step 45 it answered 500: an arrival carries NO debtorAccountId (the payer banks elsewhere),",
+                  "// and payment-service read it unguarded. Set {{inboundTxId}} from the notification, or run the",
+                  "// mock-bacen-spi > 'Simulate an inbound Pix to bob' request and paste the endToEndId it returns.",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "// An arrival is SETTLED, not a sixth word: the direction is carried by the notification's `type`,",
+                  "// and a status of its own would put one fact in two fields.",
+                  "pm.test('an arrival reads back SETTLED', () => pm.expect(body.status).to.eql('SETTLED'));",
+                  "pm.test('money is a decimal string at the edge', () => pm.expect(body.amount).to.be.a('string'));",
+                  "pm.test('the id is the rail-derived one', () => pm.expect(body.transactionId).to.match(/^in-/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/payments/{{inboundTxId}}",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "{{inboundTxId}}"
+              ]
+            },
+            "description": "Read back a Pix that ARRIVED, as its payee. Log in as **bob** first — ownership follows the transaction's `direction`: an outbound payment is the payer's, an inbound one is the payee's. That is deliberately narrower than 'the debtor or the creditor', which would also have handed the payee of an *internal send* the payer's record.\n\nSet `inboundTxId` to `in-<endToEndId>` from the arrival (the SSE payload's `transactionId`, or the `endToEndId` returned by mock-bacen-spi's *Simulate an inbound Pix to bob*).\n\n**Try it as alice** and you get the same `404 PAYMENT_NOT_FOUND` an unknown id gets — never a 403, which would confirm the id is real (Domain Safety Rule #1)."
+          },
+          "response": []
+        },
+        {
           "name": "Balance (cache-aside, 5s TTL)",
           "event": [
             {
@@ -2664,6 +2711,12 @@
       "key": "jwtSecret",
       "value": "dev-only-hs256-secret-change-me-please-32b",
       "description": "The shared HS256 secret the sandbox signs every token with (ADR-0007). Only used to mint service tokens locally; there is no production equivalent."
+    },
+    {
+      "key": "inboundTxId",
+      "value": "in-E99999999202608241946KMG5L83ZuoZ",
+      "type": "string",
+      "description": "in-<endToEndId> of a received Pix — paste one from a PixReceived notification or from mock-bacen-spi's simulate response."
     }
   ],
   "event": [

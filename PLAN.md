@@ -157,7 +157,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 **Flow delivered:** the full journey proven under an automated E2E + failure drill + SLO load tests.
 **Infra que sobe:** k6.
 
-- [ ] [Step 45](docs/steps/step-45.md) — hardening: API versioning review, guarded status transitions, error contract audit, security checklist
+- [x] [Step 45](docs/steps/step-45.md) — hardening: API versioning review, guarded status transitions, error contract audit, security checklist
   > Owns the **AWS credential / IAM** posture (ADR-0013). The external review's P0 on **HTTP service identity**
   > is a different concern and lands earlier, in [step 68](docs/steps/step-68.md) — the two are neighbours and
   > are often confused. Prerequisite: all four Sprint 11.5 P0 steps.

@@ -82,8 +82,16 @@ services:
       # see AwsProperties#dynamoDbEndpointUrl.
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
+      # Read ONLY under the `local` profile below — the placeholder pair LocalStack needs to derive its
+      # account id, never authentication (ADR-0013).
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # ADR-0013 (step 45): an AWS client is pointed at the emulator by the `local` profile and by
+      # NOTHING else — without it the SDK's DefaultCredentialsProvider chain looks for an ambient role,
+      # finds none here, and the service fails loudly at startup instead of quietly reaching LocalStack
+      # while looking configured for production. If you export SPRING_PROFILES_ACTIVE yourself, INCLUDE
+      # local (e.g. `json-logs,local`) — see docs/local-dev.md §3.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
       # mock-bacen-spi plays BACEN's DICT: a Pix key NOT registered locally is delegated to
       # GET /spi/dict/{key} (step 30), which is what makes bob@otherbank.com resolve and the external
       # send branch reachable. No bearer token is forwarded on this hop — BACEN is outside our trust
@@ -145,8 +153,16 @@ services:
       # see AwsProperties#dynamoDbEndpointUrl.
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
+      # Read ONLY under the `local` profile below — the placeholder pair LocalStack needs to derive its
+      # account id, never authentication (ADR-0013).
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # ADR-0013 (step 45): an AWS client is pointed at the emulator by the `local` profile and by
+      # NOTHING else — without it the SDK's DefaultCredentialsProvider chain looks for an ambient role,
+      # finds none here, and the service fails loudly at startup instead of quietly reaching LocalStack
+      # while looking configured for production. If you export SPRING_PROFILES_ACTIVE yourself, INCLUDE
+      # local (e.g. `json-logs,local`) — see docs/local-dev.md §3.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
       # Redis, for ONE operation (step 40): deleting the `balance:<accountId>` keys a committed posting
       # just made stale (ADR-0008 invalidation-on-write). The ledger never READS a balance from Redis —
       # the money decision is the conditional write in DynamoDB. Losing Redis costs display freshness
@@ -233,8 +249,16 @@ services:
       # see AwsProperties#dynamoDbEndpointUrl.
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
+      # Read ONLY under the `local` profile below — the placeholder pair LocalStack needs to derive its
+      # account id, never authentication (ADR-0013).
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # ADR-0013 (step 45): an AWS client is pointed at the emulator by the `local` profile and by
+      # NOTHING else — without it the SDK's DefaultCredentialsProvider chain looks for an ambient role,
+      # finds none here, and the service fails loudly at startup instead of quietly reaching LocalStack
+      # while looking configured for production. If you export SPRING_PROFILES_ACTIVE yourself, INCLUDE
+      # local (e.g. `json-logs,local`) — see docs/local-dev.md §3.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
       # The SNS topic the outbox publisher drains into (step 29). Injected rather than looked up by
       # name: a deployed service is granted sns:Publish on exactly this ARN and may not list topics
       # (ADR-0013). This is the ARN 06-messaging-core.sh's `create-topic` returns in LocalStack.
@@ -454,8 +478,16 @@ services:
       # see AwsProperties#dynamoDbEndpointUrl.
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
+      # Read ONLY under the `local` profile below — the placeholder pair LocalStack needs to derive its
+      # account id, never authentication (ADR-0013).
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # ADR-0013 (step 45): an AWS client is pointed at the emulator by the `local` profile and by
+      # NOTHING else — without it the SDK's DefaultCredentialsProvider chain looks for an ambient role,
+      # finds none here, and the service fails loudly at startup instead of quietly reaching LocalStack
+      # while looking configured for production. If you export SPRING_PROFILES_ACTIVE yourself, INCLUDE
+      # local (e.g. `json-logs,local`) — see docs/local-dev.md §3.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
     depends_on:
       # Hard dependency, unlike most: this service resolves its queue URL at startup and consumes from it,
       # so a not-yet-ready emulator means a service that boots healthy while consuming nothing.
@@ -527,8 +559,16 @@ services:
       # event already travels in the event.
       DYNAMODB_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: us-east-1
+      # Read ONLY under the `local` profile below — the placeholder pair LocalStack needs to derive its
+      # account id, never authentication (ADR-0013).
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
+      # ADR-0013 (step 45): an AWS client is pointed at the emulator by the `local` profile and by
+      # NOTHING else — without it the SDK's DefaultCredentialsProvider chain looks for an ambient role,
+      # finds none here, and the service fails loudly at startup instead of quietly reaching LocalStack
+      # while looking configured for production. If you export SPRING_PROFILES_ACTIVE yourself, INCLUDE
+      # local (e.g. `json-logs,local`) — see docs/local-dev.md §3.
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
     depends_on:
       # Hard dependencies, like settlement's: this service resolves its queue URL at startup and dedupes
       # against DynamoDB, so a not-yet-ready emulator means a service that boots healthy while pushing

@@ -223,13 +223,25 @@ mechanical rather than a review habit.
 | `jwt.internal-routes` | see `application.yml` | The per-route scope map: `POST /internal/ledger/postings` → `ledger:post`, `GET /internal/ledger/accounts/**` → `ledger:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge (**S3**, for the cold archive — DynamoDB has its own endpoint below); compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds LocalStack ignores but the SDK demands. |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder credentials, read **only under the `local` profile** (ADR-0013). LocalStack validates no signature and reads the key only to derive the account id — a signing formality, not authentication. |
+| `SPRING_PROFILES_ACTIVE` | `local` (set by compose) | **Load-bearing since step 45 (ADR-0013).** The `local` profile is the only thing that hands this service's AWS clients an endpoint override and the placeholder credentials; without it the SDK's `DefaultCredentialsProvider` chain looks for an ambient role (ECS task role / EKS IRSA / EC2 instance profile), finds none locally, and the service **fails loudly at startup** rather than quietly reaching the emulator while looking production-configured. Running this module by hand needs `SPRING_PROFILES_ACTIVE=local`; if you set the variable yourself, include it (`json-logs,local`). |
 | `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis, used **only** to delete `balance:<accountId>` after a posting (step 40); compose overrides the host to `redis`. A Redis outage costs display freshness (bounded by payment-service's 5s TTL), never a posting. |
 | `STATEMENT_ARCHIVE_BUCKET` / `pix.archive.bucket` | `pix-statement-archive` | The cold archive (step 43) — a deliberately **plain** bucket (no versioning, no Object Lock): derived, rebuildable data whose monthly object each run rewrites whole. |
 | `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` / `pix.archive.hot-window-days` | `90` (**`0` in compose**) | Where the online statement ends and the archive begins. Compose uses `0` so a freshly seeded sandbox archives something instead of looking broken. |
 | `STATEMENT_ARCHIVE_DELAY_MS` / `pix.archive.fixed-delay-ms` | `3600000` (**`60000` in compose**) | How often the job runs — hourly batch work over cold data; every minute in the sandbox so a demo does not wait an hour. |
 | `STATEMENT_ARCHIVE_MAX_ACCOUNTS` / `pix.archive.max-accounts-per-run` | `500` | Per-run bound on the account **scan**; a larger ledger degrades into more runs, not one enormous one. |
 | `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs (today: the cold-archive job); ITs set it `false` and drive a run explicitly. |
+
+### AWS credentials & IAM (ADR-0013)
+
+This service's deployed role is [`infra/iam/ledger-service-policy.json`](../../infra/iam/ledger-service-policy.json) —
+least-privilege over pix_ledger + the pix-statement-archive bucket, with concrete ARNs and no `"Resource": "*"`. **LocalStack enforces
+none of it** (`ENFORCE_IAM` is off by default and gated as a paid feature), so the policy is reviewed as
+a document, not proven by any test; `docs/security-checklist.md` §7 says exactly which rows that leaves
+unprovable. What *is* tested here is the credential posture: `AwsCredentialPostureTest` asserts that
+without the `local` profile no override bean exists, and the shared ArchUnit rule
+`PlatformArchRules.noServiceCarriesAStaticAwsCredential()` fails the build if a new client ever
+reintroduces a static key.
 
 ## Run
 

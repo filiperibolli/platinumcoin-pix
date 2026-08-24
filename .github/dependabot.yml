@@ -1,0 +1,44 @@
+# Dependency and CVE surveillance (step 45, security-checklist item 8).
+#
+# WHY THIS AND NOT `mvn org.owasp:dependency-check`
+# The OWASP plugin is the better *report* — it maps every artifact to CVE ids with CVSS scores. It also
+# downloads the NVD data set (hundreds of MB, and since 2024 it needs an API key), which would make
+# `mvn verify` depend on the network. CLAUDE.md's rule is the opposite: an integration test runs on a
+# plain `mvn verify`, no flags, no external prerequisite. A scanner that turns a red build into "was the
+# NVD reachable today?" trains everyone to ignore the build.
+#
+# Dependabot runs the same job on GitHub's side, on GitHub's copy of the advisory database, and opens a
+# PR per finding — so a vulnerable transitive dependency arrives as a reviewable change rather than as a
+# log line nobody reads. The OWASP plugin is where this goes the day there is a pipeline with network
+# budget to spend; until then this is the honest control, and the checklist says so.
+#
+# `open-pull-requests-limit` is deliberately low: the point is a queue a human actually empties.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the AWS SDK's eight artifacts instead of eight — they share a BOM and must move
+      # together anyway.
+      aws-sdk:
+        patterns: ["software.amazon.awssdk:*"]
+      testing:
+        patterns: ["org.testcontainers:*", "org.junit.jupiter:*", "com.tngtech.archunit:*"]
+    labels: ["dependencies"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]
+
+  - package-ecosystem: docker
+    # The pinned images the local stack runs (ADR-0001): LocalStack, dynamodb-local, Redis, Prometheus,
+    # Grafana, Jaeger. Base-image CVEs are the half a Maven scanner cannot see.
+    directory: "/infra"
+    schedule:
+      interval: monthly
+    labels: ["dependencies"]

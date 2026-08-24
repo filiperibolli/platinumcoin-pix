@@ -51,10 +51,19 @@ import java.time.Instant;
  * becomes a {@code 422} before the transaction is written. Both are the durable record that the {@code RECEIVED → FRAUD_CHECKED} stage ran; on a
  * transaction minted before scoring they are {@code null}/{@code false}. The settlement-confirmation
  * fields (step 31) remain deliberately absent.
+ *
+ * <p><b>Two shapes, not one (step 45).</b> {@code direction} distinguishes a send this service wrote
+ * from an arrival settlement-service wrote into the same table (step 37) — and on an arrival
+ * {@code debtorAccountId} and {@code description} are simply <b>absent</b>, because the payer banks
+ * elsewhere and the rail sends no description. Both are therefore nullable, and which side is the local
+ * account is answered by {@link #ownerAccountId()} rather than assumed. Reading this record as if it
+ * were always a send is what made {@code GET /v1/payments/in-<endToEndId>} — the poll the payee's own
+ * notification points them at — answer {@code 500}.
  */
 public record Transaction(
         String txId,
         String endToEndId,
+        TransactionDirection direction,
         String debtorAccountId,
         String creditorKey,
         String creditorAccountId,
@@ -68,4 +77,19 @@ public record Transaction(
         Instant createdAt,
         Instant settledAt,
         String failureReason) {
+
+    /**
+     * The account this transaction belongs to: the payer for a send, the payee for an arrival.
+     *
+     * <p>This is the whole of the ownership rule, in one place, and it is deliberately <b>narrower</b>
+     * than "the debtor or the creditor". The loose version would also hand the payee of an <i>internal
+     * send</i> the payer's transaction record — a disclosure introduced in the name of fixing a
+     * {@code 500}. Keyed on {@link TransactionDirection}, exactly one side owns each shape.
+     *
+     * <p>A caller who is neither still gets the uniform {@code 404} the use case answers for an unknown
+     * id: not-found and not-yours stay indistinguishable (Domain Safety Rule #1).
+     */
+    public String ownerAccountId() {
+        return direction == TransactionDirection.INBOUND ? creditorAccountId : debtorAccountId;
+    }
 }
