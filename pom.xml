@@ -44,7 +44,7 @@
              We import the BOM, so every build plugin must be pinned here explicitly. -->
         <compiler.version>3.13.0</compiler.version>
         <surefire.version>3.2.5</surefire.version>
-        <failsafe.version>3.2.5</failsafe.version>
+        <failsafe.version>3.5.6</failsafe.version>
         <!-- Docker Engine API version Testcontainers/docker-java must speak to the local daemon.
              docker-java defaults to v1.32, which modern engines (Docker Desktop 25+, MinAPIVersion
              1.40) reject with HTTP 400 — surfacing as the misleading "Could not find a valid Docker
