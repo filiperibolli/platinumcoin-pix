@@ -55,7 +55,8 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `AWS_ENDPOINT_URL` | `http://localstack:4566` | Point the SDK at LocalStack (SNS/SQS **and S3** — not DynamoDB, see below) |
 | `DYNAMODB_ENDPOINT_URL` | `http://dynamodb-local:8000` | Point the DynamoDB client at the standalone `dynamodb-local` container, not LocalStack (`docs/load/BOTTLENECK.md`). Falls back to `AWS_ENDPOINT_URL` if unset (`aws.dynamodb-endpoint-url: ${DYNAMODB_ENDPOINT_URL:${aws.endpoint-url}}`) — so `LocalStackTestBase` ITs, which only override `aws.endpoint-url`, are unaffected, but a service run **outside compose** (e.g. `spring-boot:run`, §5.x below) must set this explicitly or its DynamoDB calls will hit LocalStack, which no longer serves it (`501 Service 'dynamodb' is not enabled`) |
 | `AWS_REGION` | `us-east-1` | — |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Dummy creds |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder creds, read **only under the `local` profile** (ADR-0013). LocalStack validates no signature and reads the key only to derive the account id `000000000000` — a signing formality, not authentication |
+| `SPRING_PROFILES_ACTIVE` | `local` (compose default) | **Since step 45 this is load-bearing.** The `local` profile is the only thing that hands an AWS client an endpoint override and those placeholder credentials; without it the SDK's `DefaultCredentialsProvider` chain looks for an ambient role, finds none, and the service **fails loudly at startup** instead of quietly reaching LocalStack while looking configured for production (ADR-0013). If you export this variable yourself, **include `local`** — e.g. `SPRING_PROFILES_ACTIVE=json-logs,local`. The other profiles: `json-logs` (structured logging, ADR-0012) and `loadtest` (fraud-service velocity thresholds, `docs/load/RESULTS.md`) |
 | `JWT_SECRET` | dev-only value in compose | HS256 signing/validation |
 | `REDIS_HOST` / `REDIS_PORT` | `redis` / `6379` | Redis (ElastiCache stand-in, ADR-0008). Read by **fraud-service** (velocity counters, step 24), **payment-service** (balance cache-aside, step 40) and **ledger-service** (which only *deletes* `balance:` keys after a posting — it never reads one) |
 | `BALANCE_CACHE_TTL` | `5s` | How long a cached balance may be served (payment-service). Doubles as the backstop when the ledger's best-effort eviction is lost: it bounds staleness to this window. Raising it trades hit rate for how long a customer can see a number that already moved |
@@ -300,10 +301,17 @@ JWT_SECRET=dev-only-hs256-secret-change-me-please-32b \
   mvn -pl services/auth-service spring-boot:run
 # or, after `mvn package`:  java -jar services/auth-service/target/*.jar
 
-# a DynamoDB-touching service (account/ledger/payment/settlement) run this way still needs the
-# rest of the compose stack up (`docker compose up -d`) AND both AWS endpoints pointed at its
-# host-published ports — DYNAMODB_ENDPOINT_URL does NOT default to the right thing outside compose:
+# an AWS-touching service (account/ledger/payment/settlement/notification) run this way needs THREE
+# things, and forgetting any one of them fails differently:
+#   1. the rest of the compose stack up (`docker compose up -d`)
+#   2. SPRING_PROFILES_ACTIVE=local — since step 45 (ADR-0013) it is the ONLY thing that hands the SDK
+#      an endpoint override and credentials. Without it you get a startup failure from the credential
+#      chain ("Unable to load credentials from any of the providers"), NOT a connection error — which
+#      is the point: a service that looks configured for production must not quietly reach an emulator.
+#   3. both AWS endpoints pointed at the host-published ports — DYNAMODB_ENDPOINT_URL does NOT default
+#      to the right thing outside compose
 JWT_SECRET=dev-only-hs256-secret-change-me-please-32b \
+  SPRING_PROFILES_ACTIVE=local \
   AWS_ENDPOINT_URL=http://localhost:4566 DYNAMODB_ENDPOINT_URL=http://localhost:8000 \
   mvn -pl services/ledger-service spring-boot:run
 ```
@@ -939,7 +947,8 @@ LOGGING_LEVEL_COM_PLATINUMCOIN_PIX: INFO
 deployment ships to a log platform:
 
 ```bash
-# environment: SPRING_PROFILES_ACTIVE: json-logs
+# environment: SPRING_PROFILES_ACTIVE: json-logs,local
+#   (keep `local` — it is what points the AWS clients at the emulator since step 45, ADR-0013)
 docker compose -f infra/docker-compose.yml logs auth-service | jq -c 'select(.correlationId=="'$CID'")'
 ```
 
@@ -1513,6 +1522,21 @@ mvn verify                        # + integration tests (Testcontainers spins Lo
 mvn -pl services/ledger-service -am verify   # one module only — note the -am
 ```
 
+**Two checks that are not `mvn verify`, and cannot be** (step 45):
+
+```bash
+# The error-contract audit: every documented non-2xx across the RUNNING stack is problem+json with
+# code + correlationId and no stack trace. It reaches the six services' own domain codes, which live in
+# six different processes and which no single-module test can produce. Needs the stack up, and jq.
+bash scripts/error-contract-audit.sh            # add --verbose to print each body
+```
+
+```bash
+# The security checklist (docs/security-checklist.md) is executed, not generated: its rows cite the test
+# or command that proved each one, and the rows it CANNOT prove — the IAM policies under infra/iam/,
+# which LocalStack accepts and never enforces — say so instead of showing a green tick.
+```
+
 > **Always pass `-am` when running a single module** (or run `mvn install -DskipTests` once first).
 > The Testcontainers harness — `LocalStackTestBase`, which decides *which* LocalStack services are
 > enabled and *which* init-script log line means "ready" — ships inside **common-lib's test-jar**.
@@ -1547,6 +1571,9 @@ Integration tests do **not** need the compose stack running — Testcontainers m
 | ITs fail with `Could not find a valid Docker environment` (but `docker ps` works) | Docker API version negotiation, **not** the socket. Pinned in the parent POM (`docker.api.version`, default 1.44); on an older engine run `mvn verify -Ddocker.api.version=1.41` — see §6 |
 | `403 INTERNAL_PORT_FORBIDDEN` on an `/internal/**` curl that used to work | You are presenting a **user** token to a service port (step 68, ADR-0017). Mint the right one: `scripts/service-token.sh <aud> <scope>` — see §3.1. The service's WARN line names which of `typ`/`aud`/`scope` refused it |
 | `403 PUBLIC_ROUTE_FORBIDDEN` on a `/v1/**` call | The reverse: a **service** token on a customer-facing route. Log in and use the user token — the two surfaces are deliberately disjoint |
+| A service exits at startup with `Unable to load credentials from any of the providers in the chain` | The **`local` profile is not active** (step 45, ADR-0013). Since the credential sweep, that profile is the only thing that supplies an endpoint override and the placeholder keys; without it the SDK correctly looks for an ambient IAM role and there is none on your machine. Compose sets it by default — this bites when you export `SPRING_PROFILES_ACTIVE` yourself (use `json-logs,local`) or run one service with `spring-boot:run` (§4 "Iterating on a single service"). **The loud failure is the design**: the alternative is a service that looks production-configured and silently talks to an emulator |
+| A service starts but every AWS call goes to the wrong place / times out | The profile is on but the endpoints are not — outside compose, `DYNAMODB_ENDPOINT_URL` does not default to the standalone container. Set both `AWS_ENDPOINT_URL=http://localhost:4566` and `DYNAMODB_ENDPOINT_URL=http://localhost:8000` |
+| `bash scripts/error-contract-audit.sh` says `Could not log in` | The stack is down, or auth-service is still starting. `docker compose -f infra/docker-compose.yml ps` — every service must read `(healthy)` |
 | Service can't reach LocalStack | Use `http://localstack:4566` inside compose network, `http://localhost:4566` from host |
 | `ResourceNotFoundException` on a table | Init scripts didn't finish — check `localstack-init` logs; `down -v` and retry |
 | Outbox events not flowing | Polling publisher in payment-service — check its logs and the `pix.outbox.lag` metric; query GSI3 for stuck unpublished items |

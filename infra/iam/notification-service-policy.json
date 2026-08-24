@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConsumeTheNotificationQueue",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility",
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": [
+        "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:notification-queue"
+      ]
+    },
+    {
+      "Sid": "UseTheSharedConsumerDedupGate",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_processed_events"
+      ]
+    }
+  ]
+}

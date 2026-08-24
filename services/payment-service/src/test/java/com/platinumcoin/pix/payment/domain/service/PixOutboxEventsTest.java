@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
+import static com.platinumcoin.pix.payment.domain.model.TransactionDirection.OUTBOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -21,13 +22,13 @@ class PixOutboxEventsTest {
     private static final Instant NOW = Instant.parse("2026-07-02T12:34:56.789Z");
 
     private static Transaction external(FraudDecision fraud) {
-        return new Transaction("tx-1", "E1234", "acc-001", "bob@otherbank.com", null, false,
+        return new Transaction("tx-1", "E1234", OUTBOUND, "acc-001", "bob@otherbank.com", null, false,
                 "SPI_CLEARING", 12_550L, TransactionStatus.DEBITED, "rent", fraud,
                 fraud == FraudDecision.SKIPPED, NOW, null, null);
     }
 
     private static Transaction internal(FraudDecision fraud) {
-        return new Transaction("tx-2", "E5678", "acc-001", "bob@platinum.com", "acc-002", true,
+        return new Transaction("tx-2", "E5678", OUTBOUND, "acc-001", "bob@platinum.com", "acc-002", true,
                 null, 12_550L, TransactionStatus.SETTLED, "lunch", fraud,
                 fraud == FraudDecision.SKIPPED, NOW, NOW, null);
     }

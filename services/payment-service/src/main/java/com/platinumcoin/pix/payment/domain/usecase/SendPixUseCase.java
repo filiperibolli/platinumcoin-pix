@@ -23,6 +23,7 @@ import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.LimitDecision;
 import com.platinumcoin.pix.payment.domain.model.Money;
 import com.platinumcoin.pix.payment.domain.model.Transaction;
+import com.platinumcoin.pix.payment.domain.model.TransactionDirection;
 import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
@@ -725,6 +726,9 @@ public class SendPixUseCase {
         Transaction transaction = new Transaction(
                 txId,
                 endToEndId,
+                // This service only ever writes sends; the arrivals settlement-service writes into the
+                // same table are read-only here (step 45).
+                TransactionDirection.OUTBOUND,
                 accountId,
                 command.pixKey(),
                 creditorAccountId,
@@ -806,6 +810,9 @@ public class SendPixUseCase {
         Transaction transaction = new Transaction(
                 txId,
                 endToEndId,
+                // This service only ever writes sends; the arrivals settlement-service writes into the
+                // same table are read-only here (step 45).
+                TransactionDirection.OUTBOUND,
                 accountId,
                 command.pixKey(),
                 null,
@@ -866,8 +873,13 @@ public class SendPixUseCase {
             // on it. The cost is one extra read on a cold recovery path and nothing on the happy path.
             Transaction alreadyWritten = transactions.findById(transaction.txId())
                     .orElseThrow(() -> conflict);
+            // The freshly built transaction is on the LEFT because it is the operand guaranteed non-null:
+            // `debtorAccountId` became nullable in step 45 (an inbound arrival has none), and although a
+            // txId collision between `tx-<uuid>` and `in-<endToEndId>` is impossible by construction,
+            // "impossible by construction" is the argument this very block refuses to rely on. A null
+            // here must be a refusal, never an NPE that turns a conflict into a 500.
             if (alreadyWritten.amountCents() != transaction.amountCents()
-                    || !alreadyWritten.debtorAccountId().equals(transaction.debtorAccountId())) {
+                    || !transaction.debtorAccountId().equals(alreadyWritten.debtorAccountId())) {
                 log.error("Transaction id already exists but describes a different operation, refusing "
                                 + "to treat it as a resume | txId={} storedDebtorAccountId={} "
                                 + "storedAmountCents={} attemptedDebtorAccountId={} "

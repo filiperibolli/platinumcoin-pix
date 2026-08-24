@@ -1,0 +1,39 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OwnTheLedger",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:TransactWriteItems"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_ledger",
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_ledger/index/gsi1"
+      ]
+    },
+    {
+      "Sid": "WriteAndReadTheStatementColdArchive",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pix-statement-archive/*"
+      ]
+    },
+    {
+      "Sid": "ListOnlyTheArchiveBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pix-statement-archive"
+      ]
+    }
+  ]
+}

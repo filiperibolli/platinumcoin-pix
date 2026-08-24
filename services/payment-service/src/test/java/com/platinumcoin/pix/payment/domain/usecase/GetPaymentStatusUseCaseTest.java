@@ -7,6 +7,7 @@ import com.platinumcoin.pix.payment.domain.model.TransactionStatus;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
+import static com.platinumcoin.pix.payment.domain.model.TransactionDirection.OUTBOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -53,7 +54,8 @@ class GetPaymentStatusUseCaseTest {
         String creditorAccountId = status == TransactionStatus.SETTLED ? "acc-bob" : null;
         FraudDecision fraudDecision = status == TransactionStatus.SETTLED ? FraudDecision.APPROVE : null;
         return new Transaction(
-                id, "E2E-" + id, debtor, "bob@platinum.com", creditorAccountId, true, null, 12_550L,
+                id, "E2E-" + id, OUTBOUND, debtor, "bob@platinum.com", creditorAccountId, true, null,
+                12_550L,
                 status, "lunch", fraudDecision, false, createdAt, settledAt, null);
     }
 }

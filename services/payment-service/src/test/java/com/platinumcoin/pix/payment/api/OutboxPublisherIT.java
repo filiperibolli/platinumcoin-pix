@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.api;
 
+import static com.platinumcoin.pix.payment.domain.model.TransactionDirection.OUTBOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -223,8 +224,9 @@ class OutboxPublisherIT extends LocalStackTestBase {
         Instant fiveMinutesAgo = Instant.now().minus(Duration.ofMinutes(5));
         String txId = "tx-" + UUID.randomUUID();
         transactions.create(
-                new Transaction(txId, "E" + UUID.randomUUID(), "acc-publisher-lag", EXTERNAL_KEY, null,
-                        false, "SPI_CLEARING", 1_000L, TransactionStatus.DEBITED, "aged",
+                new Transaction(txId, "E" + UUID.randomUUID(), OUTBOUND, "acc-publisher-lag",
+                        EXTERNAL_KEY, null, false, "SPI_CLEARING", 1_000L, TransactionStatus.DEBITED,
+                        "aged",
                         FraudDecision.APPROVE, false, fiveMinutesAgo, null, null),
                 List.of(new OutboxEvent("evt-" + UUID.randomUUID(), "PixDebited", Map.of("txId", txId),
                         fiveMinutesAgo, "corr-publish-lag")));

@@ -949,6 +949,24 @@ drill (DLQ fills, reconciliation resolves < 5 min, alerts fire and clear) and a 
 **conservation-of-money assertion** across all accounts. Three k6 profiles (low / standard ~58 TPS /
 Black Friday 500+ TPS) turn the SLOs into pass-fail thresholds. Steps 45–47.
 
+**Step 45 delivered, and it found things** — recorded because a gate that finds nothing is usually a gate
+aimed at what already worked. Full results in [`docs/security-checklist.md`](docs/security-checklist.md);
+the shape of what an adversarial pass is *for*:
+
+- The transition sweep and the credential posture found **nothing wrong**. Their value is that both are
+  now build failures away from being reintroduced: `GuardedTransitionIT` is the full 8 × 5 product (not a
+  selection), and `PlatformArchRules` makes "no public route outside `/v1`" and "no static AWS credential"
+  mechanical in all seven services.
+- The **error-contract audit found three real defects**, none in the code it set out to verify. Four
+  framework-generated statuses (404/405/415/400-malformed) carried neither `code` nor `correlationId` —
+  they are rejected before any controller runs, so no application-layer code was ever in a position to
+  stamp them. And `GET /v1/payments/in-<endToEndId>` — the poll §6.8 above calls *authoritative* behind
+  the best-effort push — answered `500`, which made a real transaction id **distinguishable from an
+  unknown one**: the existence leak the uniform 404 exists to prevent.
+- The pattern worth carrying forward: **the defects were at the seams**, not inside a component. A
+  framework's default body, and a table two services write in two shapes. Every component's own tests were
+  green throughout.
+
 ### 6.13 DX tooling — Postman collection & API explorer   · Sprint 13 · infra: none
 
 The portfolio front door: a unified Postman collection (auth as a pre-request script, auto-UUID
@@ -1049,6 +1067,42 @@ Synchronous scoring with a **hard client-side timeout of 200ms** (fraud-service 
 
 ### 7.8 API versioning
 URI versioning (`/v1/...`); additive-only changes within a version; new fields optional; deprecation policy documented per endpoint. Breaking change ⇒ `/v2` served side by side (mobile clients lag).
+
+**Reviewed and made mechanical in step 45.** The policy above was a paragraph; it is now a build failure.
+`PlatformArchRules.everyControllerIsMountedUnderAVersionedOrInternalPrefix()` is checked by every
+service's `*ArchitectureTest`, so a controller mounted at `/payments` instead of `/v1/payments` cannot
+be merged. The failure that rule prevents is mundane and permanent: such a route, once shipped, is
+un-shippable-away, because the fix is a breaking change for whoever already integrated.
+
+**What "additive-only within `/v1`" allows and forbids.** The test of a change is whether a client
+written against the previous contract still works *unchanged*:
+
+| Allowed inside `/v1` | Forbidden inside `/v1` (⇒ `/v2`) |
+|---|---|
+| A new optional request field with a documented default | A new **required** request field |
+| A new response field | Removing or renaming a response field |
+| A new endpoint | Changing a field's type or format (`"125.50"` → `12550`) |
+| A new value in a **server-controlled** enum the client already treats as opaque | Narrowing a value set the client sends |
+| A new error `code` on an existing status | Changing which status an existing condition returns |
+
+The one that trips people is the enum row, and this platform has hit it twice. Adding
+`FINALIZING_SETTLEMENT` to the internal `TransactionStatus` was **not** an API change, because
+`PaymentResponse` maps it onto the external vocabulary and the client kept reading `PROCESSING` — that
+is precisely what mapping at the edge buys. Adding `REVERSED` to the *external* vocabulary **was** an
+additive change, and safe only because clients were already told to treat an unknown status as
+non-terminal. A client that switched exhaustively on the status would have broken, which is why the
+rule is written from the client's obligations, not from ours.
+
+**Why `/internal/**` is deliberately unversioned.** Its only callers are the other services in this
+repository, deployed together (ADR-0017). The compatibility problem URI versioning solves — a client we
+cannot redeploy on our schedule — does not exist there, and a `/internal/v1/**` would imply a stability
+promise nobody is asking for. Both prefixes are named in the ArchUnit rule so the distinction is
+explicit rather than a gap.
+
+**Deprecation, when it eventually happens.** A `/v1` endpoint superseded by `/v2` keeps serving, starts
+answering with a `Deprecation` and a `Sunset` header (RFC 8594), and the sunset date is recorded on the
+endpoint in `docs/api/openapi.yaml`. Nothing is deprecated today; the policy is written down now so the
+first deprecation is not also the moment the policy is invented.
 
 ---
 

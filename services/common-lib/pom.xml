@@ -211,6 +211,14 @@
             <artifactId>s3</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- ArchUnit, test scope: common-lib does not enforce the ADR-0010 rules on itself (it IS the
+             shared adapter layer, CLAUDE.md), but it PUBLISHES the two rules that are identical in every
+             service — PlatformArchRules, step 45 — through the same test-jar as LocalStackTestBase. -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.localstack.LocalStackContainer;
@@ -37,7 +38,18 @@ import org.testcontainers.utility.MountableFile;
  * {@code AWS_ENDPOINT_URL} / {@code AWS_REGION} env vars in {@code docs/local-dev.md}), so a service's
  * {@code @SpringBootTest} IT points its AWS SDK at the container with zero extra code. A non-Spring IT
  * (like the smoke test here) can instead read the endpoint straight off {@link #localstack()}.
+ *
+ * <p><b>{@code @ActiveProfiles("local")} — and why it is here rather than in each IT</b> (step 45,
+ * ADR-0013). Since the credential sweep, an AWS client is pointed at an emulator by <i>one</i> thing:
+ * the {@code local} profile, which supplies the endpoint override and the placeholder credentials.
+ * Every {@code @SpringBootTest} extending this base talks to a LocalStack container, so every one of
+ * them is by definition a local run — a service context started without the profile would correctly
+ * fail to find credentials rather than silently reach the emulator. Declaring it once here means an IT
+ * cannot forget it, and it is the same profile {@code infra/docker-compose.yml} sets. The annotation is
+ * {@code @Inherited}, so subclasses need nothing; Spring-free ITs that build their own client off
+ * {@link #localstack()} simply ignore it.
  */
+@ActiveProfiles("local")
 public abstract class LocalStackTestBase {
 
     /**

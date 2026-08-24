@@ -175,13 +175,22 @@ documented in the referenced ADR.
 - The mock SPI is adversary-neutral: it injects latency/failures, not attacks.
 - Threat categories about the cloud control plane (IAM, VPC, KMS) are out of local
   scope and tracked only as production-hardening notes. The credential/authorization
-  half of that is now written down in [ADR-0013](adr/0013-aws-credentials-and-iam-posture.md):
-  LocalStack emulates the IAM/STS APIs but **enforces nothing by default**, so no local
-  test can prove a denial — the per-service least-privilege policies and the profile-isolated
-  credential chain are reviewed as documents and swept in step 45.
+  half of that is written down in [ADR-0013](adr/0013-aws-credentials-and-iam-posture.md)
+  and was **swept in step 45**: static credentials now live in exactly one class behind the
+  `local` profile (`common-lib`'s `LocalStackAwsOverride`), the default build resolves the
+  ambient role, and per-service least-privilege policies are committed under `infra/iam/`.
+  LocalStack emulates the IAM/STS APIs but **enforces nothing by default**, so no local test
+  can prove a denial — those policies are reviewed as documents, and
+  [`docs/security-checklist.md`](security-checklist.md) §7 records exactly which two rows are
+  unprovable here and why.
 
 ## 7. Revisit triggers
 
 Update this model when: a new money-moving endpoint is added; the auth model changes
 (e.g. MFA lands); a new external integration appears; or an ADR that touches a control
 here is superseded.
+
+**Re-run [`docs/security-checklist.md`](security-checklist.md) at the same time.** This
+document says what could go wrong; that one records what was actually checked, how, and what
+it returned, on a date. Running one without the other leaves either an untested model or an
+unexplained result — which is why they share this trigger list.

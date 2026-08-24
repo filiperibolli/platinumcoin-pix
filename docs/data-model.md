@@ -329,12 +329,30 @@ touches:
 - No `fraudDecision`/`fraudSkipped` (nothing is scored: the money is arriving, not leaving) and no
   daily-limit reservation (limits bound what an account may *send*).
 
-> **Known gap, noted in step 37 for the step-45 error-contract audit.** payment-service's
-> `GET /v1/payments/{id}` reads this table and parses `status` with `valueOf` into its own enum, which has
-> no `RECEIVED_SETTLED`, and reads `debtorAccountId` unconditionally. A client that guessed an inbound
-> `txId` (`in-<endToEndId>`) would therefore get a `500` instead of a `404`. It is a contract wart, not a
-> money bug — no user can reach it through any flow, and nothing is written or moved — and it is fixed in
-> the step-45 sweep alongside the rest of the error-contract audit.
+> **Closed in step 45 — and it was worse than step 37 estimated.** payment-service's
+> `GET /v1/payments/{id}` read this item with `TransactionStatus.valueOf` into an enum that had no
+> `RECEIVED_SETTLED`, and read `debtorAccountId`/`description` unconditionally — both absent here. Step 37
+> filed it as "a contract wart, not a money bug — **no user can reach it through any flow**". That last
+> clause was wrong, and the error-contract audit is what showed it: the `PixReceived` push hands the payee
+> `transactionId: in-<endToEndId>`, and ARCHITECTURE §6.8 makes this very poll the **authoritative** view
+> behind that best-effort push. So the reachable case was not a client guessing an id — it was the payee
+> tapping the notification for the money that had just arrived.
+>
+> Sharper still: an unknown id answered `404` and a real inbound id answered `500`, so **the two were
+> distinguishable**, which is exactly the existence leak the uniform 404 exists to prevent.
+>
+> The fix is a `TransactionDirection` on payment-service's `Transaction` and `ownerAccountId()`: an
+> outbound payment belongs to the payer, an inbound one to the payee. Deliberately narrower than "the
+> debtor or the creditor", which would additionally have exposed an *internal send's* record to its payee.
+> The lesson the three earlier instances did not teach: the compile-time guard in `PaymentResponse` (a
+> `switch` with no `default`) forces the **vocabulary** to be complete, and nothing forces the **shape** —
+> an attribute the other writer simply omits has no compiler to catch it.
+
+> **Reading rule this table now states explicitly.** `pix_transactions` holds **two shapes**, written by
+> two services (ADR-0006). Any reader must branch on `direction` before assuming which side is local:
+> an `OUTBOUND` item has `debtorAccountId` and may have no `creditorAccountId`; an `INBOUND` item has
+> `creditorAccountId`, no `debtorAccountId`, and no `description`. Treating either as the general case is
+> the defect above.
 
 `creditorInternal` is written on **every** transaction (step 27), internal ones included — `true` when
 the destination key resolved inside PlatinumCoin, `false` when it belongs to another PSP. A boolean has

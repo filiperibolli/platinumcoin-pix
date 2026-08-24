@@ -1763,6 +1763,45 @@
                 body: `after first delivery = ${ctx.after}\nafter re-delivery    = ${now}` };
             },
           },
+          {
+            title: 'bob polls the arrival the push told him about', call: 'GET :8084 /v1/payments/in-<e2e>',
+            why: 'The push is <b>best-effort</b> — nothing is buffered for a customer who was offline — and that '
+              + 'is only acceptable because <b>the poll is authoritative</b> (ARCHITECTURE §6.8). The '
+              + 'notification handed bob <code>transactionId: in-&lt;endToEndId&gt;</code>, so this is the exact '
+              + 'call his app makes when it reconnects.<br><br>'
+              + '<b>Until step 45 this answered 500.</b> An arrival is written by settlement-service with no '
+              + '<code>debtorAccountId</code> at all — the payer banks elsewhere; the clearing account is the '
+              + 'debit side — and payment-service read that attribute unguarded. The sharper half was not the '
+              + 'outage: an unknown id answered 404 and a real one answered 500, so <b>the two were '
+              + 'distinguishable</b>, which is the existence leak the uniform 404 exists to prevent. Ownership '
+              + 'now follows the <code>direction</code>: an outbound payment is the payer\'s, an inbound one is '
+              + 'the payee\'s — deliberately narrower than "debtor or creditor", which would have handed the '
+              + 'payee of an <i>internal</i> send the payer\'s record.',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.bobToken,
+                path: '/v1/payments/in-' + ctx.e2e });
+              const j = r.json || {};
+              return { ok: r.ok && j.status === 'SETTLED' && j.amount === '77.77',
+                state: `${r.status} · ${j.status} · ${j.amount}`, body: pretty(r),
+                note: r.ok ? 'SETTLED, not a sixth word: the direction is carried by the notification\'s '
+                  + 'type, and a status of its own would put one fact in two fields.' : null };
+            },
+          },
+          {
+            title: 'alice cannot read bob\'s arrival', call: 'GET :8084 /v1/payments/in-<e2e>',
+            why: 'The other half of the same fix. A third party gets the <b>same 404 an unknown id gets</b> — '
+              + 'not a 403, which would confirm the id is real and let a caller enumerate other accounts\' '
+              + 'payments (Domain Safety Rule #1). Making the arrival readable by its payee had to not make it '
+              + 'readable by anyone else.',
+            run: async (ctx) => {
+              const login = await doLogin('alice', 'alice');
+              const r = await send({ method: 'GET', base: baseOf('payment'),
+                token: login.json && login.json.accessToken, path: '/v1/payments/in-' + ctx.e2e });
+              const code = r.json && r.json.code;
+              return { ok: r.status === 404 && code === 'PAYMENT_NOT_FOUND',
+                state: `${r.status} · ${code || ''}`, body: pretty(r) };
+            },
+          },
         ],
       },
 

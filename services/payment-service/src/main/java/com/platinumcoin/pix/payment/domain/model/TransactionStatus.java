@@ -94,5 +94,27 @@ public enum TransactionStatus {
      * {@code FAILED} and {@code REJECTED} are deliberately <b>not</b> added: no service writes them today,
      * and a state nobody can produce is a fiction the mapping would have to keep honest.
      */
-    REVERSED
+    REVERSED,
+
+    /**
+     * A Pix <b>received</b> from another participant, credited to its payee by settlement-service
+     * (step 37). Terminal, written straight here, never reached by a transition — and the fourth state
+     * this enum learned the hard way (step 45).
+     *
+     * <p><b>Why a send-Pix state machine names an arrival at all.</b> ARCHITECTURE §6.8 makes
+     * {@code GET /v1/payments/&#123;transactionId&#125;} the <i>authoritative</i> view behind the
+     * best-effort push, for all three user-facing events — and the {@code PixReceived} push hands the
+     * payee {@code in-&lt;endToEndId&gt;} to poll. So this service is required to answer for a
+     * transaction it never wrote, in a state only settlement-service produces.
+     *
+     * <p><b>What made this instance different from the three before it.</b> {@code REVERSED} and the two
+     * {@code FINALIZING_*} states were each a missing <i>constant</i>, and the {@code switch} with no
+     * {@code default} in {@code PaymentResponse} eventually forced each one to be given an external face.
+     * This state arrived with a missing <i>shape</i> as well: an inbound item carries no
+     * {@code debtorAccountId} and no {@code description}, so the repository threw before {@code valueOf}
+     * was ever reached. The compile-time guard covers the vocabulary; nothing covers an attribute the
+     * other writer simply omits — which is why {@link com.platinumcoin.pix.payment.domain.model.TransactionDirection}
+     * now exists to make the two shapes an explicit fact rather than an assumption.
+     */
+    RECEIVED_SETTLED
 }

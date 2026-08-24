@@ -31,6 +31,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 
+import static com.platinumcoin.pix.payment.domain.model.TransactionDirection.OUTBOUND;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -181,8 +182,9 @@ class OutboxWriteIT extends LocalStackTestBase {
     /** A minimal accepted external send, for the lane tests that care only about the outbox item. */
     private static Transaction transaction(String txId, String debtor, TransactionStatus status) {
         Instant now = Instant.now();
-        return new Transaction(txId, "E" + UUID.randomUUID(), debtor, EXTERNAL_KEY, null, false,
-                "SPI_CLEARING", 1_000L, status, "lane", FraudDecision.APPROVE, false, now, null, null);
+        return new Transaction(txId, "E" + UUID.randomUUID(), OUTBOUND, debtor, EXTERNAL_KEY, null,
+                false, "SPI_CLEARING", 1_000L, status, "lane", FraudDecision.APPROVE, false, now, null,
+                null);
     }
 
     /** The event has to be reachable the way the publisher will reach it: through the sparse index. */
@@ -264,18 +266,18 @@ class OutboxWriteIT extends LocalStackTestBase {
     void aRejectedWriteLeavesNeitherTheStateNorItsEvents() {
         String txId = "tx-" + UUID.randomUUID();
         Instant now = Instant.parse("2026-07-02T12:34:56.789Z");
-        Transaction settled = new Transaction(txId, "E" + UUID.randomUUID(), "acc-outbox-guard",
-                INTERNAL_KEY, "acc-outbox-payee", true, null, 5_000L, TransactionStatus.SETTLED, "first",
-                FraudDecision.APPROVE, false, now, now, null);
+        Transaction settled = new Transaction(txId, "E" + UUID.randomUUID(), OUTBOUND,
+                "acc-outbox-guard", INTERNAL_KEY, "acc-outbox-payee", true, null, 5_000L,
+                TransactionStatus.SETTLED, "first", FraudDecision.APPROVE, false, now, now, null);
 
         transactions.create(settled, List.of(
                 new OutboxEvent("evt-guard-1", "PixSettled", Map.of("txId", txId), now, "corr-guard")));
 
         // A second write of the same id — a stale replay, a redelivered command — carrying a *regressed*
         // status and a different event.
-        Transaction regressed = new Transaction(txId, settled.endToEndId(), settled.debtorAccountId(),
-                settled.creditorKey(), null, false, "SPI_CLEARING", 5_000L, TransactionStatus.DEBITED,
-                "second", FraudDecision.APPROVE, false, now, null, null);
+        Transaction regressed = new Transaction(txId, settled.endToEndId(), OUTBOUND,
+                settled.debtorAccountId(), settled.creditorKey(), null, false, "SPI_CLEARING", 5_000L,
+                TransactionStatus.DEBITED, "second", FraudDecision.APPROVE, false, now, null, null);
 
         assertThatThrownBy(() -> transactions.create(regressed, List.of(
                 new OutboxEvent("evt-guard-2", "PixDebited", Map.of("txId", txId), now, "corr-guard"))))

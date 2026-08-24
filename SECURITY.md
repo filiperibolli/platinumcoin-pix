@@ -106,6 +106,12 @@ and the claim shape was chosen so that the swap changes only the signature verif
 
 ## Security posture & deliberate gaps
 
+> The table below is the **posture**. What was actually verified, when, and what it returned lives in
+> [`docs/security-checklist.md`](docs/security-checklist.md) — executed 2026-08-24 in step 45, which
+> found and fixed three real defects (the error contract escaping on four framework-generated statuses,
+> and a `500` on the payee's own payment poll that made a real transaction id distinguishable from an
+> unknown one).
+
 This project makes some security trade-offs *on purpose* and documents them rather
 than hiding them. These are **not** vulnerabilities to report — they are recorded
 decisions:
@@ -119,8 +125,8 @@ decisions:
 | Secrets | `.env` / compose env vars (git-ignored) | Secrets manager / KMS | — |
 | Transport | Plain HTTP on localhost | TLS everywhere, mTLS between services | — |
 | Rate limiting | Not implemented locally | Edge rate limiting + per-account throttles | — |
-| AWS credentials | `test`/`test` static keys — a **signing formality**, not authentication: LocalStack validates no signature and only reads the key to derive the account id | No long-lived credential: the `DefaultCredentialsProvider` chain resolves the ambient ECS task role / EKS IRSA / EC2 instance profile, with STS credentials the SDK rotates | ADR-0013 |
-| IAM authorization | **Not enforced** — LocalStack emulates the IAM/STS *APIs* but authorizes everything by default (`ENFORCE_IAM` off, paid feature); the step-26 SQS resource policy is likewise accepted but unenforced | Least-privilege role per service, committed as `infra/iam/<service>-policy.json` with concrete ARNs + conditions; resource policies enforced by AWS | ADR-0013 |
+| AWS credentials | `test`/`test` static keys, reachable **only under the `local` Spring profile** and written in exactly one class (`common-lib`'s `LocalStackAwsOverride`) — a signing formality, not authentication: LocalStack validates no signature and only reads the key to derive the account id | No long-lived credential: the default build passes neither an endpoint nor a credentials provider, so the `DefaultCredentialsProvider` chain resolves the ambient ECS task role / EKS IRSA / EC2 instance profile, with STS credentials the SDK rotates | ADR-0013, swept in step 45 |
+| IAM authorization | **Not enforced** — LocalStack emulates the IAM/STS *APIs* but authorizes everything by default (`ENFORCE_IAM` off, paid feature); the step-26 SQS resource policy is likewise accepted but unenforced | Least-privilege role per service, committed as [`infra/iam/<service>-policy.json`](infra/iam/) with concrete ARNs; payment-service holds **no** `sqs:*` and settlement-service **no** `sns:Publish`, which is what makes the outbox topology an authorization boundary | ADR-0013 |
 
 ## Secure-development practices in this repo
 

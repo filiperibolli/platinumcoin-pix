@@ -92,6 +92,19 @@
             <artifactId>archunit-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- common-lib's test-jar, for PlatformArchRules alone (step 45): the two rules that are the
+             same statement in every service — no public route outside /v1, no static AWS credential.
+             auth-service is AWS-free, so the second is vacuous here and is checked anyway: an exemption
+             list is how a rule stops being a rule. Test-scope deps of a test-jar are not transitive,
+             which is why this module declares no LocalStack harness — it needs none. -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
