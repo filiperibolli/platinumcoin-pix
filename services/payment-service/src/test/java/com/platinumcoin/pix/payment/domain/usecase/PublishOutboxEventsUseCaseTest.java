@@ -191,6 +191,9 @@ class PublishOutboxEventsUseCaseTest {
         String eventType = lane == OutboxLane.SETTLEMENT ? "PixDebited" : "PixSettled";
         return new PendingOutboxEvent(
                 "tx-" + eventId, eventId, eventType, "{\"amountCents\":12550}", occurredAt, "corr-1",
+                // No traceparent: this use case never reads one — carrying the trace across the broker is
+                // the publisher adapter's job (step 72), which is exactly why the seam stays testable here.
+                null,
                 lane);
     }
     // ── step 71 (ADR-0019): lanes, ordering under partitioning, and backpressure ──────────────────

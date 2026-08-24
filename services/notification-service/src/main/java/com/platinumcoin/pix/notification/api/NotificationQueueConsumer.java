@@ -9,6 +9,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import com.platinumcoin.pix.common.tracing.ForceSample;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.Message;
 
@@ -46,6 +51,11 @@ public class NotificationQueueConsumer {
     private final int batchSize;
     private final int waitTimeSeconds;
 
+    /** Tracing collaborators (step 72). Nullable: a push must never wait on the observability stack. */
+    private final Tracer tracer;
+
+    private final TracePropagation tracing;
+
     /**
      * The queue URL is resolved from its <b>name</b> at startup, like settlement's consumer: a consumer
      * must call {@code GetQueueUrl} before it can receive anything, and failing to start when the queue
@@ -58,7 +68,11 @@ public class NotificationQueueConsumer {
             DeliverNotificationUseCase deliverNotification,
             @Value("${pix.notifications.queue-name}") String queueName,
             @Value("${pix.notifications.consumer.batch-size}") int batchSize,
-            @Value("${pix.notifications.consumer.wait-time-seconds}") int waitTimeSeconds) {
+            @Value("${pix.notifications.consumer.wait-time-seconds}") int waitTimeSeconds,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        this.tracer = tracer.getIfAvailable();
+        this.tracing = tracing.getIfAvailable();
         this.sqs = sqs;
         this.queueUrl = sqs.getQueueUrl(request -> request.queueName(queueName)).queueUrl();
         this.mapper = mapper;
@@ -82,7 +96,11 @@ public class NotificationQueueConsumer {
             var messages = sqs.receiveMessage(request -> request
                             .queueUrl(queueUrl)
                             .maxNumberOfMessages(batchSize)
-                            .waitTimeSeconds(waitTimeSeconds))
+                            .waitTimeSeconds(waitTimeSeconds)
+                            // SQS returns message attributes only when asked for by name. Without this
+                            // the traceparent the publisher attached is dropped and the push a user sees
+                            // is a trace of its own, unlinkable to the payment that caused it (step 72).
+                            .messageAttributeNames(TracePropagation.TRACEPARENT))
                     .messages();
 
             if (messages.isEmpty()) {
@@ -129,7 +147,11 @@ public class NotificationQueueConsumer {
         // to the push (ADR-0012). Cleared in the finally: the thread is reused and a leaked id would
         // mislabel the next message.
         CorrelationId.restore(parsed.correlationId(), parsed.txId());
-        try {
+        // Opened after the MDC is populated: CorrelationIdSpanProcessor stamps the ids at onStart, so the
+        // other order would produce a span with no correlation id (ADR-0021 decision 2).
+        Span consume = openConsumeSpan(message);
+        try (Tracer.SpanInScope scope = tracer == null || consume == null
+                ? null : tracer.withSpan(consume)) {
             DeliverOutcome outcome = deliverNotification.execute(parsed.toCommand());
             // Every outcome acks — see the class javadoc. The use case has already logged which one and
             // why, so this line records only the acknowledgement itself.
@@ -145,8 +167,27 @@ public class NotificationQueueConsumer {
                             + "| messageId={} eventId={} eventType={}",
                     message.messageId(), parsed.eventId(), parsed.eventType(), e);
         } finally {
+            if (consume != null) {
+                consume.end();
+            }
             CorrelationId.clear();
+            ForceSample.clear();
         }
+    }
+
+    /**
+     * Continue the trace of the payment that caused this push, or start a new one when the message has no
+     * context. This is the hop that makes "the user saw their money arrive" the last span of the same
+     * trace that began at {@code POST /v1/payments/pix}.
+     */
+    private Span openConsumeSpan(Message message) {
+        if (tracing == null) {
+            return null;
+        }
+        String traceparent = message.messageAttributes().containsKey(TracePropagation.TRACEPARENT)
+                ? message.messageAttributes().get(TracePropagation.TRACEPARENT).stringValue()
+                : null;
+        return tracing.continuedSpan("pix.notification.consume", traceparent);
     }
 
     private void delete(Message message) {

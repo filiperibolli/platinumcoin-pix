@@ -353,3 +353,9 @@ curl -s "localhost:8085/internal/ledger/accounts/acc-001/entries?limit=50" \
   in cents and account ids logged in the clear** — a deliberate LGPD trade-off for seeded data that
   production reverses. `com.platinumcoin.pix` runs at DEBUG, so the DynamoDB `GetItem` and the exact
   key it read are in the log too.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited whole from `common-lib`. The posting itself is named as an interval by the *caller*
+  (`pix.ledger.post` in payment-service), and this service's DynamoDB calls — `TransactWriteItems` above
+  all — are timed into `pix.dependency.seconds`, so "the money moved slowly" is a question the dashboard
+  can answer per operation.

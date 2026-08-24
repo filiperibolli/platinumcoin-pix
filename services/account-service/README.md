@@ -200,3 +200,8 @@ curl -s -X DELETE localhost:8082/v1/pix-keys/alice@platinum.com -H "Authorizatio
   logged in full** (raw *and* normalized side by side, so a casing or format miss is visible) — a
   deliberate LGPD trade-off for seeded data that production reverses with masking. `com.platinumcoin.pix`
   runs at DEBUG, so the DynamoDB `GetItem`/`Query`/`PutItem` and their keys are in the log too.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited whole from `common-lib`: nothing is configured here. Its DynamoDB calls are timed
+  into `pix.dependency.seconds` by the shared AWS SDK metric publisher, which is what makes this service
+  appear on the technical dashboard's per-dependency latency panel.

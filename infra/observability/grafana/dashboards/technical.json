@@ -1,7 +1,7 @@
 {
   "uid": "pix-technical",
-  "title": "PlatinumCoin Pix \u2014 Technical",
-  "description": "Latency against the stated SLOs, throughput, faults, queue health and JVM basics. The board an engineer opens. Its business counterpart is 'PlatinumCoin Pix \u2014 Business Funnel'. Provisioned from infra/observability/ (step 44) \u2014 edits here do not persist; edit the JSON in the repo.",
+  "title": "PlatinumCoin Pix — Technical",
+  "description": "Latency against the stated SLOs, throughput, faults, queue health and JVM basics. The board an engineer opens. Its business counterpart is 'PlatinumCoin Pix — Business Funnel'. Provisioned from infra/observability/ (step 44) — edits here do not persist; edit the JSON in the repo.",
   "tags": [
     "platinumcoin",
     "technical",
@@ -29,8 +29,8 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Send Pix \u2014 p99 vs 2s SLO (KR2.1)",
-      "description": "The acknowledgement latency of POST /v1/payments/pix. The quantile is computed by Prometheus from the histogram buckets, not by each JVM \u2014 averaging per-instance p99s would not be a percentile of anything. The dashed line is the budget, not a measurement.",
+      "title": "Send Pix — p99 vs 2s SLO (KR2.1)",
+      "description": "The acknowledgement latency of POST /v1/payments/pix. The quantile is computed by Prometheus from the histogram buckets, not by each JVM — averaging per-instance p99s would not be a percentile of anything. The dashed line is the budget, not a measurement.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -152,7 +152,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Balance read \u2014 p99 vs 300ms SLO (KR2.2)",
+      "title": "Balance read — p99 vs 300ms SLO (KR2.2)",
       "description": "The platform's highest-volume read, served cache-aside on Redis (ADR-0008). When this climbs, check the cache hit-rate panel below before anything else.",
       "datasource": {
         "type": "prometheus",
@@ -276,7 +276,7 @@
       "id": 3,
       "type": "stat",
       "title": "Send inside SLO",
-      "description": "The share of sends that met the 2s budget \u2014 a division of two counters, exact, because common-lib registers a bucket at exactly the SLO boundary.",
+      "description": "The share of sends that met the 2s budget — a division of two counters, exact, because common-lib registers a bucket at exactly the SLO boundary.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -418,7 +418,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Throughput by service",
-      "description": "Requests per second, per service. The denominator for every rate on this board \u2014 a rate that looks alarming over three requests usually is not.",
+      "description": "Requests per second, per service. The denominator for every rate on this board — a rate that looks alarming over three requests usually is not.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -556,7 +556,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "Settlement DLQ depth",
-      "description": "Messages in settlement-queue-dlq (KR3.2). Any sustained non-zero value means money is parked in the clearing account with no automatic path releasing it \u2014 the watchdog alerts at the FIRST message, not at a backlog.",
+      "description": "Messages in settlement-queue-dlq (KR3.2). Any sustained non-zero value means money is parked in the clearing account with no automatic path releasing it — the watchdog alerts at the FIRST message, not at a backlog.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -629,7 +629,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "Outbox lag vs 60s alert",
-      "description": "Age of the oldest committed-but-unpublished outbox event (ADR-0004). When this climbs, settlement is not failing \u2014 it is not being ASKED, which every error panel reports as green.",
+      "description": "Age of the oldest committed-but-unpublished outbox event (ADR-0004). When this climbs, settlement is not failing — it is not being ASKED, which every error panel reports as green.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -964,7 +964,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "JVM heap used",
-      "description": "The 'is the CPU ok' layer. Last on the board on purpose \u2014 it is the least interesting question this platform has to answer.",
+      "description": "The 'is the CPU ok' layer. Last on the board on purpose — it is the least interesting question this platform has to answer.",
       "datasource": {
         "type": "prometheus",
         "uid": "platinumcoin-prometheus"
@@ -1096,6 +1096,412 @@
           "range": true,
           "instant": false,
           "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "p99 per dependency — where the send latency actually goes",
+      "description": "The panel step 47 needs to ATTRIBUTE a p99 breach instead of merely reporting it. Two queries, because there are two kinds of dependency: the HTTP ones (ledger, fraud, accounts, the BACEN rail) come from Micrometer's http.client.requests, and the infrastructure ones (DynamoDB, Redis) from pix.dependency.seconds — the AWS SDK metric publisher and the renamed Lettuce recorder, both shipped by common-lib so every service measures the same way.\n\nDeliberately NOT derived from spans. The collector's spanmetrics connector would have covered all six for free, but this platform samples traces with a deliberate bias toward failures (ADR-0021 decision 5), so a p99 computed from sampled spans is skewed high by construction — and the panel would go dark whenever the trace pipeline did. Metrics see every call; traces explain the interesting ones.\n\nSQS ReceiveMessage is excluded on purpose. A long poll BLOCKS for up to its waitTimeSeconds by design, so it reports a p99 of ~20s — the consumer working correctly, and the single largest number on the panel. Leaving it in would make the one series that is never a problem dominate the one panel whose job is to find the series that is.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, client_name) (rate(http_client_requests_seconds_bucket[5m])))",
+          "legendFormat": "{{client_name}} (http)",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, dependency) (rate(pix_dependency_seconds_bucket{operation!=\"ReceiveMessage\"}[5m])))",
+          "legendFormat": "{{dependency}}",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "p99 per DynamoDB operation",
+      "description": "One level deeper on the dependency that carries the money. TransactWriteItems is the atomic double-entry posting; a Query here is the outbox drain or the reconciliation scan. When the dependency panel above says 'DynamoDB', this says which call.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, operation) (rate(pix_dependency_seconds_bucket{dependency=~\"DynamoDb.*\"}[5m])))",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Send Pix — error-budget burn rate (KR2.1)",
+      "description": "BURN RATE, not latency: how fast this SLO is spending its error budget, as a multiple of 'exactly on budget'. 1.0 means the SLO is being met precisely; 14.4 empties a 30-day budget in about two days. Computed as a division of two counters — the requests inside the SLO bucket over all requests — because step 44 registered a histogram boundary at exactly the SLO value so this would never be an interpolation.\n\nTwo windows because one cannot be both fast to fire and fast to STOP: the long window measures, the short one confirms the problem is still happening. The watchdog (settlement-service) fires only when both cross their line, which is why the alert goes quiet minutes after an incident does rather than when the hourly average forgets it. The objective is 99% of sends acknowledged inside 2s, so the budget is 1% of requests.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(page|ticket).*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - (sum(increase(http_server_requests_seconds_bucket{uri=\"/v1/payments/pix\",le=\"2.0\"}[1h])) / sum(increase(http_server_requests_seconds_count{uri=\"/v1/payments/pix\"}[1h])))) / 0.01",
+          "legendFormat": "burn rate — 1h window",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - (sum(increase(http_server_requests_seconds_bucket{uri=\"/v1/payments/pix\",le=\"2.0\"}[5m])) / sum(increase(http_server_requests_seconds_count{uri=\"/v1/payments/pix\"}[5m])))) / 0.01",
+          "legendFormat": "burn rate — 5m window",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "14.4",
+          "legendFormat": "fast-burn page (14.4x)",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "6",
+          "legendFormat": "slow-burn ticket (6x)",
+          "range": true,
+          "instant": false,
+          "refId": "D"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Balance read — error-budget burn rate (KR2.2)",
+      "description": "BURN RATE, not latency: how fast this SLO is spending its error budget, as a multiple of 'exactly on budget'. 1.0 means the SLO is being met precisely; 14.4 empties a 30-day budget in about two days. Computed as a division of two counters — the requests inside the SLO bucket over all requests — because step 44 registered a histogram boundary at exactly the SLO value so this would never be an interpolation.\n\nTwo windows because one cannot be both fast to fire and fast to STOP: the long window measures, the short one confirms the problem is still happening. The watchdog (settlement-service) fires only when both cross their line, which is why the alert goes quiet minutes after an incident does rather than when the hourly average forgets it. The objective is 99% of balance reads inside 300ms, so the budget is 1% of requests.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "platinumcoin-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 3,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisLabel": ""
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(page|ticket).*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - (sum(increase(http_server_requests_seconds_bucket{uri=\"/v1/accounts/me/balance\",le=\"0.3\"}[1h])) / sum(increase(http_server_requests_seconds_count{uri=\"/v1/accounts/me/balance\"}[1h])))) / 0.01",
+          "legendFormat": "burn rate — 1h window",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(1 - (sum(increase(http_server_requests_seconds_bucket{uri=\"/v1/accounts/me/balance\",le=\"0.3\"}[5m])) / sum(increase(http_server_requests_seconds_count{uri=\"/v1/accounts/me/balance\"}[5m])))) / 0.01",
+          "legendFormat": "burn rate — 5m window",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "14.4",
+          "legendFormat": "fast-burn page (14.4x)",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "platinumcoin-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "6",
+          "legendFormat": "slow-burn ticket (6x)",
+          "range": true,
+          "instant": false,
+          "refId": "D"
         }
       ]
     }

@@ -109,6 +109,27 @@ without knowing a flag exists. The contract from the previous convention still h
 reason DEBUG is *additive*: **the INFO layer alone must already tell the full story of a call**;
 DEBUG only adds the *how*. Framework packages stay at INFO so the domain is not drowned.
 
+## What step 72 added, and what it did not change (ADR-0021)
+
+**Nothing in this ADR was revised.** [ADR-0021](0021-distributed-tracing-and-error-budget-alerts.md) adds
+OpenTelemetry tracing **alongside** the correlation id, with a stated division of labour: **spans answer
+*where the time went*, these logs answer *what the service decided and why*.** Every rule above — the id in
+the pattern rather than in a log line, prose-then-`key=value`, real values in a sandbox, the level policy,
+`com.platinumcoin.pix` at DEBUG — is untouched.
+
+Two joins were added, in opposite directions, and one property is the reason both are safe:
+
+- the shared pattern gained a third id, `[cid=… tx=… trace=…]`, by the same mechanism (it is in the
+  pattern, so *every* record carries it — ours, Spring's, the AWS SDK's);
+- every span carries `pix.correlation_id`, so a span found in Jaeger leads straight back to the log lines
+  that explain it.
+
+**Neither tool is a prerequisite for the other.** `scripts/trace.sh` is unchanged and still works with the
+collector down, because this log path is **complete and unsampled** while a trace is **sampled and lossy by
+design**. That asymmetry is precisely why tracing may never become the only place a fact is recorded — and
+why the trace id simply prints `n/a` when there is no sampled span, rather than anything on this line
+depending on it.
+
 ## Consequences
 
 **Gained**

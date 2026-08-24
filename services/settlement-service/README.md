@@ -382,3 +382,12 @@ awsl s3api head-object --bucket pix-audit-log --key <key> \
 - [ADR-0012](../../docs/adr/0012-verbose-logs-with-real-values.md) — the `correlationId` is carried in
   the event and restored into the MDC around every message, so one `grep` still reconstructs a payment's
   whole path after the flow leaves the request thread.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing +
+  error budgets** (step 72). The consumer reads the `traceparent` message attribute (SQS returns attributes
+  only when asked for by name) and opens `pix.settlement.consume` on it, so settlement is part of the
+  payment's trace rather than a trace of its own; a rail refusal or an UNKNOWN outcome marks the trace
+  always-sampled. This service also owns the **error-budget rules**: `AlertRule.BurnRate` is the watchdog's
+  fourth shape, and the four multi-window rules (send/balance × fast/slow) sit *on top of* the nine
+  absolute-threshold rules, which all stay. The audit consumer deliberately does **not** continue a trace —
+  it batches, and a batch belongs to many traces (see its javadoc).

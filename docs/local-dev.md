@@ -43,6 +43,8 @@ alias awsd='aws --endpoint-url=http://localhost:8000'
 | mock-bacen-spi | 9090 |
 | Prometheus (step 44) | 9091 (host) → 9090 (container) |
 | Grafana (step 44) | 3000 |
+| Jaeger UI (step 72) | 16686 |
+| OTLP collector — HTTP / gRPC (step 72) | 4318 / 4317 |
 
 ## 3. Environment variables (shared conventions)
 
@@ -1377,6 +1379,116 @@ every problem+json body, so you always have the handle:
 ./scripts/trace.sh <txId>                 # one PAYMENT's whole life, reconciliation included
 ./scripts/trace.sh <id> --all --since 6h  # plus DEBUG adapter detail (the DynamoDB keys, the payloads)
 ```
+
+### 5.9.1 Distributed tracing & error budgets (step 72)
+
+Two containers came up with everything else: the **OTLP collector** and **Jaeger**. Neither is on any
+service's `depends_on` — a payment must never wait for the trace pipeline (ADR-0021).
+
+```bash
+# One external send, with a correlation id you choose so both tools can be compared side by side.
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+CID=$(uuidgen)
+curl -s -X POST localhost:8084/v1/payments/pix \
+  -H "Authorization: Bearer $TOKEN" -H "X-Correlation-Id: $CID" \
+  -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"pixKey":"bob@otherbank.com","amount":"12.50","description":"trace"}' | jq
+```
+
+**The logs now carry both ids** — the trace id is in the pattern, so every line has it:
+
+```bash
+docker compose -f infra/docker-compose.yml logs payment-service | grep "$CID" | head -3
+# 2026-08-24T…  INFO … [cid=<CID> tx=tx-9f1c trace=4bf92f3577b34da6a3ce929d0e0e4736] …
+```
+
+**Open the trace:** <http://localhost:16686> → service `payment-service` → Find Traces, or paste the
+`trace=` value straight into the search box. What you should see, as **one** trace:
+
+```
+POST /v1/payments/pix
+├─ pix.fraud.budget          ← the 200ms budget, not one socket
+├─ pix.ledger.post           ← the atomic double-entry posting
+└─ …202 returned here…
+pix.outbox.drain (lane=SETTLEMENT)
+└─ pix.outbox.publish        ← child of the ACCEPTING REQUEST, seconds later
+   └─ pix.settlement.consume ← other service, same trace
+      └─ the SPI call, the fence, the clearing release
+```
+
+Click any span → its `pix.correlation_id` tag is the id you passed. That is the join in the other
+direction.
+
+**And `trace.sh` is unchanged, collector or no collector:**
+
+```bash
+bash scripts/trace.sh "$CID"
+docker compose -f infra/docker-compose.yml stop otel-collector
+bash scripts/trace.sh "$CID"     # identical output — the log path is not sampled and not dependent
+docker compose -f infra/docker-compose.yml start otel-collector
+```
+
+**Error budgets:** <http://localhost:3000> → *PlatinumCoin Pix — Technical*, the last two rows.
+`p99 per dependency` answers *which dependency spent the p99*; the two burn-rate panels answer *how fast
+this SLO is spending its allowance*.
+
+**Making one fire is a SYNTHETIC drill, and here is the honest reason why.** The obvious move — turn the
+mock-bacen latency dial up — does not work: `latencyMs` slows the **settlement**, which happens after the
+`202` has already been returned, so it cannot move the send-acknowledgement p99 by construction. And the
+sandbox has no runtime latency dial on the synchronous send path at all; that gap is exactly what
+[step 64](steps/step-64.md) (still PROPOSED) would close for fraud-service. So the drill moves **the
+budget**, not the latency — which tests the rule, its two windows and its FIRING/RESOLVED lifecycle, and
+is honest about testing nothing else:
+
+The four burn-rate tunables are surfaced in `docker-compose.yml` with the `application.yml` values as
+their fallback, precisely so a drill can reach them (`ALERTS_LATENCY_OBJECTIVE`, `ALERTS_FAST_BURN_FACTOR`,
+`ALERTS_SLOW_BURN_FACTOR`, `ALERTS_BURN_MINIMUM_REQUESTS`). A knob that only lives inside the jar is a knob
+nobody can turn in a container.
+
+```bash
+# Demand 99.999% inside the SLO and declare anything above 0.1x of that budget a breach. A healthy
+# platform then breaches a synthetic budget, which is the point: the RULE is what is under test.
+ALERTS_LATENCY_OBJECTIVE=0.99999 ALERTS_FAST_BURN_FACTOR=0.1 ALERTS_SLOW_BURN_FACTOR=0.1 \
+  ALERTS_BURN_MINIMUM_REQUESTS=1 \
+  docker compose -f infra/docker-compose.yml up -d --force-recreate settlement-service
+
+# SUSTAINED traffic, not a burst: the rule needs a population in BOTH windows, and the 5-minute
+# confirming window empties as soon as you stop. A burst makes the fast rule report SKIPPED — correct
+# behaviour that looks like a broken alert if you did not expect it.
+TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+for i in $(seq 1 40); do
+  curl -s -o /dev/null localhost:8084/v1/accounts/me/balance -H "Authorization: Bearer $TOKEN"
+  curl -s -o /dev/null -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
+    -d '{"pixKey":"bob@otherbank.com","amount":"1.00"}'
+  sleep 2
+done
+
+docker compose -f infra/docker-compose.yml logs settlement-service | grep "ALERT FIRING.*error_budget"
+
+# Put the real objective back. The next tick announces the TRANSITION, not the condition.
+docker compose -f infra/docker-compose.yml up -d --force-recreate settlement-service
+docker compose -f infra/docker-compose.yml logs settlement-service | grep "ALERT RESOLVED.*error_budget"
+```
+
+Observed on this stack (step 72):
+
+```
+16:04:23Z  ALERT FIRING    rule=send_error_budget_slow_burn     observed=0.4416
+16:04:23Z  ALERT FIRING    rule=balance_error_budget_slow_burn  observed=0.5439
+16:06:02Z  ALERT RESOLVED  rule=send_error_budget_slow_burn     observed=0.000386
+16:06:02Z  ALERT RESOLVED  rule=balance_error_budget_fast_burn  observed=0.000461
+```
+
+The `observed` values are the honest burn rates of a healthy platform against its **real** budget: about
+0.0004× — four ten-thousandths of the allowance. That is what "we are nowhere near the SLO" looks like as
+a number, which is the whole reason a budget is more useful at 03:00 than a threshold.
+
+> A `SKIPPED` verdict on a quiet sandbox is correct, not broken: under `burn-minimum-requests` (20) the
+> rule refuses to compute a burn rate at all, because two slow requests out of three is a burn rate of 66
+> and is not news (`docs/observability.md` §4.1).
 
 ### 5.10 Load tests and API tooling (after their steps)
 

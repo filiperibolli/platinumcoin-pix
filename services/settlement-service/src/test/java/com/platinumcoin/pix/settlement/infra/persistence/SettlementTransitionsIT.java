@@ -58,7 +58,10 @@ class SettlementTransitionsIT extends LocalStackTestBase {
             .build();
 
     private final DynamoSettlementTransactionStore store =
-            new DynamoSettlementTransactionStore(DYNAMO);
+            // Untraced on purpose: this IT is about the guarded transitions, and the stored traceparent
+            // (step 72) is observability metadata no transition reads.
+            new DynamoSettlementTransactionStore(
+                    DYNAMO, (com.platinumcoin.pix.common.tracing.TracePropagation) null);
 
     @AfterAll
     static void closeClient() {

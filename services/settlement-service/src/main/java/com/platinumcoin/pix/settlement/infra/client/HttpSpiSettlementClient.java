@@ -8,6 +8,7 @@ import com.platinumcoin.pix.settlement.domain.port.SpiSettlementClient;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
+import com.platinumcoin.pix.common.tracing.ForceSample;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -235,6 +236,9 @@ public class HttpSpiSettlementClient implements SpiSettlementClient {
     private static SpiSettlementRejectedException rejected(String endToEndId,
             RestClientResponseException cause) {
         String reason = detailOf(cause);
+        // A permanent refusal ends as a REVERSAL — one of the five outcomes ADR-0021 always keeps, and
+        // the one a payer will phone about.
+        ForceSample.mark("the rail refused this settlement permanently, it will be reversed");
         log.warn("The SPI refused this settlement permanently, retrying it is pointless | endToEndId={} "
                         + "status=422 reason={}", endToEndId, reason);
         return new SpiSettlementRejectedException(reason, cause);
@@ -243,6 +247,9 @@ public class HttpSpiSettlementClient implements SpiSettlementClient {
     private static SpiCallFailedException failed(String endToEndId, String what, RuntimeException cause) {
         // WARN, not ERROR: an unavailable dependency is a degradation the flow is designed to absorb,
         // not an actionable fault in this service.
+        // An UNKNOWN outcome is the hardest thing this platform handles (ADR-0015/ADR-0016). Whatever the
+        // head ratio says, this is a trace someone will want.
+        ForceSample.mark("the rail gave no answer, the settlement outcome is UNKNOWN");
         log.warn("The settlement attempt did not produce an answer, the outcome is UNKNOWN and must not "
                         + "be treated as a failure | endToEndId={} what={} error={}",
                 endToEndId, what, cause.toString());

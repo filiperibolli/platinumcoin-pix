@@ -284,3 +284,8 @@ curl -N "localhost:8087/v1/notifications/stream?access_token=$BOB"
   event's `correlationId` onto the MDC, so one `grep <correlationId>` walks a payment from the send
   request all the way to the push. The line not crossed: the token is never logged, only the fact that
   the handshake used the query-parameter path.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited from `common-lib`. The consumer reads the `traceparent` message attribute and opens
+  `pix.notification.consume` on it, which makes the real-time push the **last span of the same trace** that
+  began at `POST /v1/payments/pix` — the end-to-end picture this service exists to complete.

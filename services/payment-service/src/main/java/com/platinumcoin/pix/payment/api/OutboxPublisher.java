@@ -4,6 +4,10 @@ import com.platinumcoin.pix.common.event.OutboxLane;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxOutcome;
 import io.micrometer.core.instrument.Gauge;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.EnumMap;
 import java.util.List;
@@ -68,12 +72,23 @@ public class OutboxPublisher {
     /** Last measured lag per lane, in milliseconds; read by that lane's gauge, written by its tick. */
     private final Map<OutboxLane, AtomicLong> lagMillisByLane = new EnumMap<>(OutboxLane.class);
 
+    /** For the per-tick drain span (step 72). Nullable — draining never waits on observability. */
+    private final Tracer tracer;
+
+    /** The total span factory — never throws, may return {@code null} (ADR-0021). */
+    private final TracePropagation tracing;
+
     /**
      * Every lane's publisher, injected as a list and indexed by the lane each one declares — so adding a
      * fourth lane is a change to {@code OutboxLane} and the composition root, not to this class.
      */
     public OutboxPublisher(
-            List<PublishOutboxEventsUseCase> lanePublishers, MeterRegistry meterRegistry) {
+            List<PublishOutboxEventsUseCase> lanePublishers,
+            MeterRegistry meterRegistry,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        this.tracer = tracer.getIfAvailable();
+        this.tracing = tracing.getIfAvailable();
         for (PublishOutboxEventsUseCase lanePublisher : lanePublishers) {
             OutboxLane lane = lanePublisher.lane();
             if (publishersByLane.put(lane, lanePublisher) != null) {
@@ -131,6 +146,29 @@ public class OutboxPublisher {
      *         schedule
      */
     public PublishOutboxOutcome publishLane(OutboxLane lane) {
+        Span drain = tracing == null ? null : tracing.newSpan("pix.outbox.drain");
+        if (drain == null || tracer == null) {
+            return drain(lane);
+        }
+        // One span per TICK, not per event: the question this span answers is "how long did this lane
+        // take to drain, and how far behind was it?" — a lane-level property. Each event published inside
+        // it gets its own pix.outbox.publish span, parented to the ACCEPTING REQUEST rather than to this
+        // one, which is the whole trick of the outbox: the drain and the payment are different traces
+        // that meet at one publish.
+        drain.tag("pix.lane", lane.name());
+        try (Tracer.SpanInScope scope = tracer.withSpan(drain)) {
+            PublishOutboxOutcome outcome = drain(lane);
+            drain.tag("pix.outbox.found", Long.toString(outcome.found()));
+            drain.tag("pix.outbox.published", Long.toString(outcome.published()));
+            drain.tag("pix.outbox.lag_seconds",
+                    Long.toString(outcome.oldestUnpublishedAge().toSeconds()));
+            return outcome;
+        } finally {
+            drain.end();
+        }
+    }
+
+    private PublishOutboxOutcome drain(OutboxLane lane) {
         try {
             PublishOutboxOutcome outcome = publishersByLane.get(lane).execute();
             lagMillisByLane.get(lane).set(outcome.oldestUnpublishedAge().toMillis());

@@ -15,6 +15,8 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import org.springframework.beans.factory.ObjectProvider;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
@@ -74,7 +76,21 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
 
     private final DynamoDbClient dynamo;
 
-    public DynamoSettlementTransactionStore(DynamoDbClient dynamo) {
+
+    /**
+     * Captures the current trace context onto every outbox item this store writes (step 72, ADR-0021
+     * decision 4). Nullable — a settlement must never depend on the observability stack being wired.
+     */
+    private final TracePropagation tracing;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DynamoSettlementTransactionStore(DynamoDbClient dynamo, ObjectProvider<TracePropagation> tracing) {
+        this(dynamo, tracing.getIfAvailable());
+    }
+
+    /** Direct construction, for tests and for a composition root that already holds the collaborator. */
+    public DynamoSettlementTransactionStore(DynamoDbClient dynamo, TracePropagation tracing) {
+        this.tracing = tracing;
         this.dynamo = dynamo;
     }
 
@@ -252,7 +268,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
 
         List<TransactWriteItem> writes = List.of(
                 TransactWriteItem.builder().update(settledUpdate(txId, confirmation)).build(),
-                TransactWriteItem.builder().put(outboxPut(txId, event)).build());
+                TransactWriteItem.builder().put(outboxPut(txId, event, currentTraceparent())).build());
 
         try {
             dynamo.transactWriteItems(request -> request.transactItems(writes));
@@ -293,7 +309,7 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
 
         List<TransactWriteItem> writes = List.of(
                 TransactWriteItem.builder().update(reversedUpdate(txId, failureReason, now)).build(),
-                TransactWriteItem.builder().put(outboxPut(txId, event)).build());
+                TransactWriteItem.builder().put(outboxPut(txId, event, currentTraceparent())).build());
 
         try {
             dynamo.transactWriteItems(request -> request.transactItems(writes));
@@ -400,7 +416,12 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
      * {@code Instant.toString()}: it is the sort key the publisher drains oldest-first, and a
      * variable-width timestamp silently inverts that order.
      */
-    private static Put outboxPut(String txId, OutboxEvent event) {
+    /** This thread's trace context, or {@code null} when tracing is off or no span is open. */
+    private String currentTraceparent() {
+        return tracing == null ? null : tracing.currentTraceparent();
+    }
+
+    private static Put outboxPut(String txId, OutboxEvent event, String traceparent) {
         Map<String, AttributeValue> item = new LinkedHashMap<>();
         item.put("pk", AttributeValue.fromS(TX_PREFIX + txId));
         item.put("sk", AttributeValue.fromS(OUTBOX_SK_PREFIX + event.eventId()));
@@ -421,11 +442,18 @@ public class DynamoSettlementTransactionStore implements SettlementTransactionSt
         if (event.correlationId() != null) {
             item.put("correlationId", AttributeValue.fromS(event.correlationId()));
         }
+        // The W3C trace context of the work that produced this event (step 72, ADR-0021). Written here
+        // rather than sent, for the same reason as in payment-service: the publisher drains this item
+        // seconds later on a thread with no trace of its own, so without the stored context the
+        // notification a user receives would be an unlinkable trace of its own.
+        if (traceparent != null) {
+            item.put("traceparent", AttributeValue.fromS(traceparent));
+        }
 
         log.debug("DynamoDB Put of an outbox event | table={} pk={}{} sk={}{} eventType={} lane={} "
-                        + "gsi3pk={} gsi3sk={} correlationId={} payload={}",
+                        + "gsi3pk={} gsi3sk={} correlationId={} traceparent={} payload={}",
                 TABLE, TX_PREFIX, txId, OUTBOX_SK_PREFIX, event.eventId(), event.eventType(),
-                lane.name(), lane.gsi3pk(), event.occurredAtKey(), event.correlationId(),
+                lane.name(), lane.gsi3pk(), event.occurredAtKey(), event.correlationId(), traceparent,
                 EventEnvelope.payloadJson(event));
 
         return Put.builder()

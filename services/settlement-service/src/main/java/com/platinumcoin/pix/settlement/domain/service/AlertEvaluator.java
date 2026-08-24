@@ -99,14 +99,17 @@ public class AlertEvaluator {
     }
 
     /**
-     * Exhaustive over the three rule shapes: adding a fourth is a compile error here, which is the point
-     * of the sealed interface — a rule that silently never evaluates is worse than no rule.
+     * Exhaustive over the rule shapes: adding one more is a compile error here, which is the point of the
+     * sealed interface — a rule that silently never evaluates is worse than no rule. Step 72's
+     * {@link AlertRule.BurnRate} was added exactly that way: the shape landed, this switch stopped
+     * compiling, and the handling could not be forgotten.
      */
     private AlertStatus evaluateOne(AlertRule rule, Instant now, Map<String, Double> samples) {
         return switch (rule) {
             case AlertRule.Threshold threshold -> evaluateThreshold(threshold, samples);
             case AlertRule.Ratio ratio -> evaluateRatio(ratio, samples);
             case AlertRule.Silence silence -> evaluateSilence(silence, now, samples);
+            case AlertRule.BurnRate burnRate -> evaluateBurnRate(burnRate, samples);
         };
     }
 
@@ -134,6 +137,62 @@ public class AlertEvaluator {
         }
         double ratio = numerator.get() / denominator.get();
         return verdict(rule, breached(ratio, rule.bound(), rule.comparison()), ratio);
+    }
+
+    /**
+     * The burn-rate verdict (step 72, ADR-0021 decision 6): <b>how fast is this SLO spending its error
+     * budget, over two windows at once?</b>
+     *
+     * <p>The arithmetic is deliberately a division of counters, not a quantile estimate — step 44
+     * registered histogram buckets at exactly the SLO boundaries so that this could be true. For each
+     * window: {@code bad = 1 - good/total}, and {@code burnRate = bad / errorBudget}. A burn rate of 1.0
+     * means the SLO is being met exactly; 14.4 means a 30-day budget is gone in roughly two days.
+     *
+     * <p><b>Both windows must breach.</b> The long window is the measurement and the short one is the
+     * confirmation that the problem is still happening — which is what keeps the alert from paging at a
+     * fire that went out twenty minutes ago but still pollutes the hourly average. The reported
+     * {@code observed} value is the long window's burn rate, because that is the number an operator needs
+     * to reason about the budget; the short window's job is a veto, not a headline.
+     *
+     * <p>The population check is the same refusal to guess a {@link AlertRule.Ratio} makes: a budget
+     * computed from three requests is arithmetic, not information.
+     */
+    private AlertStatus evaluateBurnRate(AlertRule.BurnRate rule, Map<String, Double> samples) {
+        Optional<Double> longGood = sample(rule, rule.longGoodQuery(), samples);
+        Optional<Double> longTotal = sample(rule, rule.longTotalQuery(), samples);
+        Optional<Double> shortGood = sample(rule, rule.shortGoodQuery(), samples);
+        Optional<Double> shortTotal = sample(rule, rule.shortTotalQuery(), samples);
+        if (longGood.isEmpty() || longTotal.isEmpty() || shortGood.isEmpty() || shortTotal.isEmpty()) {
+            return skipped(rule);
+        }
+
+        if (longTotal.get() < rule.minimumRequests() || shortTotal.get() < rule.minimumRequests()) {
+            log.debug("Error-budget rule skipped, too few requests in one of its windows for a burn rate "
+                            + "to mean anything | rule={} longWindowRequests={} shortWindowRequests={} "
+                            + "minimumRequests={}",
+                    rule.name(), longTotal.get(), shortTotal.get(), rule.minimumRequests());
+            return skipped(rule);
+        }
+
+        double longBurn = burnRate(longGood.get(), longTotal.get(), rule.errorBudget());
+        double shortBurn = burnRate(shortGood.get(), shortTotal.get(), rule.errorBudget());
+        boolean breached = longBurn > rule.burnRateFactor() && shortBurn > rule.burnRateFactor();
+
+        log.debug("Error budget evaluated over both windows | rule={} objective={} errorBudget={} "
+                        + "longWindowBurnRate={} shortWindowBurnRate={} burnRateFactor={} breached={}",
+                rule.name(), rule.objective(), rule.errorBudget(), longBurn, shortBurn,
+                rule.burnRateFactor(), breached);
+
+        return verdict(rule, breached, longBurn);
+    }
+
+    /**
+     * The fraction of the error budget being consumed per unit of time, as a multiple of "exactly on
+     * budget". {@code total} is guaranteed positive by the population check above.
+     */
+    private static double burnRate(double good, double total, double errorBudget) {
+        double bad = 1.0d - (good / total);
+        return bad / errorBudget;
     }
 
     /**

@@ -405,6 +405,75 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- Distributed tracing with OpenTelemetry across HTTP and the queues, joined to the existing correlation id, plus error-budget burn-rate alerts on the send and balance SLOs — the two gaps the external review found in the step-44 observability pass (step 72, ADR-0021)
+  AI: est 8h / actual 3.7h / ~90% generated / 0 issues caught in human review
+  - **A log is an event; a span is an interval — and only one of them can answer "where did the time
+    go?"** Step 44's `trace.sh` reconstructs a request's *sequence* by grepping the correlation id out of
+    the log pattern. It cannot say where the 1.4 seconds went, and structurally never will. So this step
+    adds the second tool and **keeps the first exactly as it is**: the log path is complete and unsampled
+    and works with the collector down, while a trace is sampled and lossy *by design*. The two are joined
+    in both directions — the trace id rides in the shared log pattern (`[cid=… tx=… trace=…]`), and every
+    span carries `pix.correlation_id` — and **neither is a prerequisite for the other**, which is what
+    made adding the second one safe.
+  - **The trace crosses the queue, which is the half nothing instruments for you.** The accepting
+    request's W3C `traceparent` is stored on the outbox item in the *same* `TransactWriteItems` as the
+    money; the publisher — running seconds later on a thread with no trace — resumes that context and
+    attaches its own traceparent to the SNS message; the consumers ask SQS for that attribute by name and
+    open their span on it. One trace now runs `POST /v1/payments/pix → outbox → SNS → SQS → settle →
+    finalize`. `TracePropagationIT` asserts exactly that hop with a literal trace id, because an
+    HTTP-only version of the test would have passed without a line of this step's code.
+  - **Sampling is asymmetric, and the limitation is written down rather than glossed.** A configurable
+    head ratio, plus `ForceSample.mark(...)` at the five places ADR-0021 names — a fail-open, a
+    `FRAUD_ERROR`, a ledger result that is unknown, a rail refusal, a reconciliation that found work — so
+    those traces survive any ratio. What head sampling cannot do is resurrect a root span it already
+    dropped, so a failure found three hops later yields a complete failure *subtree* with a possibly
+    missing ancestor. ADR-0021 gained an implementation note saying so, and naming collector-side tail
+    sampling as the production evolution. `SamplingPolicyTest` pins the policy at ratio `0.0`, where a
+    passing assertion cannot be luck.
+  - **Error budgets are a fourth alert shape, and the `sealed` interface charged for it.** Adding
+    `AlertRule.BurnRate` broke `AlertEvaluator`'s exhaustive `switch` at compile time — exactly what step
+    44's javadoc promised, and the reason a rule can never enter this platform and quietly never be
+    evaluated. The nine absolute-threshold rules all stay: *"the DLQ has a message in it"* is a fact worth
+    saying whatever the budget looks like. What the four new ones add is the only input to the decision an
+    operator actually makes at 03:00 — page, or ticket. Multi-window (14.4×/1h/5m and 6×/6h/30m) because a
+    single window cannot be both fast to fire and fast to **stop**, and computed as a division of the
+    `le="2.0"` / `le="0.3"` counters step 44 registered precisely so this would never be an interpolation.
+  - **The per-dependency p99 panel is fed by metrics, not by spans — deliberately.** The collector's
+    `spanmetrics` connector would have covered all six dependencies for free and was rejected: this
+    platform samples traces with a bias toward failures, so a p99 derived from them is skewed by
+    construction and by an amount that moves with the ratio — and the panel would go dark whenever the
+    trace pipeline did. Instead DynamoDB is timed by an AWS SDK `MetricPublisher` and Redis by Lettuce's
+    recorder renamed into the same `pix.dependency.seconds` vocabulary, so the panel is one query with a
+    `dependency` tag. *Metrics see every call; traces explain the interesting ones.*
+  - **The trap that cost the most, and is now a test.** Spring Boot Test switches observability **off** by
+    default in `@SpringBootTest`, injecting `management.tracing.enabled=false`. In that mode Boot does not
+    remove the tracing beans — it swaps the propagator for a **no-op**. Every bean present, every span
+    created, every queue hop silently starting a brand-new trace, and not one error anywhere.
+    `CommonTracingAutoConfigurationTest` therefore asserts `propagator.fields()` contains `traceparent`
+    rather than merely asserting the bean exists, because a propagator with no fields passes every
+    presence check and propagates nothing.
+  - **A second trap, same shape: `@ConditionalOnClass` on a `@Bean` method is not a guard.** Evaluating
+    any `@ConditionalOnMissingBean` in a configuration class makes Spring introspect *every* declared
+    method of it, loading every type in every signature — so a bean returning an AWS-SDK-derived type took
+    auth-service's whole context down with `NoClassDefFoundError` before any condition was consulted. The
+    guard belongs at **class** level, where the ASM metadata reader can skip the class without loading it.
+  - **The money-safety review earned its place on this step, which touches no money.** It found that
+    `TracePropagation` promised in its own javadoc to *"degrade to null, never to an exception"* and did
+    not enforce it — and that three of its six call sites are on the money path, one of them reading the
+    trace context immediately before the `TransactWriteItems` that debits a payer. A `RuntimeException`
+    out of the tracer would have turned an accepted Pix into a `500` **caused by the tracer**, and a
+    settlement message into a DLQ entry. The guard now lives inside `TracePropagation` — one place rather
+    than six `try/catch` blocks, because six are six chances to forget one — and
+    `TracePropagationTest#aTracerThatThrowsDegradesToNullAndNeverToAnException` drives every method with a
+    tracer that throws on every call.
+  - `ObservabilityContractTest` closes the loop the other way: every `pix_*` series named in
+    `docs/observability.md` must actually be spelled that way in the source, so the catalog can no longer
+    drift into describing a metric nobody registers — a panel built from a stale catalog shows a flat
+    zero, which reads exactly like "nothing is wrong".
+  - Compose gains an OTLP collector and Jaeger (`:16686`), always on like Prometheus and Grafana in step
+    44 — and on **no** service's `depends_on`: a payment must never wait for the trace pipeline. The
+    application speaks OTLP and nothing else, so swapping Jaeger for Tempo is one YAML file and no Java.
+
 - Recovery & fencing invariant suite: crash-after-commit, ambiguous-timeout, concurrent settle×reverse and lateral-access drills proving the three P0 acceptance criteria from the external review (step 69)
   AI: est 5h / actual 3.9h / ~90% generated / 3 issues caught in human review
   Sprint 11.5's proof step. Steps 65-68 each shipped the test that drove their own mechanism; this is the

@@ -15,6 +15,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import com.platinumcoin.pix.common.tracing.ForceSample;
+import org.springframework.beans.factory.ObjectProvider;
+import com.platinumcoin.pix.common.tracing.TracePropagation;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.Message;
 import software.amazon.awssdk.services.sqs.model.MessageSystemAttributeName;
@@ -74,6 +79,9 @@ public class SettlementQueueConsumer {
     private static final Logger log = LoggerFactory.getLogger(SettlementQueueConsumer.class);
 
     /** The one event type this queue's subscription filter lets through (step 26). */
+    /** The queue-hop boundary span. One per received message; the name TracePropagationIT asserts on. */
+    private static final String CONSUME_SPAN = "pix.settlement.consume";
+
     private static final String PIX_DEBITED = "PixDebited";
 
     private final SqsClient sqs;
@@ -86,6 +94,14 @@ public class SettlementQueueConsumer {
     private final int waitTimeSeconds;
     private final int backoffBaseSeconds;
     private final int backoffCapSeconds;
+
+    /**
+     * Tracing collaborators (step 72, ADR-0021). Nullable: settling a Pix must never depend on the
+     * observability stack being wired, so a service started without tracing consumes exactly as before.
+     */
+    private final Tracer tracer;
+
+    private final TracePropagation tracing;
 
     /**
      * The queue's URL is resolved from its <b>name</b> here, at startup. Unlike the SNS topic ARN of step
@@ -105,7 +121,11 @@ public class SettlementQueueConsumer {
             @Value("${pix.settlement.consumer.workers}") int workers,
             @Value("${pix.settlement.consumer.wait-time-seconds}") int waitTimeSeconds,
             @Value("${pix.settlement.consumer.retry-backoff-base-seconds}") int backoffBaseSeconds,
-            @Value("${pix.settlement.consumer.retry-backoff-cap-seconds}") int backoffCapSeconds) {
+            @Value("${pix.settlement.consumer.retry-backoff-cap-seconds}") int backoffCapSeconds,
+            ObjectProvider<Tracer> tracer,
+            ObjectProvider<TracePropagation> tracing) {
+        this.tracer = tracer.getIfAvailable();
+        this.tracing = tracing.getIfAvailable();
         this.sqs = sqs;
         this.queueUrl = sqs.getQueueUrl(request -> request.queueName(queueName)).queueUrl();
         this.mapper = mapper;
@@ -148,7 +168,12 @@ public class SettlementQueueConsumer {
                     // ApproximateReceiveCount is how many times SQS has handed this message out. >1 means
                     // a prior attempt did not delete it — a redelivery — which is the signal step 32 uses
                     // to query the rail before re-sending.
-                    .messageSystemAttributeNames(MessageSystemAttributeName.APPROXIMATE_RECEIVE_COUNT))
+                    .messageSystemAttributeNames(MessageSystemAttributeName.APPROXIMATE_RECEIVE_COUNT)
+                    // SQS returns message attributes only when they are asked for by name. Without this
+                    // line the traceparent the publisher attached is silently dropped and every trace
+                    // ends at the queue — the failure mode this step exists to remove, and one that
+                    // produces no error anywhere.
+                    .messageAttributeNames(TracePropagation.TRACEPARENT))
                     .messages();
 
             if (messages.isEmpty()) {
@@ -234,7 +259,12 @@ public class SettlementQueueConsumer {
         // payment across services once the flow has left the request thread (ADR-0012). Cleared in the
         // finally: the thread is reused and a leaked id would mislabel the next message.
         CorrelationId.restore(parsed.correlationId(), parsed.payload().txId());
-        try {
+        // The span is opened AFTER the ids are in the MDC, on purpose: CorrelationIdSpanProcessor stamps
+        // them onto the span at onStart, so opening it first would produce a span with no correlation id —
+        // exactly half of the join ADR-0021 decision 2 requires.
+        Span consume = openConsumeSpan(message);
+        try (Tracer.SpanInScope scope = tracer == null || consume == null
+                ? null : tracer.withSpan(consume)) {
             if (!PIX_DEBITED.equals(parsed.eventType())) {
                 // The subscription filter should make this impossible; if it happens, this consumer can
                 // never handle it, so keeping it would only cost five receives before the DLQ.
@@ -271,8 +301,31 @@ public class SettlementQueueConsumer {
                             + "redelivery | messageId={} eventId={} txId={}",
                     message.messageId(), parsed.eventId(), parsed.payload().txId(), e);
         } finally {
+            if (consume != null) {
+                consume.end();
+            }
             CorrelationId.clear();
+            // Same lifecycle rule as the MDC ids, and for the same reason: this thread goes back to the
+            // pool and the next message has not earned an always-sample decision (ADR-0021 decision 5).
+            ForceSample.clear();
         }
+    }
+
+    /**
+     * Continue the trace the publisher started, or begin a new one when the message carries no context
+     * (an event written before step 72, a producer with tracing off, an unsampled request).
+     *
+     * <p>Returns {@code null} when this service is running without tracing at all — handling a settlement
+     * must never depend on the observability stack being wired.
+     */
+    private Span openConsumeSpan(Message message) {
+        if (tracing == null) {
+            return null;
+        }
+        String traceparent = message.messageAttributes().containsKey(TracePropagation.TRACEPARENT)
+                ? message.messageAttributes().get(TracePropagation.TRACEPARENT).stringValue()
+                : null;
+        return tracing.continuedSpan(CONSUME_SPAN, traceparent);
     }
 
     private void delete(Message message) {

@@ -8,7 +8,7 @@
   include and now this service logs differently" failure mode. Add common-lib and you
   inherit the platform's log shape.
 
-  Three decisions live here; all three are ADR-0012:
+  Four decisions live here; the numbered ones are ADR-0012, and 1b is ADR-0021:
 
   1. THE CORRELATION ID IS IN THE PATTERN, NOT IN A LOG LINE.
      `LOG_CORRELATION_PATTERN` is the hook Spring Boot's own console/file patterns expose
@@ -16,6 +16,22 @@
      the AWS SDK's — is prefixed with `[cid=… tx=…]`. No filter has to log "a request happened"
      just to surface the id, and `grep <cid>` over the container logs reconstructs the whole
      request. Non-request threads (startup, schedulers) print `n/a`, which is information too.
+
+  1b. THE TRACE ID RIDES IN THE SAME PATTERN (step 72, ADR-0021 decision 2).
+     `trace=%X{traceId}` is written by Micrometer Tracing's SLF4J bridge around every span, so the same
+     "it is in the pattern, not in a log line" property now holds for BOTH ids: every record carries the
+     correlation id AND the trace id, and the two tools are joined in both directions (the span, in turn,
+     carries `pix.correlation_id` as an attribute). A span found in Jaeger leads back to the log lines
+     that explain it, and `grep <correlationId>` still returns the whole path.
+
+     WHAT THIS DOES NOT DO: it does not make either tool depend on the other. The trace id is `n/a` when
+     the collector is down, when the trace was not sampled, or when tracing is switched off entirely —
+     and every other field on the line is unaffected. That is deliberate. ADR-0012's log path is complete
+     and unsampled; a trace is sampled and lossy BY DESIGN, so it may never become the only place a fact
+     is recorded. `scripts/trace.sh` reads the correlation id and nothing else, exactly as before.
+
+     Only the trace id, not the span id: the trace id is the join key (one per request path), while the
+     span id changes on every hop and would add a column nobody greps to every single line.
 
   2. HUMAN-READABLE CONSOLE IS THE DEFAULT; JSON IS OPT-IN (profile `json-logs`).
      This build is a local sandbox read by a human in `docker compose logs`, so the default is
@@ -46,7 +62,7 @@
          override it in application.yml; the defaultValue is the platform standard. -->
     <springProperty scope="context" name="LOG_CORRELATION_PATTERN"
                     source="logging.pattern.correlation"
-                    defaultValue="[cid=%X{correlationId:-n/a} tx=%X{txId:-n/a}] "/>
+                    defaultValue="[cid=%X{correlationId:-n/a} tx=%X{txId:-n/a} trace=%X{traceId:-n/a}] "/>
 
     <!-- Brings in Spring Boot's CONSOLE_LOG_PATTERN (timestamp, level, pid, app name, thread,
          correlation, logger, message) plus the %clr/%wEx conversion rules and the framework
@@ -71,7 +87,8 @@
                 <version>[ignore]</version>
                 <levelValue>[ignore]</levelValue>
             </fieldNames>
-            <!-- correlationId and txId flow in automatically as MDC entries. -->
+            <!-- correlationId, txId and traceId flow in automatically as MDC entries, so the
+                 JSON shape carries the same three ids as the console pattern above. -->
         </encoder>
     </appender>
 

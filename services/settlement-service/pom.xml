@@ -133,6 +133,15 @@
             <artifactId>archunit-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- In-memory span exporter (step 72): TracePropagationIT asserts on the spans this service
+             actually produced, and the only honest way to do that is to collect them. TEST scope —
+             the production exporter is OTLP and nothing else (ADR-0021 decision 7). Version from the
+             opentelemetry-bom, imported by spring-boot-dependencies in the parent. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

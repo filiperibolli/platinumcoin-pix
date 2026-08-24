@@ -42,7 +42,17 @@ public final class ShippedAlertRules {
                 0.70,
                 "10m",
                 20,
-                "5m"));
+                "5m",
+                // Error budgets (step 72, ADR-0021), matching application.yml. 0.99 because both SLOs are
+                // stated as p99s; 14.4x/1h/5m pages and 6x/6h/30m tickets, the SRE-workbook pair.
+                0.99,
+                14.4,
+                "1h",
+                "5m",
+                6,
+                "6h",
+                "30m",
+                20));
     }
 
     /** One rule by name — fails loudly rather than silently skipping if it was renamed or dropped. */

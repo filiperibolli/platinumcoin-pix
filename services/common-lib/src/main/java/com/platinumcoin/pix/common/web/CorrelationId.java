@@ -21,6 +21,19 @@ public final class CorrelationId {
     public static final String TX_ID_MDC_KEY = "txId";
 
     /**
+     * MDC key under which Micrometer Tracing's SLF4J bridge publishes the current trace id (step 72,
+     * ADR-0021 decision 2). Named here — rather than inlined in the logback pattern — so the shared
+     * config and the test that pins it read the same constant, and so a bridge upgrade that renamed the
+     * key fails a test instead of quietly printing {@code n/a} forever.
+     *
+     * <p><b>Nothing in this class writes it.</b> The correlation id and the txId are ours to set; the
+     * trace id belongs to the tracer, which populates and clears it around every span. That asymmetry is
+     * the point of ADR-0021: the two tools are joined in the log pattern, and neither one manages the
+     * other's identifiers.
+     */
+    public static final String TRACE_ID_MDC_KEY = "traceId";
+
+    /**
      * The correlation id of the thread currently running, or {@code null} outside a request (a
      * scheduler tick, a queue consumer before it restores the id from the event envelope).
      *

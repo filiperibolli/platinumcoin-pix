@@ -157,6 +157,22 @@ Access patterns: get transaction by id (status query); find by endToEndId (recon
 | GSI2 | PK `STATUS#<status>`, SK `updatedAt` → reconciliation scan (`status IN (DEBITED, SENT_TO_SPI, FINALIZING_SETTLEMENT, FINALIZING_REVERSAL) AND updatedAt < now-2min`) |
 | GSI3 (sparse, **lane-partitioned**) | PK `OUTBOX#UNPUBLISHED#<LANE>`, SK `occurredAt` → **one work queue per lane**: only unpublished outbox items carry `gsi3pk`, so the index holds in-flight events only, and each lane's publisher reads only its own partition (step 71, ADR-0019) |
 
+**The outbox item's attributes** (`sk = OUTBOX#<eventId>`): `eventId`, `eventType`, `payload` (opaque
+JSON string), `occurredAt`, `lane`, `gsi3pk`/`gsi3sk` (removed on publish), `correlationId` — and, since
+**step 72** ([ADR-0021](adr/0021-distributed-tracing-and-error-budget-alerts.md)):
+
+- **`traceparent`** *(optional)* — the W3C trace context of the request that produced the event, captured
+  on the writing thread and stored **with** the event in the same `TransactWriteItems` as the money. It is
+  stored rather than sent because the publisher drains this item seconds later on a scheduler thread that
+  has no trace of its own; without it the trace would end at the `202` and the entire asynchronous half of
+  the platform would be an unlinkable set of orphan traces. The publisher opens its span as a **child of
+  this stored context** and puts *its own* traceparent on the SNS message, so the chain is
+  accept → drain → publish → consume.
+  **Absent** on any item written before step 72, when tracing is off, and when the request's trace was not
+  sampled — all three are handled identically by the publisher, which simply sends no attribute and lets
+  the consumer start a fresh trace. Nothing branches on it and no query reads it: it is carried, never
+  interpreted, which is what keeps it an observability concern rather than part of the money contract.
+
 **Transaction item:**
 ```json
 {

@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
 import com.platinumcoin.pix.common.event.ProcessedEventStore;
+import com.platinumcoin.pix.common.metrics.AwsSdkDependencyMetrics;
 import java.net.URI;
 import java.time.Clock;
 import org.slf4j.Logger;
@@ -33,7 +34,7 @@ public class AwsClientsConfig {
     private static final Logger log = LoggerFactory.getLogger(AwsClientsConfig.class);
 
     @Bean
-    DynamoDbClient dynamoDbClient(AwsProperties aws) {
+    DynamoDbClient dynamoDbClient(AwsProperties aws, AwsSdkDependencyMetrics dependencyMetrics) {
         // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets
         // (e.g. http://dynamodb-local:8000, standalone from LocalStack's SQS endpoint — see
         // AwsProperties#dynamoDbEndpointUrl). Credentials are never logged.
@@ -44,11 +45,15 @@ public class AwsClientsConfig {
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                // Every call this client makes is timed into pix.dependency.seconds (step 72). Attached
+                // per client because the SDK offers no global hook — an explicit line beats a publisher
+                // that silently measures nothing.
+                .overrideConfiguration(override -> override.addMetricPublisher(dependencyMetrics))
                 .build();
     }
 
     @Bean
-    SqsClient sqsClient(AwsProperties aws) {
+    SqsClient sqsClient(AwsProperties aws, AwsSdkDependencyMetrics dependencyMetrics) {
         log.info("Built the SQS client, credentials are never logged | endpoint={} region={}",
                 aws.endpointUrl(), aws.region());
         return SqsClient.builder()
@@ -56,6 +61,10 @@ public class AwsClientsConfig {
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                // Every call this client makes is timed into pix.dependency.seconds (step 72). Attached
+                // per client because the SDK offers no global hook — an explicit line beats a publisher
+                // that silently measures nothing.
+                .overrideConfiguration(override -> override.addMetricPublisher(dependencyMetrics))
                 .build();
     }
 

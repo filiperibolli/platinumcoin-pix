@@ -121,6 +121,23 @@ public class AuditQueueConsumer {
         }
     }
 
+    /**
+     * <b>Why this consumer does not continue a trace</b> (step 72, ADR-0021 decision 4).
+     *
+     * <p>Every other queue consumer in the platform handles one message at a time, so "this work belongs
+     * to that payment's trace" is a true sentence and the {@code traceparent} on the message says which.
+     * The audit consumer is different by design: it <b>buffers a batch</b> and flushes it as one S3
+     * object (step 43), and a batch belongs to as many traces as it has messages. Picking one of them as
+     * the parent would be a lie that looks like data — the flush would appear to be part of whichever
+     * payment happened to arrive first.
+     *
+     * <p>The honest OpenTelemetry modelling for a batch consumer is a span with a <b>link</b> per source
+     * trace rather than a parent, and that is what a production deployment would add here. It is
+     * deliberately not built in this step: the audit lane is the one nothing observable waits on
+     * (ADR-0019), so the value of linking it is documentation rather than diagnosis, and the correlation
+     * id already in the envelope keeps {@code grep} working across this hop exactly as before. The batch
+     * still shows up on the technical dashboard through {@code pix.outbox.lag} on its own lane.
+     */
     private List<Message> receive() {
         // Cap the block by what is left before the batch is late; 1s floor so a nearly-due batch still
         // gets a chance to pick up company rather than spinning.

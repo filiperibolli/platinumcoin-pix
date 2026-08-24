@@ -1,0 +1,59 @@
+# OpenTelemetry Collector — PlatinumCoin Pix (step 72, ADR-0021 decision 7).
+#
+# WHY A COLLECTOR AND NOT "SERVICES TALK TO JAEGER DIRECTLY"
+# Jaeger accepts OTLP natively, so this container could be deleted and every service pointed at Jaeger's
+# own 4318. It is here for the property ADR-0021 decision 7 states: THE APPLICATION SPEAKS OTLP AND
+# NOTHING ELSE, and where spans are stored is a compose concern. Today the pipeline ends at Jaeger; the
+# day it ends at Tempo, Honeycomb or an internal bus, this file changes and not one line of Java does.
+# That is the same argument the outbox makes about brokers (ADR-0004), applied to telemetry.
+#
+# WHAT IS DELIBERATELY NOT HERE
+# A `tail_sampling` processor. It is the standard way to guarantee a COMPLETE trace for anything that
+# errored — including the root span a head sampler already discarded — and ADR-0021's implementation note
+# records it as the production evolution. It is left out here because the sandbox runs at ratio 1.0, where
+# it would decide nothing, and because the platform's sampling policy is deliberately expressed in Java
+# (AsymmetricSampler) where it can be unit-tested. Adding it means uncommenting a processor, not
+# rewriting the pipeline.
+
+receivers:
+  otlp:
+    protocols:
+      # HTTP, because that is what Micrometer Tracing's OTLP exporter speaks by default and one protocol
+      # is one fewer thing to explain. gRPC is enabled too so a future exporter or a debugging CLI does
+      # not need a config change to connect.
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Bound the memory a laptop gives this container. Under a k6 Black Friday run (step 47) the span rate
+  # is high enough that an unbounded queue would trade the collector's stability for telemetry nobody is
+  # reading in real time — and a collector that OOMs mid-load-test corrupts the very measurement it was
+  # added to explain.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  # Export in batches rather than per span: fewer, larger writes downstream, at the cost of up to `timeout`
+  # of delay before a trace is visible in the UI. 1s keeps "send a payment, look at Jaeger" immediate.
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+
+exporters:
+  # Jaeger speaks OTLP since 1.35, so no jaeger-specific exporter is needed — one protocol end to end.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger]
+  telemetry:
+    logs:
+      level: info

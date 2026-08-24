@@ -6,6 +6,7 @@ import com.platinumcoin.pix.settlement.domain.usecase.ScanStuckTransactionsUseCa
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.concurrent.atomic.AtomicLong;
+import com.platinumcoin.pix.common.tracing.ForceSample;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -71,13 +72,22 @@ public class StuckTransactionScanner {
     @Scheduled(fixedDelayString = "${pix.settlement.reconciliation.scan-fixed-delay-ms}")
     public ScanOutcome scanOnce() {
         try {
+            // A reconciliation tick that FINDS something is one of the five always-sampled cases
+            // (ADR-0021 decision 5): a payment that needed reconciling is by definition one where the
+            // normal path did not finish, and it is exactly the trace a head ratio would discard. An
+            // empty scan — the overwhelming majority — is left to the ratio, which is the whole point of
+            // marking on the finding rather than on the tick.
             ScanOutcome outcome = scanStuckTransactions.execute();
+            if (outcome.found() > 0) {
+                ForceSample.mark("reconciliation resolved a stuck payment the normal path did not finish");
+            }
             oldestAgeSeconds.set(outcome.oldestAgeSeconds());
             // Fold the same number the gauge shows into the SLO alert, so a breach fires (and later
             // resolves) off the very figure step 44's Prometheus alert reads — one definition of "late".
             sloAlert.evaluate(outcome.oldestAgeSeconds());
             return outcome;
         } catch (RuntimeException e) {
+            ForceSample.mark("the reconciliation scan itself failed");
             log.error("The reconciliation scan tick failed, the oldest-age gauge keeps its last value", e);
             return new ScanOutcome(0, oldestAgeSeconds.get());
         }

@@ -181,3 +181,7 @@ from Keycloak.
   crossed: the password, the bcrypt hash and the minted token are never logged — `JwtIssuer` logs the
   claims (`jti`, `sub`, `accountId`, `iat`, `exp`) only. Follow one login with
   `docker compose logs auth-service | grep "cid=<id>"`.
+
+- [ADR-0021](../../docs/adr/0021-distributed-tracing-and-error-budget-alerts.md) — **distributed tracing**
+  (step 72), inherited whole from `common-lib` and configured nowhere here. This service touches no AWS and
+  no queue, so its whole contribution is the HTTP server span that starts a login's trace.

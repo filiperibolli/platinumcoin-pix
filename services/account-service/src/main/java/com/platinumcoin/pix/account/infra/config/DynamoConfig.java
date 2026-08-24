@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.account.infra.config;
 
+import com.platinumcoin.pix.common.metrics.AwsSdkDependencyMetrics;
 import java.net.URI;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +24,7 @@ public class DynamoConfig {
     private static final Logger log = LoggerFactory.getLogger(DynamoConfig.class);
 
     @Bean
-    DynamoDbClient dynamoDbClient(AwsProperties aws) {
+    DynamoDbClient dynamoDbClient(AwsProperties aws, AwsSdkDependencyMetrics dependencyMetrics) {
         // Startup breadcrumb: confirms in the container logs WHICH endpoint this service targets
         // (e.g. http://dynamodb-local:8000, standalone from LocalStack's SNS/SQS endpoint — see
         // AwsProperties#dynamoDbEndpointUrl). Credentials are never logged.
@@ -34,6 +35,10 @@ public class DynamoConfig {
                 .region(Region.of(aws.region()))
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(aws.accessKeyId(), aws.secretAccessKey())))
+                // Every call this client makes is timed into pix.dependency.seconds (step 72). Attached
+                // per client because the SDK offers no global hook — an explicit line beats a publisher
+                // that silently measures nothing.
+                .overrideConfiguration(override -> override.addMetricPublisher(dependencyMetrics))
                 .build();
     }
 }
