@@ -41,3 +41,13 @@ volume/
 # tools/k6/run-s*.sh instead of committing multi-MB captures — the small *-result.json /
 # *-summary.json / *-winners.log derived files ARE committed as the evidence trail)
 docs/load/raw/*.ndjson
+
+# Step 47 load profiles — same rule as docs/load/raw above: the multi-MB per-request captures and the
+# full Prometheus scrapes are regenerated with `bash load/k6/run.sh <profile>`, while the derived
+# evidence (the k6 summary JSON and the per-dependency p99 table) IS committed.
+load/results/*.ndjson
+load/results/*-service-before.txt
+load/results/*-service-after.txt
+load/results/*-console.txt
+load/results/*-run.txt
+load/results/*.log

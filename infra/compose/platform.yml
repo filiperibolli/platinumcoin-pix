@@ -32,10 +32,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # HS256 shared secret (>= 32 bytes). Dev-only value; a real deployment injects a managed
       # secret. Every service that later VALIDATES tokens must share this exact value.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -76,10 +78,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET — account-service only validates tokens.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
       # Reach LocalStack (SNS/SQS — account-service uses neither today, kept for parity with the other
@@ -151,10 +155,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET — ledger-service only validates tokens. Every one of
       # its endpoints is authenticated (/internal/** is not on jwt.public-paths).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -240,10 +246,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET — payment-service only validates tokens. The debtor
       # account is read from the token's accountId claim (Domain Safety Rule #1), never the body.
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -343,10 +351,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET — fraud-service only validates tokens (step 25 forwards the
       # caller's bearer token to it).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -406,10 +416,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # The boot values of the dial; POST /admin/config moves them while the stack runs, which is the only
       # way to express a drill like "fail the next five attempts" (docs/local-dev.md §5.5).
       BACEN_LATENCY_MS: "2000"          # the real SPI settles within 10s; 2s keeps a demo honest but brisk
@@ -473,10 +485,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET. No token authenticates anything here — the inbound webhook
       # of step 37 is JWT-exempt (BACEN holds no PlatinumCoin token) and guarded by SPI_WEBHOOK_TOKEN
       # instead — but the platform keeps ONE authentication posture rather than a per-service opt-out,
@@ -584,10 +598,12 @@ services:
       # business, which is what makes the backend swappable without touching a service.
       MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
       # 1.0 in the sandbox: seeing every trace is the point of a sandbox, and at this volume the cost is
-      # nothing. Step 47 turns it down to a production-shaped ratio and measures the send path THERE —
-      # a load test run with tracing off would measure a system nobody operates. Failures are kept
-      # whatever this says (AsymmetricSampler).
-      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      # nothing. A load profile turns it down to a production-shaped ratio and measures the send path
+      # THERE — a load test run with tracing off would measure a system nobody operates, and one run at
+      # 1.0 would measure the tracing. Failures are kept whatever this says (AsymmetricSampler).
+      # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
+      # (step 47); everything else gets 1.0 by simply not setting it.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
       # Must match auth-service's JWT_SECRET. This service only VALIDATES tokens — the SSE route is
       # fully protected, and the ?access_token= handshake a browser's EventSource needs is resolved by
       # rewriting the parameter into an Authorization header before the shared filter runs, never by

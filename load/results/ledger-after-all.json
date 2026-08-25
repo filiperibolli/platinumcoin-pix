@@ -1,0 +1,8 @@
+{
+  "method": "batch-get over the enumerable account set (no table scan)",
+  "why": "dynamodb-local takes minutes to scan pix_ledger at this size; the account set is enumerable because the platform has no account-creation API — every account comes from infra/localstack/init or tools/k6/seed. The count below matches the 208 the full scan reported before the profiles ran, so the enumeration is complete.",
+  "takenAt": "2026-08-25, after low + standard + the degradation drill + black-friday + the late low control",
+  "accountsRead": 208,
+  "sumBalanceCents": 0,
+  "negativeNonSystemAccounts": []
+}

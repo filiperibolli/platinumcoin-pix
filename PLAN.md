@@ -162,7 +162,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > is a different concern and lands earlier, in [step 68](docs/steps/step-68.md) — the two are neighbours and
   > are often confused. Prerequisite: all four Sprint 11.5 P0 steps.
 - [x] [Step 46](docs/steps/step-46.md) — end-to-end test: full journey send→settle→receive→notify→statement, incl. failure drill
-- [ ] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
+- [x] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
   > **Scope widened by the external review (P1 · capacidade), not duplicated by a new step:** representative
   > infrastructure (or the deviation documented against `docs/load/BOTTLENECK.md`), a WCU/RCU + cost budget,
   > p99 **per dependency** (fed by step 72's tracing), and a degradation scenario. Best run after

@@ -1,0 +1,4 @@
+DEBITED                  0
+SENT_TO_SPI              0
+FINALIZING_SETTLEMENT    0
+FINALIZING_REVERSAL      0

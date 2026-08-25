@@ -1522,17 +1522,40 @@ a number, which is the whole reason a budget is more useful at 03:00 than a thre
 ### 5.10 Load tests and API tooling (after their steps)
 
 ```bash
+# k6 load profiles (step 47) — k6 runs in Docker, no local install needed.
+# The ring fixtures are a prerequisite and are NOT part of the automatic init path: re-run the seed
+# after every `docker compose down -v`.
+bash tools/k6/seed/seed-load-test-fixtures.sh    # ~1 min, idempotent, safe to re-run
 
-# k6 load profiles (step 47) — k6 runs in Docker, no local install needed
-docker run --rm -i --network=host grafana/k6 run - < load/k6/low.js
-docker run --rm -i --network=host grafana/k6 run - < load/k6/standard.js
-docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
+bash load/k6/run.sh low                          # ~5 TPS, 3 min   — the floor, DEFAULT fraud thresholds
+bash load/k6/run.sh standard                     # ~58 TPS, 10 min — the average day
+bash load/k6/run.sh black-friday                 # 58 → 300 → 500 → 58, ~10.5 min — the peak
+bash load/k6/run-degradation.sh                  # the peak with an 8s BACEN, Σ balances checked either side
 
 # Postman (living since step 04, finalized step 48): import tools/postman/pix-platform.postman_collection.json + environment
 
 # API explorer (living since auth-service, finalized step 49): open from disk, log in, click any request
 open tools/api-explorer/index.html
 ```
+
+**Read the exit code, not the graph.** `run.sh` exits with k6's own code — non-zero means an SLO
+threshold was breached (`p(99)<2000` on send, `p(99)<300` on balance, `rate<0.01` on 5xx/network errors).
+That is the deliverable: the brief's targets as a pass/fail gate.
+
+**Why a runner instead of three `docker run` lines.** Each profile is defined for a specific posture and
+running it in the wrong one silently changes what the number means:
+
+- **fraud thresholds** — `standard` and `black-friday` drive more sends per account per minute than
+  fraud-service's per-account velocity rule is calibrated for (5 in 60s, a *human's* rate), so at the
+  defaults they would measure that rule instead of the platform. They run under the `loadtest` Spring
+  profile, which raises only those two thresholds. `low` runs at the defaults on purpose — it is the
+  profile that keeps full scoring inside the asserted path.
+- **trace sampling** — the sandbox runs at `1.0`, which is right for a sandbox and wrong for a
+  measurement. The measured profiles run at `0.05` via `TRACING_SAMPLING_PROBABILITY`.
+
+Both are restored by an `EXIT` trap, so Ctrl-C never leaves the stack configured for a load test.
+Full detail, artifacts and overrides: [`load/k6/README.md`](../load/k6/README.md); the numbers and what
+they mean: [`load/RESULTS.md`](../load/RESULTS.md).
 
 ### 5.11 The whole journey in one run (step 46)
 
