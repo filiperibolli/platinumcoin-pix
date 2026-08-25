@@ -28,6 +28,11 @@ services/common-lib/   shared: error model, JWT validation, logging, event envel
 labs/ledger-pg/        non-deployable relational ledger lab (ADR-0009, steps 50-51) — never wired to the platform
 infra/                 docker-compose.yml, localstack init scripts, seed data
 infra/observability/   Prometheus config, Grafana provisioning + dashboards (step 44)
+scripts/               operator/verification scripts run against the RUNNING compose stack — the checks that
+                       cannot be `mvn verify` because their facts live in eight processes (docs/local-dev.md §6):
+                       e2e-journey.sh (step 46), error-contract-audit.sh (step 45), trace.sh (step 44), service-token.sh
+tests/e2e/             the end-to-end journey as a Maven module — NOT in the default reactor; `mvn -Pe2e verify`.
+                       Drives scripts/e2e-journey.sh and adds an independent SDK-side Σ-balances reading (step 46)
 load/k6/               k6 load-test scripts: low / standard / black-friday (step 47)
 tools/postman/         Postman collection + environment — created early (step 04), grown incrementally (one folder per service; each new endpoint added in its own step); finalized in step 48
 tools/api-explorer/    single-file HTML API explorer with valid sample requests — created early alongside Postman, grown incrementally (one card per endpoint, added in its own step); finalized in step 49

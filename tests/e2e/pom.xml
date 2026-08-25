@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.platinumcoin.pix</groupId>
+        <artifactId>platinumcoin-pix-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <name>PlatinumCoin Pix — end-to-end journey (step 46)</name>
+    <description>
+        Test-only module. It ships no main sources and no artifact anybody deploys: its single *IT drives
+        the WHOLE running compose stack and asserts the platform's cross-service promises. It is NOT in
+        the default reactor — see the `e2e` profile in the parent POM and tests/e2e/README.md for why.
+    </description>
+
+    <dependencies>
+        <!-- MoneyConservation, from common-lib's test-jar: the platform has exactly ONE definition of
+             what conservation means, and this module consumes it rather than writing a second one
+             (see the class's own javadoc — three modules with three ideas of conservation is the
+             failure mode it exists to prevent). -->
+        <dependency>
+            <groupId>com.platinumcoin.pix</groupId>
+            <artifactId>common-lib</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5 + AssertJ, via the Spring Boot starter the rest of the repo already uses. No Spring
+             context is started here: this module has no application to boot — the applications are the
+             eight containers it talks to. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Reads Σ balances straight off the book of record, with the real SDK rather than the CLI —
+             the second, independent pair of eyes on KR1.1 described in E2EJourneyIT's javadoc. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>dynamodb</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

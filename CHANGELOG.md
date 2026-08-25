@@ -499,6 +499,86 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- End-to-end journey suite (send→settle→receive→notify→statement) with a BACEN failure drill and money-conservation assertion (step 46)
+  AI: est 5h / actual 1h / ~95% generated / 0 issues caught in human review
+  <!-- The four defects described below were found by Claude's own review and by running the thing —
+       none by the human. Same rule step 45 set: a self-found defect is not a human-review catch,
+       because counting it would inflate the one metric here that is meant to measure the human. -->
+  - **The first artifact that asks whether the slices COMPOSE.** Every sprint proved one flow with its
+    own hermetic suite. None of them could ask the only question a payments platform is finally judged
+    on, because the answer lives in eight processes at once: *does the whole thing still conserve money
+    after a chaotic run?* `scripts/e2e-journey.sh` is nine acts and two drills against the running
+    compose stack — login → key → balance → internal Pix **with the retry that must not double it** →
+    external Pix → settlement → the payer's push → an inbound Pix → the payee's push → statement → the
+    drills → Σ balances. Roughly forty assertions, one per printed line.
+  - **Two drills, because BACEN fails in two categorically different ways.** Conflating them is the
+    expensive bug. **Transient** (`failureRate=1`): the rail 5xxs, nothing is decided, the message rides
+    its five deliveries into the DLQ — and the drill asserts that **nothing was reversed on the way**,
+    because a 5xx says nothing about whether the transfer happened and a wrong guess pays somebody
+    twice. Recovery is an operator redriving the DLQ (nothing drains it automatically, by design), after
+    which the payment reaches a terminal state **inside the shipped 300s SLO, measured from the send**
+    (KR3.1) and the DLQ returns to 0 (KR3.2). **Permanent** (`rejectKeys`): the rail refuses this
+    specific transfer, so the payer is made whole **on that same delivery** — asserted with a
+    deliberately short 90s budget, so a regression into "the scanner will clean it up in five minutes"
+    fails rather than passes.
+  - **The drills run on the shipped timers, on purpose.** Restarting settlement-service with
+    `RECONCILIATION_STUCK_AFTER_SECONDS=5` would finish the run in forty seconds and prove nothing: the
+    claim under test is *"< 5 min **with the thresholds we ship**"*, and a drill against tuned-down
+    thresholds is a test of the test. So the run takes minutes and prints its progress while it waits.
+  - **Conservation is asserted against DynamoDB, never against the balance API** — and the reasoning is
+    the assertion. The API is per-account (it cannot see `SPI_CLEARING`, `SPI_SETTLED` or the `SEED`
+    counterpart at all) and it is served from the Redis cache (ADR-0008), so asserting conservation
+    through it would let a stale read hide a lost cent, which is the exact class of bug the assertion
+    exists to catch. Σ is checked twice over — equal to the baseline **and** equal to the seeded supply
+    of `0` — and, because Σ is necessary and not sufficient (two individually balanced postings can
+    leave it untouched while money is stranded — see `MoneyConservation`'s javadoc and the step-67
+    race), every drill additionally closes by asserting the clearing account netted back.
+  - **`tests/e2e` drives the script rather than restating it.** `E2EJourneyIT` executes
+    `scripts/e2e-journey.sh`, streams its output, and asserts exit 0 — a choice, not a shortcut.
+    Re-expressing forty cross-service assertions in a second language creates twin artifacts that drift,
+    the defect `CLAUDE.md` already forbids for the Postman/API-explorer pair. What Java adds is what bash
+    cannot: a place for `mvn`/CI to hang the journey, and an **independent second reading of Σ balances**
+    through the AWS SDK wrapped around the whole run. A missing stack **fails** rather than skips — a
+    skipped E2E is indistinguishable from a passing one in a build log.
+  - **Not in the default reactor** (`mvn -Pe2e verify`). Every other `*IT` here is hermetic and passes
+    with the compose stack down (`docs/local-dev.md` §6); this one is the deliberate exception. Folding
+    it into the command this project runs dozens of times a day would make that command depend on a
+    running stack and take the minutes the drills legitimately need.
+  - **One doc drift found and fixed in the same change.** `docs/local-dev.md` §5.5 still said a
+    permanent refusal reaches `REVERSED` "within ~5 min", driven by the 60s scanner. It has not worked
+    that way since step 33: `SettlePixUseCase` reverses in place on the delivery that received the 422
+    and the message is acked (`SettleOutcome.REVERSED` — "a refusal no longer redrives to the DLQ").
+    The drill that asserts the fast path would have been written against the stale sentence.
+  - **Four defects this step found in itself, all in the harness and none in the platform.** Worth
+    recording individually, because each is a different way a test can look like an assertion without
+    being one:
+    1. **The subshell trap.** `api()` and `send_pix()` assigned their result to a global (`HTTP_STATUS`,
+       `LAST_IDEMPOTENCY_KEY`) while every caller invoked them inside `$(…)` — a subshell, where such an
+       assignment dies with the process. Every `assert_eq '…' '202' "$HTTP_STATUS"` was comparing against
+       an empty string that could never match. The status now round-trips through a file that survives
+       the subshell; the idempotency key became the caller's to own, which it has to be anyway since a
+       replay must present the same one.
+    2. **`SPI_CLEARING == 0` was a wrong model of the account, and the first real run said so.** An
+       inbound Pix DEBITS clearing and credits the payee, and there is no inbound twin of `SPI_SETTLED`
+       to put the money back — `infra/localstack/init/05-seed-ledger.sh` already documented that the
+       account "may legitimately go negative on inbound-heavy days", which is also why it is exempt from
+       the non-negative guard. The assertion now compares against the baseline less what the inbound
+       flows legitimately drew, and is named for the invariant that actually matters: *no outbound
+       payment is left parked in clearing*.
+    3. **The drill was outrunning the monitoring.** It redrove the DLQ 34 seconds after the message
+       landed; the watchdog samples the INSTANT depth every 30s behind ~55s of pipeline lag (gauge
+       refresh 15s + Prometheus scrape 10s + tick 30s), so it read 0 on both sides of a real incident.
+       Prometheus had the data the whole time — `max_over_time(pix_settlement_dlq_depth_messages[25m])`
+       was 1; nobody asked at the right instant. Fixed by asserting the alert in the sequence a human
+       actually lives: **paged first, act second**. The SLO is still measured from the SEND with that
+       reaction time inside it, because a promise that only holds if somebody reacts instantly is not a
+       promise. Measured: DLQ at 162s, `ALERT FIRING` 38s later, `SETTLED` at 224s of the 300s budget.
+    4. **`--verbose` had never been run, and could not have worked.** `verbose` printed to stdout while
+       being called from inside `api()`, whose every caller captures stdout with `$(…)` — so the
+       diagnostic line landed inside the response body and the next `jq` choked. It also echoed the
+       login response verbatim, i.e. a signed JWT, which ADR-0012 forbids for a harness exactly as for a
+       service. Now on stderr, with bearer tokens redacted in the one printer every call goes through.
+
 - Distributed tracing with OpenTelemetry across HTTP and the queues, joined to the existing correlation id, plus error-budget burn-rate alerts on the send and balance SLOs — the two gaps the external review found in the step-44 observability pass (step 72, ADR-0021)
   AI: est 8h / actual 3.7h / ~90% generated / 0 issues caught in human review
   - **A log is an event; a span is an interval — and only one of them can answer "where did the time
