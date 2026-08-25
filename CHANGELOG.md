@@ -26,6 +26,25 @@ The platform reached its halfway mark: **the full money path is built, tested an
   balance under contention, exact leak-free daily-limit reservation, and idempotency under a retry storm.
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
+### Removed
+- Dependabot (`.github/dependabot.yml`, configured in step 45) and its seven open PRs · 2026-08-25
+  - **Why.** The automation opened more PRs than the project was emptying, and the ones it opened were
+    not the ones worth merging: a Spring Boot **major** (3.3.13 → 4.1.1) that contradicts the
+    architecture this repo documents in its ADRs, its README badge and its CHANGELOG, sitting next to
+    same-major bumps whose CI was red. A queue nobody empties is not a control, it is a control-shaped
+    object — and step 45's own config said as much, capping `open-pull-requests-limit` at 5 because
+    "the point is a queue a human actually empties".
+  - **What this costs, stated rather than glossed.** This repository now has **no standing control**
+    watching its dependencies. `docs/security-checklist.md` §8 says exactly that, with a ❌, instead of
+    continuing to cite a control that no longer exists — a checklist that quietly drops a row it once
+    claimed is worse than one that carries the gap in the open. The point-in-time
+    `mvn versions:display-dependency-updates` scan recorded there is a manual act and only as current as
+    its date.
+  - **What did NOT change:** the reasoning about `mvn org.owasp:dependency-check` stays where it was
+    (it would make `mvn verify` depend on the NVD being reachable, which breaks the rule that an IT runs
+    on a plain `mvn verify`). With Dependabot gone that is no longer a choice between two controls —
+    it is the gap, and §8 now says so.
+
 ### Changed
 - The compose stack is split by concern behind an `include:` entry point · 2026-08-25
   - `infra/docker-compose.yml` is now a 37-line entry point that `include:`s `compose/platform.yml` (the
