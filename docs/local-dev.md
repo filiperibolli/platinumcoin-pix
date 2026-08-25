@@ -130,6 +130,23 @@ way to the answer, and it never prints the token.
 # from repo root
 mvn clean package -DskipTests                # build all service jars
 docker compose -f infra/docker-compose.yml up -d --build
+```
+
+> **The compose stack is four files, and you still only ever name one.** `infra/docker-compose.yml` is
+> the entry point; it `include:`s the stack split by concern — `infra/compose/platform.yml` (the eight
+> Spring Boot services), `infra/compose/backing.yml` (LocalStack, dynamodb-local, Redis) and
+> `infra/compose/observability.yml` (Prometheus, Grafana, the OTLP collector, Jaeger). An `include` is
+> part of the model, so every command in this runbook, in the service READMEs and in `scripts/` is
+> unchanged, and `docker compose config` renders exactly what the single 820-line file used to.
+>
+> What the split buys: **the money path can run without the monitoring stack.** Nothing on it depends
+> on Prometheus or the collector — until now that was a claim rather than something you could exercise.
+>
+> ```bash
+> docker compose -f infra/compose/backing.yml -f infra/compose/platform.yml up -d
+> ```
+
+```bash
 
 # watch LocalStack init (creates tables/queues/topics/buckets + seed data)
 # NOTE: there is no separate `localstack-init` container — the ready.d scripts run
@@ -1101,8 +1118,11 @@ TX=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $T
   -H 'Content-Type: application/json' -H "Idempotency-Key: $(uuidgen)" \
   -d '{"pixKey":"bob@otherbank.com","amount":"12.50","description":"reversal drill"}' | jq -r .transactionId)
 
-# 3) settlement gets 422 SETTLEMENT_REJECTED_BY_ADMIN → step 33 reverses; within ~5 min the status is REVERSED
-#    and the payer is refunded (SPI_CLEARING nets back to 0). The scanner (60s) + resolver drive it:
+# 3) settlement gets 422 SETTLEMENT_REJECTED_BY_ADMIN → step 33 reverses ON THAT SAME DELIVERY (seconds,
+#    not minutes): the consumer holds a DEFINITIVE answer, so it does not wait for the 60s scanner and the
+#    message does not redrive to the DLQ — `SettleOutcome.REVERSED` is acked. The payer is refunded and
+#    SPI_CLEARING nets back to 0. (Reconciliation is the *fallback* path for this ending, not the normal
+#    one; it owns the transactions nobody ever came back with an answer for.)
 watch -n2 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOKEN' | jq .status"
 docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'Reconciliation resolved|ALERT'
 
@@ -1514,6 +1534,45 @@ docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
 open tools/api-explorer/index.html
 ```
 
+### 5.11 The whole journey in one run (step 46)
+
+Everything in §5.1–§5.9 is one flow at a time. This is all of them at once, with assertions — the single
+artifact that proves the vertical slices **compose** into a system, and then breaks BACEN on purpose to
+prove the system recovers.
+
+```bash
+bash scripts/e2e-journey.sh              # ~6 min: the journey + both failure drills
+bash scripts/e2e-journey.sh --quick      # ~40s: happy path only — does NOT prove KR3.1/KR3.2
+bash scripts/e2e-journey.sh --verbose    # echo every response body as it arrives
+```
+
+Nine acts and two drills, each line of output one claim:
+
+| | What it asserts |
+|---|---|
+| ACT 0 | Σ `balanceCents` over every account is the seeded supply, `0` — the baseline (KR1.1) |
+| ACT 1–3 | the JWT decides which account pays; bob owns the destination key; both SSE streams are open **before** money moves |
+| ACT 4 | an internal Pix debits once, and the retry of the same `Idempotency-Key` returns the same `transactionId` **and leaves exactly two ledger entries** |
+| ACT 5 | an external Pix answers `202 PROCESSING`, parks the money in `SPI_CLEARING`, settles, releases clearing to `SPI_SETTLED`, and pushes `PixSettled` to the payer |
+| ACT 6 | an inbound Pix credits bob and pushes `PixReceived`; re-presenting the same `endToEndId` answers `ALREADY_PROCESSED` and moves nothing |
+| ACT 7 | the API's decimal balance renders the ledger's cents exactly; the statement shows the retried payment **once** |
+| ACT 8 | one `correlationId` reconstructs the path across ≥3 services (KR4.1, via `scripts/trace.sh`) |
+| DRILL A | rail 5xxs → accepted anyway → DLQ after five deliveries → **nothing reversed on a guess** → redrive → terminal state inside 300s (KR3.1) → DLQ back to 0 (KR3.2) → `ALERT FIRING` then `ALERT RESOLVED` |
+| DRILL B | rail refuses the key permanently → reversed **on the same delivery**, payer refunded, a new `-rev` entry pair rather than an edit |
+| ACT 9 | Σ balances is unchanged, still `0`, and nothing is stranded in clearing |
+
+> **The drills use the shipped timers on purpose.** Restarting settlement-service with
+> `RECONCILIATION_STUCK_AFTER_SECONDS=5` would finish the run in forty seconds and prove nothing: the
+> claim is "*< 5 min with the thresholds we ship*". The SQS backoff ladder (5, 10, 20, 40, 60s capped)
+> puts the sixth receive at ~135s, which is when the message dead-letters.
+
+> **Safe to Ctrl-C.** An `EXIT` trap always restores mock-bacen's knobs (`failureRate`, `rejectKeys`), so
+> an aborted drill never leaves a sandbox that refuses every payment afterwards.
+
+The same journey runs from Maven — `mvn -Pe2e -pl tests/e2e -am verify` — which drives this exact script
+and adds an independent SDK-side reading of Σ balances around it. See `tests/e2e/README.md`.
+
+
 ## 6. Running tests
 
 ```bash
@@ -1522,13 +1581,20 @@ mvn verify                        # + integration tests (Testcontainers spins Lo
 mvn -pl services/ledger-service -am verify   # one module only — note the -am
 ```
 
-**Two checks that are not `mvn verify`, and cannot be** (step 45):
+**Three checks that are not `mvn verify`, and cannot be** (steps 45–46):
 
 ```bash
 # The error-contract audit: every documented non-2xx across the RUNNING stack is problem+json with
 # code + correlationId and no stack trace. It reaches the six services' own domain codes, which live in
 # six different processes and which no single-module test can produce. Needs the stack up, and jq.
 bash scripts/error-contract-audit.sh            # add --verbose to print each body
+```
+
+```bash
+# The end-to-end journey (step 46): the whole platform in one run — every flow, both failure drills, and
+# Σ balances asserted across every account. Eight processes and a real queue, so no single-module IT can
+# reach it. Needs the stack up, jq and the AWS CLI. See §5.11.
+bash scripts/e2e-journey.sh                     # or: mvn -Pe2e -pl tests/e2e -am verify
 ```
 
 ```bash

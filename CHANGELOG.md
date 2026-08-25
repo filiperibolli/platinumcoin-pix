@@ -26,7 +26,49 @@ The platform reached its halfway mark: **the full money path is built, tested an
   balance under contention, exact leak-free daily-limit reservation, and idempotency under a retry storm.
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
+### Removed
+- Dependabot (`.github/dependabot.yml`, configured in step 45) and its seven open PRs · 2026-08-25
+  - **Why.** The automation opened more PRs than the project was emptying, and the ones it opened were
+    not the ones worth merging: a Spring Boot **major** (3.3.13 → 4.1.1) that contradicts the
+    architecture this repo documents in its ADRs, its README badge and its CHANGELOG, sitting next to
+    same-major bumps whose CI was red. A queue nobody empties is not a control, it is a control-shaped
+    object — and step 45's own config said as much, capping `open-pull-requests-limit` at 5 because
+    "the point is a queue a human actually empties".
+  - **What this costs, stated rather than glossed.** This repository now has **no standing control**
+    watching its dependencies. `docs/security-checklist.md` §8 says exactly that, with a ❌, instead of
+    continuing to cite a control that no longer exists — a checklist that quietly drops a row it once
+    claimed is worse than one that carries the gap in the open. The point-in-time
+    `mvn versions:display-dependency-updates` scan recorded there is a manual act and only as current as
+    its date.
+  - **What did NOT change:** the reasoning about `mvn org.owasp:dependency-check` stays where it was
+    (it would make `mvn verify` depend on the NVD being reachable, which breaks the rule that an IT runs
+    on a plain `mvn verify`). With Dependabot gone that is no longer a choice between two controls —
+    it is the gap, and §8 now says so.
+
 ### Changed
+- The compose stack is split by concern behind an `include:` entry point · 2026-08-25
+  - `infra/docker-compose.yml` is now a 37-line entry point that `include:`s `compose/platform.yml` (the
+    eight Spring Boot services), `compose/backing.yml` (LocalStack, dynamodb-local, Redis) and
+    `compose/observability.yml` (Prometheus, Grafana, the OTLP collector, Jaeger). It had reached 820
+    lines holding three unrelated concerns, and the heavy per-block commentary that makes it worth
+    reading is exactly what made it impossible to scan.
+  - **The move is mechanical, and `docker compose config` rendering byte-identically before and after is
+    the proof.** The only edit inside a moved block is a one-level path re-depth (`context: ..` →
+    `../..`, `./observability/…` → `../…`), because `include:` resolves relative paths against the
+    included file's own directory. Every command in `docs/local-dev.md`, the eight service READMEs and
+    `scripts/` is unchanged — `include` is part of the model, so a plain
+    `docker compose -f infra/docker-compose.yml up` still gets the whole stack with no flags to
+    remember, which multiple `-f` would not.
+  - **What it buys beyond a shorter file:** the money path can now run without the monitoring stack —
+    `docker compose -f infra/compose/backing.yml -f infra/compose/platform.yml up -d`. Nothing on that
+    path depends on Prometheus or the collector, and until now that independence was a claim rather than
+    something you could exercise.
+  - **YAML anchors were deliberately NOT used.** Deduplicating build/networks/healthcheck/env behind
+    `x-java-service: &svc` would shorten the files and cost the property the file's own header sells —
+    that a service block is readable, and copyable, on its own. Worse, `<<:` does not deep-merge: a
+    service declaring its own `environment` REPLACES the anchored one instead of extending it, so a
+    block adding one variable would silently lose `JWT_SECRET` and the `AWS_*` pair. That is the exact
+    looks-configured-but-is-not failure ADR-0013 spent a step eliminating.
 - Hardening: guarded-transition sweep, scripted error-contract audit, versioning review and security checklist (step 45)
   AI: est 6h / actual 3h10 / ~93% generated / 0 issues caught in human review
   <!-- The four defects below were found by THIS step's own audit — they are its deliverable, not
@@ -499,6 +541,86 @@ The platform reached its halfway mark: **the full money path is built, tested an
   send-confirmation feedback on the page; 5: `X-Correlation-Id` neither shown nor editable per call.)
 
 ### Added
+- End-to-end journey suite (send→settle→receive→notify→statement) with a BACEN failure drill and money-conservation assertion (step 46)
+  AI: est 5h / actual 1h / ~95% generated / 0 issues caught in human review
+  <!-- The four defects described below were found by Claude's own review and by running the thing —
+       none by the human. Same rule step 45 set: a self-found defect is not a human-review catch,
+       because counting it would inflate the one metric here that is meant to measure the human. -->
+  - **The first artifact that asks whether the slices COMPOSE.** Every sprint proved one flow with its
+    own hermetic suite. None of them could ask the only question a payments platform is finally judged
+    on, because the answer lives in eight processes at once: *does the whole thing still conserve money
+    after a chaotic run?* `scripts/e2e-journey.sh` is nine acts and two drills against the running
+    compose stack — login → key → balance → internal Pix **with the retry that must not double it** →
+    external Pix → settlement → the payer's push → an inbound Pix → the payee's push → statement → the
+    drills → Σ balances. Roughly forty assertions, one per printed line.
+  - **Two drills, because BACEN fails in two categorically different ways.** Conflating them is the
+    expensive bug. **Transient** (`failureRate=1`): the rail 5xxs, nothing is decided, the message rides
+    its five deliveries into the DLQ — and the drill asserts that **nothing was reversed on the way**,
+    because a 5xx says nothing about whether the transfer happened and a wrong guess pays somebody
+    twice. Recovery is an operator redriving the DLQ (nothing drains it automatically, by design), after
+    which the payment reaches a terminal state **inside the shipped 300s SLO, measured from the send**
+    (KR3.1) and the DLQ returns to 0 (KR3.2). **Permanent** (`rejectKeys`): the rail refuses this
+    specific transfer, so the payer is made whole **on that same delivery** — asserted with a
+    deliberately short 90s budget, so a regression into "the scanner will clean it up in five minutes"
+    fails rather than passes.
+  - **The drills run on the shipped timers, on purpose.** Restarting settlement-service with
+    `RECONCILIATION_STUCK_AFTER_SECONDS=5` would finish the run in forty seconds and prove nothing: the
+    claim under test is *"< 5 min **with the thresholds we ship**"*, and a drill against tuned-down
+    thresholds is a test of the test. So the run takes minutes and prints its progress while it waits.
+  - **Conservation is asserted against DynamoDB, never against the balance API** — and the reasoning is
+    the assertion. The API is per-account (it cannot see `SPI_CLEARING`, `SPI_SETTLED` or the `SEED`
+    counterpart at all) and it is served from the Redis cache (ADR-0008), so asserting conservation
+    through it would let a stale read hide a lost cent, which is the exact class of bug the assertion
+    exists to catch. Σ is checked twice over — equal to the baseline **and** equal to the seeded supply
+    of `0` — and, because Σ is necessary and not sufficient (two individually balanced postings can
+    leave it untouched while money is stranded — see `MoneyConservation`'s javadoc and the step-67
+    race), every drill additionally closes by asserting the clearing account netted back.
+  - **`tests/e2e` drives the script rather than restating it.** `E2EJourneyIT` executes
+    `scripts/e2e-journey.sh`, streams its output, and asserts exit 0 — a choice, not a shortcut.
+    Re-expressing forty cross-service assertions in a second language creates twin artifacts that drift,
+    the defect `CLAUDE.md` already forbids for the Postman/API-explorer pair. What Java adds is what bash
+    cannot: a place for `mvn`/CI to hang the journey, and an **independent second reading of Σ balances**
+    through the AWS SDK wrapped around the whole run. A missing stack **fails** rather than skips — a
+    skipped E2E is indistinguishable from a passing one in a build log.
+  - **Not in the default reactor** (`mvn -Pe2e verify`). Every other `*IT` here is hermetic and passes
+    with the compose stack down (`docs/local-dev.md` §6); this one is the deliberate exception. Folding
+    it into the command this project runs dozens of times a day would make that command depend on a
+    running stack and take the minutes the drills legitimately need.
+  - **One doc drift found and fixed in the same change.** `docs/local-dev.md` §5.5 still said a
+    permanent refusal reaches `REVERSED` "within ~5 min", driven by the 60s scanner. It has not worked
+    that way since step 33: `SettlePixUseCase` reverses in place on the delivery that received the 422
+    and the message is acked (`SettleOutcome.REVERSED` — "a refusal no longer redrives to the DLQ").
+    The drill that asserts the fast path would have been written against the stale sentence.
+  - **Four defects this step found in itself, all in the harness and none in the platform.** Worth
+    recording individually, because each is a different way a test can look like an assertion without
+    being one:
+    1. **The subshell trap.** `api()` and `send_pix()` assigned their result to a global (`HTTP_STATUS`,
+       `LAST_IDEMPOTENCY_KEY`) while every caller invoked them inside `$(…)` — a subshell, where such an
+       assignment dies with the process. Every `assert_eq '…' '202' "$HTTP_STATUS"` was comparing against
+       an empty string that could never match. The status now round-trips through a file that survives
+       the subshell; the idempotency key became the caller's to own, which it has to be anyway since a
+       replay must present the same one.
+    2. **`SPI_CLEARING == 0` was a wrong model of the account, and the first real run said so.** An
+       inbound Pix DEBITS clearing and credits the payee, and there is no inbound twin of `SPI_SETTLED`
+       to put the money back — `infra/localstack/init/05-seed-ledger.sh` already documented that the
+       account "may legitimately go negative on inbound-heavy days", which is also why it is exempt from
+       the non-negative guard. The assertion now compares against the baseline less what the inbound
+       flows legitimately drew, and is named for the invariant that actually matters: *no outbound
+       payment is left parked in clearing*.
+    3. **The drill was outrunning the monitoring.** It redrove the DLQ 34 seconds after the message
+       landed; the watchdog samples the INSTANT depth every 30s behind ~55s of pipeline lag (gauge
+       refresh 15s + Prometheus scrape 10s + tick 30s), so it read 0 on both sides of a real incident.
+       Prometheus had the data the whole time — `max_over_time(pix_settlement_dlq_depth_messages[25m])`
+       was 1; nobody asked at the right instant. Fixed by asserting the alert in the sequence a human
+       actually lives: **paged first, act second**. The SLO is still measured from the SEND with that
+       reaction time inside it, because a promise that only holds if somebody reacts instantly is not a
+       promise. Measured: DLQ at 162s, `ALERT FIRING` 38s later, `SETTLED` at 224s of the 300s budget.
+    4. **`--verbose` had never been run, and could not have worked.** `verbose` printed to stdout while
+       being called from inside `api()`, whose every caller captures stdout with `$(…)` — so the
+       diagnostic line landed inside the response body and the next `jq` choked. It also echoed the
+       login response verbatim, i.e. a signed JWT, which ADR-0012 forbids for a harness exactly as for a
+       service. Now on stderr, with bearer tokens redacted in the one printer every call goes through.
+
 - Distributed tracing with OpenTelemetry across HTTP and the queues, joined to the existing correlation id, plus error-budget burn-rate alerts on the send and balance SLOs — the two gaps the external review found in the step-44 observability pass (step 72, ADR-0021)
   AI: est 8h / actual 3.7h / ~90% generated / 0 issues caught in human review
   - **A log is an event; a span is an interval — and only one of them can answer "where did the time

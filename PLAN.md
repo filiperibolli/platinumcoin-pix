@@ -161,7 +161,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > Owns the **AWS credential / IAM** posture (ADR-0013). The external review's P0 on **HTTP service identity**
   > is a different concern and lands earlier, in [step 68](docs/steps/step-68.md) — the two are neighbours and
   > are often confused. Prerequisite: all four Sprint 11.5 P0 steps.
-- [ ] [Step 46](docs/steps/step-46.md) — end-to-end test: full journey send→settle→receive→notify→statement, incl. failure drill
+- [x] [Step 46](docs/steps/step-46.md) — end-to-end test: full journey send→settle→receive→notify→statement, incl. failure drill
 - [ ] [Step 47](docs/steps/step-47.md) — k6 load tests: low, standard (~58 TPS) and Black Friday (500+ TPS) profiles with SLO thresholds
   > **Scope widened by the external review (P1 · capacidade), not duplicated by a new step:** representative
   > infrastructure (or the deviation documented against `docs/load/BOTTLENECK.md`), a WCU/RCU + cost budget,

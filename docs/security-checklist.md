@@ -159,13 +159,23 @@ shipping a test that would only assert the files parse.
 - **Result:** no dependency is on a version with a known advisory that this scan surfaces; 20+ artifacts
   have newer releases available, the largest gaps being `software.amazon.awssdk` 2.28.29 → 2.54.2 and
   `org.testcontainers` 1.19.8 → 2.0.5 (a major, so not a drop-in).
-- **Standing control:** [`.github/dependabot.yml`](../.github/dependabot.yml) — weekly Maven, monthly
-  GitHub Actions and Docker base images, grouped so the AWS SDK's eight artifacts arrive as one PR.
+- **Standing control: none.** ❌ Dependabot was configured in step 45 and **removed on 2026-08-25**, so
+  nothing watches this repository's dependencies continuously any more. Recording that plainly is the
+  point of this row: a checklist that quietly drops a control it once claimed is worse than one with a
+  ❌ in it, and this section is the only place a reader would find out.
+  - *Why it was removed:* the automation opened more PRs than the project was emptying, and the ones it
+    opened were not the ones worth merging — a Spring Boot **major** (3.3 → 4.x) that contradicts the
+    architecture this repo documents, next to same-major bumps that were failing CI. A queue nobody
+    empties is not a control; it is a control-shaped object. The honest state is "no standing control",
+    which is what this row now says.
+  - *What replaces it today:* nothing automatic. The point-in-time scan above
+    (`mvn versions:display-dependency-updates`) is a manual act, dated, and only as current as its date.
 - **Deliberately not** `mvn org.owasp:dependency-check`: it is the better report and it downloads the NVD
   data set (needs an API key since 2024), which would make `mvn verify` depend on the network and break
   CLAUDE.md's "an IT runs on a plain `mvn verify`". A scanner that turns a red build into "was the NVD
   reachable today?" trains everyone to ignore the build. It is where this goes the day there is a
-  pipeline with network budget; the trade-off is recorded rather than glossed.
+  pipeline with network budget; the trade-off is recorded rather than glossed. **With Dependabot gone
+  this is no longer a trade-off between two controls — it is the gap.**
 - **Version currency is a maintenance debt, not a finding.** It is listed here so the next reviewer sees
   the size of it; upgrading Testcontainers across a major is its own change, not a hardening step.
 

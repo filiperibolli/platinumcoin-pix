@@ -1,0 +1,163 @@
+# PlatinumCoin Pix — the backing services the platform talks to (ADR-0001).
+#
+# Included by infra/docker-compose.yml. These are the emulators and the cache: LocalStack (SNS/SQS/S3),
+# the standalone DynamoDB Local container (docs/load/BOTTLENECK.md explains why it moved out of
+# LocalStack), and Redis standing in for ElastiCache. Every platform service `depends_on` at least one
+# of them, so this file is the one group you can never leave out.
+
+services:
+
+  # Redis — its own container (ADR-0008), the local stand-in for ElastiCache for Redis, which LocalStack
+  # does NOT emulate. Comes up in Sprint 5 because fraud is the first flow that needs it (velocity
+  # counters); since step 40 it also holds the balance cache — payment-service reads and writes
+  # `balance:<accountId>` (TTL 5s) and ledger-service deletes those keys after each posting. Data is ephemeral (a cache): no named
+  # volume, and `down -v` starts it clean. Version pinned (not `latest`) for reproducible local runs.
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"          # exposed so a host `redis-cli` / app run outside compose can reach it
+    networks:
+      - pix-net
+    healthcheck:
+      # The image ships redis-cli; `PING` returns PONG once the server accepts commands. Gates the
+      # `depends_on: { redis: { condition: service_healthy } }` of fraud-, payment- and ledger-service.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # dynamodb-local — standalone official DynamoDB Local, split out of LocalStack (docs/load/BOTTLENECK.md).
+  # LocalStack's own DynamoDB support proxies every call through an internal Python HTTP client
+  # (`SimpleRequestsClient`, a plain `requests.Session`) to the same `DynamoDBLocal.jar` this image runs —
+  # but that internal proxy has a fixed connection-pool cap (`requests`' library default, `pool_maxsize=10`)
+  # that is NOT exposed via any LocalStack env var, and it was the confirmed throughput ceiling under load
+  # (~400 raw ops/s regardless of client concurrency, empirically flat from concurrency 1 through 128 —
+  # BOTTLENECK.md RUNG 2's follow-up). Talking to the same jar directly, with no proxy in front of it,
+  # removes that ceiling. SNS/SQS stay on LocalStack below — DynamoDB is the only AWS service split out.
+  # In-memory mode: this is a dev/load-test stack: nothing here persisted DynamoDB data across a restart
+  # even before this split (no volume/PERSISTENCE var was ever set on the old LocalStack-hosted table).
+
+  # dynamodb-local — standalone official DynamoDB Local, split out of LocalStack (docs/load/BOTTLENECK.md).
+  # LocalStack's own DynamoDB support proxies every call through an internal Python HTTP client
+  # (`SimpleRequestsClient`, a plain `requests.Session`) to the same `DynamoDBLocal.jar` this image runs —
+  # but that internal proxy has a fixed connection-pool cap (`requests`' library default, `pool_maxsize=10`)
+  # that is NOT exposed via any LocalStack env var, and it was the confirmed throughput ceiling under load
+  # (~400 raw ops/s regardless of client concurrency, empirically flat from concurrency 1 through 128 —
+  # BOTTLENECK.md RUNG 2's follow-up). Talking to the same jar directly, with no proxy in front of it,
+  # removes that ceiling. SNS/SQS stay on LocalStack below — DynamoDB is the only AWS service split out.
+  # In-memory mode: this is a dev/load-test stack: nothing here persisted DynamoDB data across a restart
+  # even before this split (no volume/PERSISTENCE var was ever set on the old LocalStack-hosted table).
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory"]
+    networks:
+      - pix-net
+    healthcheck:
+      # This minimal AWS-provided image has no AWS CLI (unlike LocalStack's), only curl. DynamoDB Local
+      # answers ANY HTTP request once its listener is up — even an unsigned one, with a 400 — and curl
+      # without `-f` exits 0 on any HTTP response, so this just confirms the port is accepting connections.
+      # The stronger "are the tables actually created" signal lives on the `localstack` healthcheck below,
+      # which (from inside that container, over the shared network) can run real `aws dynamodb` commands
+      # against this container once it's up.
+      test: ["CMD-SHELL", "curl -s http://localhost:8000/ >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: each sprint flips on ONLY the
+  # services its flow needs. Sprint 2 (Pix keys) pinned `dynamodb`; Sprint 6 adds `sns,sqs` — the
+  # first asynchronous flow, external Pix settlement (step 26). `s3` follows in Sprint 10. DynamoDB
+  # itself moved to the standalone `dynamodb-local` container above (docs/load/BOTTLENECK.md) — this
+  # container now serves only SNS/SQS, though the DynamoDB-creating ready.d scripts (01-05, 07) still
+  # run from here (LocalStack's own init runner), just pointed at the new container's endpoint.
+  # SERVICES is enforced, not a hint: calling a service that is not listed answers
+  # `501 Service 'sqs' is not enabled`, which is exactly what keeps the discipline honest.
+  # The version is pinned (not `latest`) for reproducible local runs.
+
+  # LocalStack — local AWS emulator (ADR-0001). Vertical discipline: each sprint flips on ONLY the
+  # services its flow needs. Sprint 2 (Pix keys) pinned `dynamodb`; Sprint 6 adds `sns,sqs` — the
+  # first asynchronous flow, external Pix settlement (step 26). `s3` follows in Sprint 10. DynamoDB
+  # itself moved to the standalone `dynamodb-local` container above (docs/load/BOTTLENECK.md) — this
+  # container now serves only SNS/SQS, though the DynamoDB-creating ready.d scripts (01-05, 07) still
+  # run from here (LocalStack's own init runner), just pointed at the new container's endpoint.
+  # SERVICES is enforced, not a hint: calling a service that is not listed answers
+  # `501 Service 'sqs' is not enabled`, which is exactly what keeps the discipline honest.
+  # The version is pinned (not `latest`) for reproducible local runs.
+  localstack:
+    image: localstack/localstack:3
+    container_name: localstack
+    ports:
+      - "4566:4566"          # single edge port for every emulated AWS service
+    environment:
+      # the messaging backbone (Sprint 6) + S3 for the audit trail & cold archive (Sprint 10,
+      # step 42) — DynamoDB now lives in dynamodb-local
+      SERVICES: sns,sqs,s3
+      DEBUG: "1"             # verbose logs — this is a dev-only emulator
+      # Read by infra/localstack/init/{01,02,03,04,05,07}-*.sh (ready.d scripts run INSIDE this
+      # container): points their `aws dynamodb` calls at the standalone dynamodb-local container
+      # instead of LocalStack itself. Deliberately NOT baked into the scripts' own default — the
+      # same scripts are also mounted, unmodified, into LocalStackTestBase's Testcontainers
+      # LocalStack container (no dynamodb-local sibling there), where they must fall back to
+      # LocalStack's own DynamoDB at 4566 instead (docs/load/BOTTLENECK.md).
+      DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+    volumes:
+      # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);
+      # step 07 drops the pix_accounts / pix_keys creation scripts here.
+      - ../localstack/init:/etc/localstack/init/ready.d
+    depends_on:
+      # ready.d scripts (01-05, 07) create DynamoDB tables against dynamodb-local as soon as THIS
+      # container reports ready — without this, they could race a dynamodb-local that hasn't finished
+      # starting yet, and `set -euo pipefail` would abort the whole ready.d run on the first failure.
+      dynamodb-local:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      # Two conditions, not one — and the second is the one that matters (step 31).
+      #
+      # The emulator opens port 4566 and reports UP *before* the ready.d scripts have finished, so a
+      # service gated only on the health endpoint can start against an emulator with no tables and no
+      # queues. Nothing noticed until settlement-service: every service before it touches AWS lazily, on
+      # the first request, by which time init has long finished. A consumer resolves its queue at startup
+      # and simply died with `QueueDoesNotExist`.
+      #
+      # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
+      # probe asserts the LAST resource created by the LAST init script (09-audit.sh, step 42) exists —
+      # scripts run in lexical order (inside THIS container's init runner, regardless of which endpoint
+      # each one targets), so that one existing means all of them ran, including 01-05/07 against
+      # dynamodb-local. The last script now ends on S3, so the probe checks the pix-statement-archive
+      # bucket via `aws s3api head-bucket` against LocalStack itself at localhost:4566 (S3, like SQS,
+      # lives here — unlike DynamoDB, which moved to dynamodb-local). This mirrors exactly what the
+      # Testcontainers harness does (LocalStackTestBase waits on that same script's final log line);
+      # compose and the tests agree on what readiness means.
+      #
+      # IF YOU ADD A SCRIPT THAT SORTS AFTER 09, MOVE THIS PROBE (and the harness's marker) TO IT.
+      # (tools/k6/seed/ deliberately does NOT live here, even though it seeds DynamoDB too: this
+      # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
+      # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
+      # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3api head-bucket --bucket pix-statement-archive >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Observability (Sprint 11, step 44) ────────────────────────────────────────
+  # Prometheus + Grafana come up with everything else, always — NOT behind an optional profile.
+  # The reason is a small but real one: a dashboard you have to remember to start is a dashboard that is
+  # down exactly when something breaks, and the whole point of this sprint is that the platform can be
+  # observed by default rather than on request. Two containers with no volumes and no dependencies cost
+  # nothing to leave running.
+
+# Declared in every file of the set so each one is a valid compose model on its own; the `include`
+# in ../docker-compose.yml merges them into the single pix-net the whole stack shares.
+networks:
+  pix-net:
+    name: pix-net
+    driver: bridge

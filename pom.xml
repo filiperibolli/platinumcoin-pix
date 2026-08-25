@@ -68,6 +68,26 @@
         <module>services/mock-bacen-spi</module>
     </modules>
 
+    <!--
+      The end-to-end journey (step 46) is a module you have to ASK for: `mvn -Pe2e verify`.
+
+      Why it is not in the default reactor. Every other *IT in this repo is hermetic — Testcontainers
+      brings up its own LocalStack/Redis and the suite passes with the compose stack DOWN
+      (docs/local-dev.md §6). tests/e2e is the deliberate exception: the facts it asserts live in eight
+      different processes talking over a real queue, so it needs the whole compose stack UP, images
+      built, seed data present. Putting it in the default reactor would make `mvn verify` — the command
+      this project runs dozens of times a day — depend on a stack being up and take the several minutes
+      the failure drills legitimately need. Keeping the fast, hermetic build fast is worth one flag.
+    -->
+    <profiles>
+        <profile>
+            <id>e2e</id>
+            <modules>
+                <module>tests/e2e</module>
+            </modules>
+        </profile>
+    </profiles>
+
     <dependencyManagement>
         <dependencies>
             <!-- Spring Boot BOM: manages Spring, Jackson, SLF4J/Logback, JUnit 5, etc. -->
