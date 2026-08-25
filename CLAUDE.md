@@ -26,7 +26,10 @@ services/<name>/       one Maven module per service (added incrementally per spr
 services/<name>/README.md  per-service card: purpose, port, endpoints, config/env, run & test, ADRs — services/auth-service/README.md is the template
 services/common-lib/   shared: error model, JWT validation, logging, event envelope — keep it THIN
 labs/ledger-pg/        non-deployable relational ledger lab (ADR-0009, steps 50-51) — never wired to the platform
-infra/                 docker-compose.yml, localstack init scripts, seed data
+infra/                 docker-compose.yml (the ENTRY POINT — `include:`s the three below), localstack init scripts, seed data
+infra/compose/         the stack split by concern: platform.yml (the 8 services) · backing.yml (LocalStack,
+                       dynamodb-local, Redis) · observability.yml. `docker compose -f infra/docker-compose.yml up`
+                       is unchanged; the split is what lets the money path run without the monitoring stack
 infra/observability/   Prometheus config, Grafana provisioning + dashboards (step 44)
 scripts/               operator/verification scripts run against the RUNNING compose stack — the checks that
                        cannot be `mvn verify` because their facts live in eight processes (docs/local-dev.md §6):

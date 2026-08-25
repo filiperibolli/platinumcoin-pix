@@ -130,6 +130,23 @@ way to the answer, and it never prints the token.
 # from repo root
 mvn clean package -DskipTests                # build all service jars
 docker compose -f infra/docker-compose.yml up -d --build
+```
+
+> **The compose stack is four files, and you still only ever name one.** `infra/docker-compose.yml` is
+> the entry point; it `include:`s the stack split by concern — `infra/compose/platform.yml` (the eight
+> Spring Boot services), `infra/compose/backing.yml` (LocalStack, dynamodb-local, Redis) and
+> `infra/compose/observability.yml` (Prometheus, Grafana, the OTLP collector, Jaeger). An `include` is
+> part of the model, so every command in this runbook, in the service READMEs and in `scripts/` is
+> unchanged, and `docker compose config` renders exactly what the single 820-line file used to.
+>
+> What the split buys: **the money path can run without the monitoring stack.** Nothing on it depends
+> on Prometheus or the collector — until now that was a claim rather than something you could exercise.
+>
+> ```bash
+> docker compose -f infra/compose/backing.yml -f infra/compose/platform.yml up -d
+> ```
+
+```bash
 
 # watch LocalStack init (creates tables/queues/topics/buckets + seed data)
 # NOTE: there is no separate `localstack-init` container — the ready.d scripts run

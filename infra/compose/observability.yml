@@ -1,0 +1,129 @@
+# PlatinumCoin Pix — the observability stack (steps 44 & 72).
+#
+# Included by infra/docker-compose.yml. Nothing on the money path depends on any of it: Prometheus down
+# degrades the alert watchdog to SKIPPED rules and the collector down loses spans, and neither stops a
+# payment. That independence is what makes this file safe to leave out entirely:
+#   docker compose -f infra/compose/backing.yml -f infra/compose/platform.yml up -d
+
+services:
+
+  # ── Observability (Sprint 11, step 44) ────────────────────────────────────────
+  # Prometheus + Grafana come up with everything else, always — NOT behind an optional profile.
+  # The reason is a small but real one: a dashboard you have to remember to start is a dashboard that is
+  # down exactly when something breaks, and the whole point of this sprint is that the platform can be
+  # observed by default rather than on request. Two containers with no volumes and no dependencies cost
+  # nothing to leave running.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    ports:
+      # 9091 on the host because mock-bacen-spi already owns 9090 there. Inside pix-net Prometheus is
+      # still :9090 (its own default), which is what the Grafana datasource and the settlement-service
+      # watchdog point at — docs/local-dev.md §2 records the split.
+      - "9091:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # 24h is plenty for a laptop: these dashboards answer "what is happening" and "what happened during
+      # the drill I just ran", never "what did last quarter look like". Keeping it short also keeps the
+      # container stateless — there is no volume, so `down -v` really does reset everything.
+      - --storage.tsdb.retention.time=24h
+      - --web.enable-lifecycle
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - pix-net
+    healthcheck:
+      # Prometheus images ship no curl and no shell utilities beyond busybox-less basics, so the probe
+      # uses Prometheus' OWN readiness endpoint through wget, which the image does have.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # admin/admin, and the forced password change turned OFF. A sandbox whose front door asks a
+      # portfolio reader to invent a password is a sandbox they close. Stated plainly rather than hidden:
+      # this is a local-only posture, and a real deployment puts Grafana behind SSO.
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous VIEWER access: open http://localhost:3000 and the dashboards are simply there, no login.
+      # Viewer, not Editor — the dashboards are provisioned from this repo, and an edit that cannot
+      # survive a restart is worse than no edit at all.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      # Land straight on the funnel: it is the board that says something a stranger to this codebase can
+      # read. uid matches infra/observability/grafana/dashboards/business-funnel.json.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/business-funnel.json
+    volumes:
+      # Provisioning as code (step 44): datasource + dashboard provider + the dashboards themselves, all
+      # read-only from the repo. No click-ops, no "it works on my machine" dashboard.
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - pix-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Distributed tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────
+  # Two containers, always on, exactly like Prometheus and Grafana in step 44 — an observability stack a
+  # reader has to opt into is an observability stack nobody sees. Neither is on any service's
+  # `depends_on`: a payment must never wait for the trace pipeline to be healthy, which is the same
+  # priority ADR-0021 states and the same one that keeps settlement-service off `depends_on: prometheus`.
+
+  # ── Distributed tracing (step 72, ADR-0021) ──────────────────────────────────────────────────────
+  # Two containers, always on, exactly like Prometheus and Grafana in step 44 — an observability stack a
+  # reader has to opt into is an observability stack nobody sees. Neither is on any service's
+  # `depends_on`: a payment must never wait for the trace pipeline to be healthy, which is the same
+  # priority ADR-0021 states and the same one that keeps settlement-service off `depends_on: prometheus`.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ../observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      # Published so a service run outside compose (`mvn spring-boot:run`, docs/local-dev.md §4) can
+      # still export. Inside pix-net the services reach it by name.
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - pix-net
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    environment:
+      # Accept OTLP directly, so the collector needs no jaeger-specific exporter — one protocol from the
+      # JVM all the way to storage.
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # The UI. Storage is in-memory and deliberately so: like Prometheus' 24h retention, these traces
+      # answer "what just happened during the drill I ran", never "what did last quarter look like", and
+      # keeping it volume-less means `down -v` really does reset everything.
+      - "16686:16686"
+    networks:
+      - pix-net
+
+# Declared in every file of the set so each one is a valid compose model on its own; the `include`
+# in ../docker-compose.yml merges them into the single pix-net the whole stack shares.
+networks:
+  pix-net:
+    name: pix-net
+    driver: bridge

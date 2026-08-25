@@ -27,6 +27,29 @@ The platform reached its halfway mark: **the full money path is built, tested an
 - **Next:** Sprint 8 — receive Pix & real-time SSE notification (step 36 onward).
 
 ### Changed
+- The compose stack is split by concern behind an `include:` entry point · 2026-08-25
+  - `infra/docker-compose.yml` is now a 37-line entry point that `include:`s `compose/platform.yml` (the
+    eight Spring Boot services), `compose/backing.yml` (LocalStack, dynamodb-local, Redis) and
+    `compose/observability.yml` (Prometheus, Grafana, the OTLP collector, Jaeger). It had reached 820
+    lines holding three unrelated concerns, and the heavy per-block commentary that makes it worth
+    reading is exactly what made it impossible to scan.
+  - **The move is mechanical, and `docker compose config` rendering byte-identically before and after is
+    the proof.** The only edit inside a moved block is a one-level path re-depth (`context: ..` →
+    `../..`, `./observability/…` → `../…`), because `include:` resolves relative paths against the
+    included file's own directory. Every command in `docs/local-dev.md`, the eight service READMEs and
+    `scripts/` is unchanged — `include` is part of the model, so a plain
+    `docker compose -f infra/docker-compose.yml up` still gets the whole stack with no flags to
+    remember, which multiple `-f` would not.
+  - **What it buys beyond a shorter file:** the money path can now run without the monitoring stack —
+    `docker compose -f infra/compose/backing.yml -f infra/compose/platform.yml up -d`. Nothing on that
+    path depends on Prometheus or the collector, and until now that independence was a claim rather than
+    something you could exercise.
+  - **YAML anchors were deliberately NOT used.** Deduplicating build/networks/healthcheck/env behind
+    `x-java-service: &svc` would shorten the files and cost the property the file's own header sells —
+    that a service block is readable, and copyable, on its own. Worse, `<<:` does not deep-merge: a
+    service declaring its own `environment` REPLACES the anchored one instead of extending it, so a
+    block adding one variable would silently lose `JWT_SECRET` and the `AWS_*` pair. That is the exact
+    looks-configured-but-is-not failure ADR-0013 spent a step eliminating.
 - Hardening: guarded-transition sweep, scripted error-contract audit, versioning review and security checklist (step 45)
   AI: est 6h / actual 3h10 / ~93% generated / 0 issues caught in human review
   <!-- The four defects below were found by THIS step's own audit — they are its deliverable, not
