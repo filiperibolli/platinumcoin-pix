@@ -40,10 +40,10 @@ run-failing thresholds already here are the bulk of the work, and duplicating th
 would leave two owners of the same numbers. The four additions become tasks 5-8 below.
 
 **Two dependencies this creates:**
-- Run **after** [step 71](docs/steps/step-71.md) (outbox lanes + parallel settlement consumer), or the
+- Run **after** [step 71](step-71.md) (outbox lanes + parallel settlement consumer), or the
   measurement is of a ~25 events/s drain that `docs/load/RESULTS.md` Context 2 already characterised —
   a known bottleneck, re-measured.
-- Per-dependency p99 comes from [step 72](docs/steps/step-72.md)'s tracing. Without it, a p99 breach
+- Per-dependency p99 comes from [step 72](step-72.md)'s tracing. Without it, a p99 breach
   can be reported but not attributed, which is the difference between a number and a finding.
 
 ## Tasks
