@@ -53,14 +53,26 @@ Out of scope (per brief): scheduled Pix, dynamic QR (Pix Cobrança), automatic r
 | Scalability | API versioning | No breaking changes for mobile clients |
 | Observability | SLOs monitored, alert before users notice | Runbooks linked |
 
-> **Measured, not just targeted.** An ad-hoc load-measurement pass ([`docs/load/`](docs/load/RESULTS.md))
-> exercises these targets against the docker-compose stack. Every **money-correctness** invariant held
-> under concurrent load (atomic double-entry, synchronous *and* asynchronous conservation, non-negative
-> balance, exact daily-limit reservation, idempotency). The **send `<2s p99`** target, however, is **not
-> met on the WSL2 test host**: a confirmed ~31s environment stall on ~1–4% of requests
-> (`docs/load/BOTTLENECK.md` RUNG 4) dominates the raw p99 — an infrastructure defect, not an application
-> one (trimmed of that stall, the application p99 fits the budget). Reported here honestly so the target
-> and the measurement do not drift; the run-gating SLO thresholds are step 47.
+> **Measured, not just targeted.** Two passes exercise these targets against the docker-compose stack.
+> An ad-hoc **correctness-under-load** pass ([`docs/load/`](docs/load/RESULTS.md)) found every
+> money-correctness invariant holding under concurrent traffic (atomic double-entry, synchronous *and*
+> asynchronous conservation, non-negative balance, exact daily-limit reservation, idempotency). The
+> **SLO pass** ([`load/RESULTS.md`](load/RESULTS.md), step 47) turns the two budgets into k6 thresholds
+> that fail the run, and reports:
+>
+> - **`<2s p99` on send and `<300ms p99` on balance are met at ~5 TPS** (98 ms and 11 ms, zero 5xx) and
+>   **missed at 58 TPS** (33.7 s and 23.1 s, 8.4% 5xx).
+> - The ~31s WSL2 environment stall (`docs/load/BOTTLENECK.md` RUNG 4) is real and present, but the
+>   per-dependency breakdown step 47 added points at something else first: the send path's p99 is
+>   **an AWS SDK connection-pool wait on DynamoDB**, and when it exceeds the acquisition timeout the
+>   request becomes a `500`. That is this application's configuration, not the host — the honest reading
+>   is that the platform has a concurrency ceiling of its own that no amount of better hardware moves.
+> - **fraud-service answers in 10 ms at every rate**, 5% of its 200ms budget — the deadline everyone
+>   expects to bind does not.
+> - Money stayed correct through **1,710 real mid-flight failures**: Σ balances 0, no negative balance,
+>   nothing stranded in clearing.
+>
+> Reported here so the target and the measurement do not drift.
 
 ### 1.3 Regulatory context
 

@@ -71,9 +71,20 @@ would leave two owners of the same numbers. The four additions become tasks 5-8 
 
 ## Verify locally
 ```bash
-docker run --rm -i --network=host grafana/k6 run - < load/k6/standard.js
-docker run --rm -i --network=host grafana/k6 run - < load/k6/black-friday.js
+bash tools/k6/seed/seed-load-test-fixtures.sh    # the 200-account ring, after every `down -v`
+bash load/k6/run.sh low                          # the floor, DEFAULT fraud thresholds
+bash load/k6/run.sh standard
+bash load/k6/run.sh black-friday
+bash load/k6/run-degradation.sh 8000 0.2         # task 8
 ```
+
+> **Corrected during implementation (2026-08-25).** This section originally read
+> `docker run … grafana/k6 run - < load/k6/standard.js`, piping the script on **stdin**. That cannot
+> work alongside task 1's shared `lib.js`: a script read from stdin has no directory, so k6 cannot
+> resolve a relative `import`. The runner bind-mounts the repo instead — and, more importantly, arms the
+> posture each profile is *defined* for (fraud thresholds, trace sampling ratio) and restores it in an
+> `EXIT` trap, which is a property a bare `docker run` line cannot have. `docs/local-dev.md` §5.10
+> carried the same broken commands and was fixed with it.
 
 ## Definition of Done
 - [ ] Three profiles with SLO thresholds that fail the run on breach

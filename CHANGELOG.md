@@ -10,6 +10,64 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Added
+- k6 load profiles (low, standard ~58 TPS, Black Friday 500+ TPS) with SLO-failing thresholds and RESULTS.md (step 47) · 2026-08-25
+  - `load/k6/` — `lib.js` (auth, the 200-account ring, the 70/20/10 mix, the tags, the thresholds),
+    the three profiles, `run.sh` (posture + run + artifacts + restore), `run-degradation.sh`,
+    `dependency-p99.js` and `capacity-delta.js`. The numbers and what they mean:
+    [`load/RESULTS.md`](load/RESULTS.md).
+  - **Open model, not closed.** The profiles use k6 arrival-rate executors, so the target TPS is an
+    *input*: when the platform cannot keep the schedule the shortfall is reported as `dropped_iterations`
+    rather than hidden by clients that politely slow down. The ad-hoc pass in `docs/load/` used
+    `constant-vus`, which is the right shape for "where does it bend" and the wrong one for "does it
+    hold 58 TPS".
+  - **The gate is `server_errors`, a custom metric — not k6's `http_req_failed`.** The built-in counts
+    every non-2xx as a failure, and on this platform a `422 LIMIT_EXCEEDED` is the system working. An
+    SLO that fails a run for refusing payments it is supposed to refuse is not an SLO.
+  - **What it found, all of it recorded rather than fixed** (step 47 measures; each fix is its own
+    change): the send path's ceiling is the **AWS SDK connection pool**, not the host and not DynamoDB,
+    and pool exhaustion surfaces as an unmapped `500 INTERNAL_ERROR` instead of a retry-safe `503`;
+    **fraud-service answers in 10 ms**, 5% of its 200 ms budget, at every rate — the deadline everyone
+    expects to bind does not; **the balance cache runs at a 7.9% hit rate under load**, because every
+    posting evicts both parties; and **for roughly an hour after a peak the outbox drain is the dominant
+    load on the synchronous money path**, because ADR-0019's lanes partition scheduling but not the
+    shared connection pool.
+  - **The degradation drill answers the question the brief actually asks.** With BACEN at 8,000 ms and a
+    fifth of sends external, the acknowledgement moved by **317 ms at the median and 1,355 ms at p99** —
+    internal and external rails compared *inside one run*, which is the only latency claim in this
+    document robust to the host's run-to-run drift. `p99 < 2s` is not a claim about a fast rail. What the
+    platform gave up instead was settlement completion: only 26% of external payments settled; the rest
+    were reversed by reconciliation, payers refunded.
+  - **And the finding worth the whole step: Σ is not a strong enough assertion.** 74 payments' worth of
+    money reached `SPI_CLEARING` and stayed there with **every transaction in a terminal state** — the
+    crash-after-commit window, with no `pix_transactions` row for the reconciliation scanner to find,
+    because that scanner is indexed on the record that failed to be written. Σ balances is still exactly
+    0 and no invariant is violated; the money is simply in the wrong account and nothing sweeps it. The
+    designed recovery (the caller retrying its `Idempotency-Key`, ADR-0014/0015) works and k6 never
+    retries — but a real client can also give up.
+  - Infrastructure deviations stated rather than glossed (`load/RESULTS.md` §3): WSL2's confirmed ~31s
+    stall, `dynamodb-local`'s single process, and the fact that the profiles ran in sequence on growing
+    tables, with run-to-run variance the same order as the effect measured.
+  AI: est 5h / actual 3h05 / ~90% generated / 0 issues caught in human review
+
+### Changed
+- **`http.client.requests` now ships a percentile histogram**, from common-lib's
+  `CommonMetricsAutoConfiguration` — the outbound half of the latency posture the server meter has had
+  since step 44 · 2026-08-25
+  - Without it the outbound meter exported `count`/`sum`/`max` only, and **no p99 existed to read**:
+    a send-path breach could be observed but not attributed. It is what lets `load/RESULTS.md` §4 rule
+    fraud-service out in one line instead of leaving it a suspect. No SLO bucket boundaries, unlike the
+    server meter — each dependency has its own budget (fraud 200 ms; ledger 3 s read timeout), so one
+    shared edge would be meaningful for one series and misleading for the rest.
+  - Asserted against a real `PrometheusMeterRegistry` (new test-scope dependency) rather than the
+    `SimpleMeterRegistry` the neighbouring tests use: `SimpleMeterRegistry` declares it does not support
+    aggregable percentiles, so it materializes no buckets and a test written against it would have
+    asserted a config flag while the filter did nothing.
+- `MANAGEMENT_TRACING_SAMPLING_PROBABILITY` is a compose knob (`TRACING_SAMPLING_PROBABILITY`, default
+  `1.0`) instead of a literal, so a load profile can measure at a production-shaped ratio and restore the
+  sandbox default afterwards — the change `infra/compose/platform.yml` already anticipated in its own
+  comment · 2026-08-25
+
 ### Milestone — money core complete (Sprints 1–7, steps 01–35) · 2026-08-18
 The platform reached its halfway mark: **the full money path is built, tested and proven under load.**
 - **What works end to end:** login → JWT; account & Pix-key management with internal key resolution; the

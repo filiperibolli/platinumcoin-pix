@@ -140,6 +140,19 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- The REAL registry, TEST scope (step 47). `percentilesHistogram(true)` is honoured only by a
+             registry that declares it supports aggregable percentiles; SimpleMeterRegistry declares it
+             does NOT, so a filter that switches the histogram on looks like a no-op there and a test
+             written against it would assert a config flag instead of an outcome. Asserting on the
+             Prometheus scrape text means CommonMetricsAutoConfigurationTest checks the thing that
+             actually has to be true — a `_bucket` series exists for the outbound meter — in the same
+             registry every service runs. Same reasoning as the OTel SDK harness below. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- OTel SDK test harness (step 72): TracePropagationTest exercises the queue-crossing helper
              against a real SDK with an in-memory exporter, so a propagation bug is found in milliseconds
              instead of inside a Testcontainers IT. TEST scope. -->

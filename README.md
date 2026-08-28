@@ -184,7 +184,7 @@ a Mermaid sequence diagram in [`ARCHITECTURE.md`](ARCHITECTURE.md) §6.
 - **Latency-budgeted fraud scoring**: 200ms hard budget with fail-open fallback and post-hoc review (trade-off in ADR-0005).
 - **Microservice decomposition by domain**, spec-driven implementation, TDD, and AI-assisted development discipline (`CLAUDE.md`).
 - **Observability that answers business questions**: Grafana dashboards including a payment funnel (received → fraud-checked → debited → settled) on top of Prometheus metrics, plus SLF4J logs that let you follow one transaction across every service with a single `grep cid=<id>` — the correlation id is in the log *pattern*, so it is on every record, framework lines included (ADR-0012, which also states the sandbox posture: values in the clear, secrets never).
-- **Load testing against the stated SLOs**: three k6 profiles (low, standard ~58 TPS, Black Friday 500+ TPS) asserting the p99 targets.
+- **Load testing against the stated SLOs**: three k6 profiles (low, standard ~58 TPS, Black Friday 500+ TPS) whose thresholds **fail the run** on a p99 breach — and which did fail, informatively. [`load/RESULTS.md`](load/RESULTS.md) records both budgets met at 5 TPS and missed at 58, the p99 attributed per dependency (fraud-service: 10 ms, 5% of its budget; the wall is an AWS SDK connection pool on the DynamoDB path), a **31 WCU-per-send capacity budget with the bill attached**, and money conserved through 1,710 real mid-flight failures.
 - **API DX, built incrementally**: two **living** manual-test harnesses that grow with the platform, not big-bang artifacts — a **Postman collection** and a self-contained, offline **HTML API explorer** (open-from-disk, pre-filled valid requests, tabs per service, in-memory token auto-attached). Every endpoint is added to *both* in the same step that introduces it (convention enforced in `CLAUDE.md`); Sprint 13 only *finalizes* them (auth/idempotency automation, the guided journey, richer happy/error examples).
 - **The relational counterpart, measured**: a `labs/ledger-pg` module implements the same ledger port on PostgreSQL with **both** locking strategies (pessimistic `SELECT FOR UPDATE` and optimistic versioning), passes the same invariant storm suite, and documents `EXPLAIN` plans, index write-cost and a contention benchmark vs. the DynamoDB path (ADR-0009, Block Q).
 - **Async cold-statement retrieval**: historical statement export as `202 Accepted` + polling status URL + downloadable artifact — the standard fintech pattern for slow reads (step 53).
@@ -278,7 +278,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── labs/ledger-pg/            ← (steps 50-51) non-deployable lab: relational ledger counterpart
 ├── infra/                     ← (created in step 06) docker-compose, LocalStack init
 │   └── observability/         ← (step 44) Prometheus config + Grafana provisioning/dashboards
-├── load/k6/                   ← (step 47) k6 load-test scripts: low, standard, black-friday
+├── load/                      ← (step 47) k6 SLO profiles (k6/) + RESULTS.md: the measured numbers
 ├── scripts/trace.sh           ← (step 44) reconstruct one payment's path across every service by id
 ├── tools/postman/             ← Postman collection + env (living: one request per endpoint; finalized step 48)
 ├── tools/api-explorer/        ← single-file HTML API explorer (living: one card per endpoint; finalized step 49)

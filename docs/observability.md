@@ -146,6 +146,20 @@ Who emits which stage:
   the only honest way to answer an SLO stated for the platform.
   **Why explicit SLO buckets:** "what fraction met the SLO?" becomes a division of two counters instead of
   an interpolation between whatever edges the default histogram happened to pick.
+- **`http_client_requests_seconds_*`** — the same measurement from the other side: how long *this*
+  service waited on another, tagged `client_name` (`ledger-service`, `fraud-service`, `account-service`)
+  and `uri`. `CommonMetricsAutoConfiguration` gives it a **percentile histogram** too, since **step 47** —
+  before that it exported `count`/`sum`/`max` only, from which no percentile can be recovered, and a
+  send-path p99 breach could be *observed* but not *attributed*. It carries **no** SLO buckets, unlike the
+  server meter: each dependency has its own budget (fraud 200 ms, ADR-0005; ledger 3 s read timeout), so a
+  single shared boundary would be meaningful for one series and misleading for the rest.
+  **What it is for, concretely:** `load/RESULTS.md` §4 uses it to show that fraud-service answers in 10 ms
+  under every load profile — 5% of its budget — while the p99 of a send is a DynamoDB call. The suspect
+  everyone names was ruled out by a `_bucket` series that did not exist a step earlier.
+  > **A gap to know about:** a `RestClient` call built with a `uriBuilder ->` lambda reports `uri="none"`,
+  > because Micrometer cannot recover a URI template from a lambda. Two calls on the send path do this
+  > (`HttpPixKeyResolver`, and the statement query in `HttpLedgerClient`). The *dependency* is still
+  > attributed; the *route within it* is not.
 - **`up{job="pix-services"}`** — free from the pull model: if Prometheus cannot reach a service, *that is*
   the signal, with no heartbeat logic to write.
 

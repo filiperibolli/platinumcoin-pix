@@ -672,5 +672,6 @@ Two buckets, created by `infra/localstack/init/09-audit.sh` (step 42) and writte
 ## 9. Capacity & local settings
 
 - All tables **on-demand** (PAY_PER_REQUEST) — no capacity planning locally, matches the auto-scaling NFR in prod.
+- **The capacity a send actually costs is measured, not assumed** ([`load/RESULTS.md` §6](../load/RESULTS.md#6-capacity-wcurcu-and-what-500-tps-costs), step 47): one internal send is **31 WCU** across the three tables it writes — 4 on `pix_idempotency`, 13 on `pix_transactions`, 14 on `pix_ledger` — of which **11 are GSI replication**, because every index here projects `ALL` and therefore copies the whole 529 B / 685 B item. At the brief's 5 M transactions/day that is ~$197/day of request units at on-demand list price, and a third of it is the indexes. `KEYS_ONLY` on `pix_transactions`' gsi1/gsi2 is the first lever if that ever matters.
 - No DynamoDB Streams used (polling outbox — ADR-0004); GSI3 on `pix_transactions` is sparse.
 - Init scripts and exact `aws dynamodb create-table` commands live in `infra/localstack/init/` and are mirrored in `docs/local-dev.md`. They are added **incrementally, per sprint** (vertical delivery — see `PLAN.md`): accounts/keys in step 07, ledger in step 12, transactions/idempotency in step 17, `pix_processed_events` in step 29 — so at any point only the tables the built flows need exist.
