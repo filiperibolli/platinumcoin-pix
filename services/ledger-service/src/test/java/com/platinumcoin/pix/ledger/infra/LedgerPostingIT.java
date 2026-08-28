@@ -37,8 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * behind is worse than one that accepts.
  *
  * <p>What is deliberately <b>not</b> here: concurrency. The parallel debit storm, the "exactly
- * ⌊balance/amount⌋ succeed" property and Σ-conservation under contention are step 15's suite, which
- * is a hand-written zone.
+ * ⌊balance/amount⌋ succeed" property and Σ-conservation under contention are step 15's suite.
  */
 @SpringBootTest
 class LedgerPostingIT extends LocalStackTestBase {

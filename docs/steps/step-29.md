@@ -5,7 +5,7 @@
 ## Objective
 A scheduled `OutboxPublisher` in payment-service (fixedDelay 1s) queries the **sparse GSI3** for unpublished outbox items (oldest first), publishes each to SNS `pix-events` (messageAttributes `eventType`/`eventId`/`correlationId` for filter policies), then marks it published by **removing `gsi3pk`** (the item drops out of the sparse index). common-lib gains `ProcessedEventStore` (conditional-put dedup) that every consumer will use.
 
-## Why / what you'll learn
+## Why this step exists
 The **delivery** half of the outbox (ADR-0004): polling, not Streams. A 1s Query on a sparse index that only ever holds *in-flight* events is cheap (O(unpublished), never O(history)); removing `gsi3pk` is an atomic "done" flag. Publish-then-mark ⇒ crash between publish and mark ⇒ **at-least-once** redelivery — so every consumer must dedupe by `eventId`, which is exactly what `ProcessedEventStore` provides (a conditional put before side effects; `pix_processed_events`, consumer-scoped keys, 7-day TTL). Streams would be lower-latency but the most complex consumer in the project, buying nothing against a 10s SPI SLA (documented evolution).
 
 ## Prerequisites

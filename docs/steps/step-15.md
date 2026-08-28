@@ -1,13 +1,11 @@
-# Step 15 — Ledger invariant test suite (concurrency storm)  ✍️ hand-written zone
+# Step 15 — Ledger invariant test suite (concurrency storm)
 
 > **Sprint 3 — Ledger** · **Flow:** atomic double-entry posting · **Infra que sobe:** none new · **Diagram:** ARCHITECTURE §6.3
-
-> **Hand-written zone:** this entire suite is written by the human, by hand, without AI code generation and without IDE autocomplete on the first pass (AI may review the finished suite). Rationale: these tests double as deliberate practice of JUnit 5, `ExecutorService`/`CountDownLatch` and collections mechanics — the exact fluency a live pairing session demands. See CLAUDE.md → "Hand-written zones".
 
 ## Objective
 A dedicated IT class that attacks the ledger with concurrency and proves the financial invariants hold: no negative balance, no double-spend, conservation of money, exact accounting under contention.
 
-## Why / what you'll learn
+## Why this step exists
 Sequential tests can't catch race conditions — this step is where you *earn* confidence in the consistency mechanism. Patterns: `ExecutorService` + `CountDownLatch` to release N threads simultaneously; asserting **system-level invariants** (Σ balances constant) rather than per-call outcomes; classifying results (success vs INSUFFICIENT_FUNDS vs retried-conflict) and checking the arithmetic closes. This suite is the executable answer to design question 2 and the permanent guard-rail every later step runs against.
 
 ## Prerequisites

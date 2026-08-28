@@ -1,6 +1,6 @@
-# Learning — ADR-0003 (Async settlement + bounded reconciliation) · finalized by Step 35
+# Design note — ADR-0003 (Async settlement + bounded reconciliation) · finalized by Step 35
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0003-async-settlement-and-reconciliation.md](../adr/0003-async-settlement-and-reconciliation.md) · **Concept finalized by:** [Step 35](step-35.md) (reconciliation resolution + the `<5-min` SLO alert).
 > **Why Step 35:** the ADR has two halves — the **async accept** (`202` after the atomic debit; Steps 27–31) and the **bounded convergence** (retries/DLQ + a reconciliation loop that closes every stuck transaction inside 5 minutes; Steps 32–35). The concept is only *finalized* when "eventual" is provably **bounded**: that is Step 35, where the resolver finalizes-or-reverses stuck transactions and the `reconciliation.oldest.seconds > 300` alert guards the SLO.
 

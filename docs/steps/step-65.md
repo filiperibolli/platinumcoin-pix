@@ -17,7 +17,7 @@ generating a new one. Split the existing `IdempotencyStatus` into the phases the
 needs (`CLAIMED → POSTED → RECORDED → COMPLETED`), and stop the TTL from recycling an identity whose
 operation never reached `COMPLETED`.
 
-## Why / what you'll learn
+## Why this step exists
 **An identity that lives only in a heap is not an identity.** The lesson here is what "idempotent"
 actually requires: not one guard, but a *chain* — and a chain whose links are written at different
 times, in different places, has a gap exactly where the process can die. You'll see why the fix is to

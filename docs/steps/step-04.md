@@ -5,7 +5,7 @@
 ## Objective
 `POST /v1/auth/login` authenticates seeded demo users (alice, bob) and returns an HS256 JWT with claims `sub` (userId), `accountId`, `jti`, `iat`, `exp` (15 min). No AWS: users are seeded in config; tests run on MockMvc.
 
-## Why / what you'll learn
+## Why this step exists
 The token is the backbone of every later flow (you always have a way to authenticate). HS256 with a shared secret is the *local* choice; the production posture (RS256 + JWKS so services verify with a public key only) is documented in ADR-0007. Putting `accountId` in the token is the mechanism behind Domain Safety Rule #1: the debited account is taken from the token, never from a request body — later services depend on this claim existing.
 
 ## Prerequisites

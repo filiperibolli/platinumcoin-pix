@@ -5,7 +5,7 @@
 ## Objective
 Create `pix_transactions` (PK `TX#<txId>`, SK `META` or `OUTBOX#<eventId>`, GSI1 `E2E#<endToEndId>`, GSI2 `STATUS#<status>`+`updatedAt`, sparse GSI3 unpublished-outbox) and `pix_idempotency` (PK `IDEM#<accountId>#<key>`, TTL `expiresAt`) per `docs/data-model.md`.
 
-## Why / what you'll learn
+## Why this step exists
 All three GSIs on `pix_transactions` are created **now**, even though only some are used this sprint: GSI1 (E2E lookup) and GSI2 (reconciliation scan) and GSI3 (outbox publisher) matter for the external/async flow (Sprint 6–7). Creating all three GSIs up front is a *choice*, not a constraint — unlike LSIs, **GSIs can be added to an existing table later** (`UpdateTable` + backfill); we create them now because the key schema is already fully designed and backfilling a fat table later is slow and costly. The single-table design keeps outbox items in the same table so one `TransactWriteItems` later covers tx+event. You'll also set up TTL on `pix_idempotency` (DynamoDB auto-deletes expired items) — the replay window is 24h.
 
 ## Prerequisites

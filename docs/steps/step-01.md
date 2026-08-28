@@ -5,7 +5,7 @@
 ## Objective
 A buildable Maven multi-module repository: parent POM, empty `services/common-lib` module, `.gitignore`, `.editorconfig`. `mvn clean package` succeeds.
 
-## Why / what you'll learn
+## Why this step exists
 Multi-module Maven is how a polyrepo-like microservice layout lives in one repo: the **parent POM** centralizes versions (Java 21, Spring Boot BOM, AWS SDK BOM, Testcontainers BOM) via `dependencyManagement`, so no module ever declares a version by hand — this is the single most effective defense against dependency drift between services. `common-lib` exists from day one so shared code has an obvious home and doesn't get copy-pasted later. In the vertical plan, this is the only "layer" step: everything after it is a flow.
 
 ## Prerequisites

@@ -14,7 +14,7 @@ today's behaviour (`SKIPPED`, fail-open, `WARN`). A **non-transient** failure �
 not slow — becomes a distinct `FRAUD_ERROR`: the payment still proceeds, but at `ERROR`, on its own
 metric series, under its own alert, and stamped durably on the transaction.
 
-## Why / what you'll learn
+## Why this step exists
 **Not every failure is the same failure, and one `catch` block is a claim that they are.** ADR-0005's
 fail-open is an argument about *capacity* — the check ran out of time, the risk is bounded, payments
 should continue. This step is about noticing the exact point where that argument stops applying: a

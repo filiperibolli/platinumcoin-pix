@@ -14,7 +14,7 @@ Make a finalizer win exclusivity **before** it moves money. Add the non-terminal
 precondition for posting anything. The loser of the CAS returns having moved nothing. Reconciliation
 completes a stalled fence **in the direction it was fenced**, never the other one.
 
-## Why / what you'll learn
+## Why this step exists
 **Where you put the CAS is the whole design.** The platform already has the right mechanism — a
 conditional write that returns "did I win" — and already uses it correctly one state earlier
 (`markSentToSpi`). This step is about *ordering*: a guard after the money records who won a race that

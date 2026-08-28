@@ -13,7 +13,7 @@ Split the single outbox drain into three prioritised lanes with independent publ
 backpressure and a per-lane queue-age SLO, and parallelise the settlement consumer — so an event
 nobody is waiting on can no longer delay one that money depends on.
 
-## Why / what you'll learn
+## Why this step exists
 **Head-of-line blocking, and the day it reversed a real payment.** One FIFO means the queue's slowest
 or largest occupant sets everyone's latency, regardless of who is waiting on what — and here the
 blockers were 55,538 events *with no subscriber at all*. You'll learn to tell a **sizing** problem

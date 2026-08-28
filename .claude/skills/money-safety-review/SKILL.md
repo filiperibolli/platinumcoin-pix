@@ -46,7 +46,6 @@ For every rule, state **PASS** or **FAIL** with `file:line` evidence; on FAIL, g
 
 - Does the diff **contradict an ADR**? ADRs must not be silently violated — if the change genuinely needs to, the correct move is to **propose a new ADR**, not quietly diverge. Name the ADR and the conflict.
 - Does the code **drift from `docs/api/openapi.yaml`, `docs/data-model.md`, or the step spec**? If code and doc disagree, that is a defect: flag it and require the doc be updated **in the same change** (CLAUDE.md rule).
-- If the diff touches a **✍️ hand-written zone** (step-15 invariant suite, step-51 findings/psql, Sprint 15 concept-mastery docs `docs/concepts/`) with AI-generated code/prose, flag it — those are review-only for the AI.
 
 ## Output format
 

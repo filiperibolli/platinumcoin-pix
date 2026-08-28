@@ -5,7 +5,7 @@
 ## Objective
 `infra/docker-compose.yml` gains **LocalStack** with **DynamoDB enabled** (only what this flow needs), healthchecked, on the `pix-net` network. Other AWS services (SNS/SQS/S3) and Redis stay off until the flow that needs them.
 
-## Why / what you'll learn
+## Why this step exists
 LocalStack is a local AWS emulator: your code uses the real AWS SDK, pointed at `http://localstack:4566` with dummy credentials — so the code you write locally is the code that runs on AWS, only the endpoint differs. The vertical discipline shows here: we enable **only DynamoDB** now; each later sprint flips on the next service. Compose `healthcheck` + `depends_on: condition: service_healthy` encodes startup ordering — a taste of what k8s solves at scale.
 
 ## Prerequisites

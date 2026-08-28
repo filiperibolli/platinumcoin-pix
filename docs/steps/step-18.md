@@ -5,7 +5,7 @@
 ## Objective
 `POST /v1/payments/pix` exists end-to-end in the thinnest useful form: JWT-authenticated, validates the body per OpenAPI, generates `txId` + Pix-standard `endToEndId`, persists the transaction as `RECEIVED` in `pix_transactions`, returns **202 + `Location`**. No ledger, fraud, limits or idempotency yet — those thicken the skeleton across steps 19–21.
 
-## Why / what you'll learn
+## Why this step exists
 The **walking-skeleton** technique: get a real, persisted, JWT-protected request working with the correct *shape* (status codes, headers, ids, contract) before adding behavior. You'll generate the `endToEndId` in the Pix standard `E<ISPB><timestamp><random>`, which becomes the idempotency key toward BACEN later. Crucially, the debtor account is read **from the JWT `accountId` claim** — the request body has `pixKey`, `amount`, `description` and *no* source-account field (Domain Safety Rule #1, enforced by making it inexpressible).
 
 ## Prerequisites

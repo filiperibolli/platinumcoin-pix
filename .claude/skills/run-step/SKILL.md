@@ -1,6 +1,6 @@
 ---
 name: run-step
-description: Execute exactly one PLAN.md implementation step end-to-end under the project's mandatory spec-driven, TDD, one-step-per-session workflow. Use when the human says "run the next step", "start step NN", "let's do the next step", "/run-step", or otherwise wants to build the next increment of the PlatinumCoin Pix platform. Enforces plan-before-code, the AI-metrics line, hand-written zones, Definition of Done, and STOP-after-one-step.
+description: Execute exactly one PLAN.md implementation step end-to-end under the project's mandatory spec-driven, TDD, one-step-per-session workflow. Use when the human says "run the next step", "start step NN", "let's do the next step", "/run-step", or otherwise wants to build the next increment of the PlatinumCoin Pix platform. Enforces plan-before-code, the AI-metrics line, the Definition of Done, and STOP-after-one-step.
 ---
 
 # run-step — build one PLAN.md step correctly
@@ -11,9 +11,9 @@ This skill runs **one** step and then stops. Never chain into the next step.
 
 ## Phase 0 — Load context (read before touching anything)
 
-1. Read `CLAUDE.md` fully: conventions, the six **Domain safety rules — NEVER violate**, the mandatory per-step workflow, hand-written zones (✍️), and the per-step AI-metrics rule.
+1. Read `CLAUDE.md` fully: conventions, the six **Domain safety rules — NEVER violate**, the mandatory per-step workflow, and the per-step AI-metrics rule.
 2. Open `PLAN.md`. Take the step the human named; if none, take the **first unchecked step only**.
-3. Read that step's `docs/steps/step-XX.md` **completely — it is the spec** (spec-driven). Then read what it references: the relevant `ARCHITECTURE.md` §, the cited ADR(s) in `docs/adr/`, `docs/data-model.md` / `docs/api/openapi.yaml` when the step touches schema or API, and the step's **ADR learning companion** if one exists (`docs/steps/step-XX-adrNNNN.md`).
+3. Read that step's `docs/steps/step-XX.md` **completely — it is the spec** (spec-driven). Then read what it references: the relevant `ARCHITECTURE.md` §, the cited ADR(s) in `docs/adr/`, `docs/data-model.md` / `docs/api/openapi.yaml` when the step touches schema or API, and the step's **ADR companion** if one exists (`docs/steps/step-XX-adrNNNN.md`).
 4. Confirm the step's **prerequisites are checked** in `PLAN.md`. If a prerequisite is unchecked, **STOP** and tell the human — do not proceed.
 
 ## Phase 1 — Plan, then wait
@@ -22,7 +22,6 @@ Before writing any code, reply with a short plan and **wait for explicit "go"**:
 
 - Restate the step's **objective** in one or two sentences.
 - List the **exact files** you intend to add or change.
-- Flag whether any part is a **✍️ hand-written zone**. If so, you **review only** — you do **not** generate that code, even if asked casually; remind the human it is a marked zone.
 - Record your honest time **estimate now** (the `est` metric — cheap, ~2 minutes).
 
 Do not start coding until the human says go.
@@ -42,10 +41,10 @@ Do not start coding until the human says go.
     Then check the step's box in `PLAN.md`.
 11. Commit with **Conventional Commits** (e.g. `feat(ledger): atomic double-entry posting (step 14)`), one step = one commit (or a small clean series). **Only commit/push if the human asked;** if on `main`, branch first.
 
-## Phase 4 — Stop & teach
+## Phase 4 — Stop
 
 12. **STOP.** Do not start the next step without explicit instruction.
-13. End with **one open-ended conceptual question** that forces synthesis (not recall) about a trade-off or edge case this step introduced — the human's primary objective is to learn.
+13. Close with a short note on any trade-off this step introduced whose consequences are not obvious from the diff.
 
 ## Never bend (Domain safety rules)
 

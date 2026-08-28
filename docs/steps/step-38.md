@@ -5,7 +5,7 @@
 ## Objective
 `notification-service` (port 8087): `GET /v1/notifications/stream` (JWT) holds an **SSE** connection per user; the service consumes `notification-queue` and routes events (`PixSettled`, `PixReceived`, `PixReversed`) to the connected emitter of the affected user. Heartbeats keep connections alive; disconnects clean up.
 
-## Why / what you'll learn
+## Why this step exists
 **SSE over WebSocket** (documented choice): notifications are one-directional server→client push, so SSE is simpler, auto-reconnecting and plain HTTP. You'll learn the different resource profile of a service that holds **long-lived connections** (a per-user emitter registry, heartbeats to defeat idle timeouts, cleanup on disconnect) — and the auth nuance for the SSE handshake (the allow-list hook left in step 05). The consumer dedupes by `eventId` like every other; a lost notification degrades UX only (state is still queryable), so this consumer can be best-effort.
 
 ## Prerequisites

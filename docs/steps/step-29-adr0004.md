@@ -1,6 +1,6 @@
-# Learning — ADR-0004 (Transactional outbox + polling publisher) · finalized by Step 29
+# Design note — ADR-0004 (Transactional outbox + polling publisher) · finalized by Step 29
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0004-transactional-outbox-with-polling-publisher.md](../adr/0004-transactional-outbox-with-polling-publisher.md) · **Concept finalized by:** [Step 29](step-29.md) (the polling publisher → SNS + the consumer-dedup store).
 > **Why Step 29:** ADR-0004 is two parts — the **guarantee** (state change + event committed in one `TransactWriteItems`; Step 28) and the **delivery** (a polling publisher that drains the sparse index at-least-once, with consumers deduping by `eventId`; Step 29). The pattern is only *complete and observable* once events actually leave the box and duplicates are handled — that's Step 29, which adds the `OutboxPublisher` and the `ProcessedEventStore`.
 

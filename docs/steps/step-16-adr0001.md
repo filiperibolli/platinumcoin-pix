@@ -1,6 +1,6 @@
-# Learning — ADR-0001 (DynamoDB for the ledger) · finalized by Step 16
+# Design note — ADR-0001 (DynamoDB for the ledger) · finalized by Step 16
 
-> **Type:** ADR learning companion (not an implementation step — it has no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — it has no tasks/DoD of its own).
 > **ADR:** [docs/adr/0001-dynamodb-for-the-ledger.md](../adr/0001-dynamodb-for-the-ledger.md) · **Concept finalized by:** [Step 16](step-16.md) (last step of Sprint 3 — Ledger).
 > **Why Step 16:** ADR-0001 answers design **Question 3 — "database for the ledger *and* the history"**. The ledger is built across Steps 12→16 (table+seed → balance read → atomic posting → invariant storm → statement). The *decision* is only fully realized once **history** is served from the same table: that lands in Step 16, which is therefore where the ADR's claim is complete and demoable end to end.
 
@@ -98,7 +98,7 @@ bash scripts/trace.sh <correlationId>     # step 44 — full cross-service path
 | `balanceCents >= :amount` + `attribute_not_exists(txId)` conditions | same repository; system accounts (`SPI_CLEARING`, `SEED`) exempted from the non-negative rule via an explicit **`AccountPolicy`** (Step 14) |
 | Strongly consistent balance read + `version` semantics | `DynamoLedgerRepository.getBalance` (`ConsistentRead=true`, Step 13) |
 | Statement / history pagination | `LedgerRepository.getEntries` (Step 16) — `begins_with(sk,"ENTRY#")`, `ScanIndexForward=false`, base64 `LastEvaluatedKey` cursor |
-| Proof the guarantees hold | Step 15 invariant storm (✍️ hand-written); the relational counterpart & benchmark in `labs/ledger-pg` ([ADR-0009](../adr/0009-relational-ledger-counterpart-lab.md), Steps 50–51) |
+| Proof the guarantees hold | Step 15 invariant storm; the relational counterpart & benchmark in `labs/ledger-pg` ([ADR-0009](../adr/0009-relational-ledger-counterpart-lab.md), Steps 50–51) |
 | Narrative / trade-off in the design doc | [ARCHITECTURE.md §8](../../ARCHITECTURE.md) (Question 3) |
 
 ---

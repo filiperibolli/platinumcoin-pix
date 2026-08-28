@@ -5,7 +5,7 @@
 ## Objective
 A `JwtAuthFilter` in common-lib validates `Authorization: Bearer` on every request (except `/auth/login`, `/actuator/**`, and the SSE handshake nuances), rejects invalid/expired tokens with `401`, and exposes an `AuthenticatedUser(userId, accountId)` principal to controllers.
 
-## Why / what you'll learn
+## Why this step exists
 Validation lives in **common-lib** so every user-facing service enforces auth by depending on the library — one implementation, no drift. The filter turns the `accountId` claim into a first-class principal that controllers inject, which is what makes "debit account from the token" (Domain Safety Rule #1) both easy and the *only* path. You'll learn the servlet filter chain ordering (auth after correlation-id, before controllers) and how to fail closed on auth while the rest of the platform fails open where appropriate.
 
 ## Prerequisites

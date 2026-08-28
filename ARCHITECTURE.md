@@ -465,7 +465,7 @@ Guards enforced *inside* the transaction (never as a prior read):
 - `attribute_not_exists` on the entry keyed by `txId` → **the same transaction can never post twice**.
 - a `version` counter on balances, incremented on every posting — an audit/debugging aid, **not a lock**: serialization of conflicting transactions is provided by DynamoDB itself (`TransactionConflict`), retried with jitter.
 
-Property-style concurrency tests (Sprint 3, step 15 — hand-written) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
+Property-style concurrency tests (Sprint 3, step 15) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
 
 **Clearing-account hot partition (forward reference to Sprint 14).** All external sends credit
 `ACCOUNT#SPI_CLEARING` → at 500 TPS that single item exceeds its real ceiling (a partition caps at

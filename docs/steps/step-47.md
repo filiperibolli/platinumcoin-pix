@@ -7,7 +7,7 @@
 ## Objective
 Three k6 scripts in `load/k6/` derived from the brief's numbers, each with **thresholds that fail the run** when SLOs break: `low.js` (~5 TPS), `standard.js` (~58 TPS — the 5M tx/day average — sustained 10 min), `black-friday.js` (ramp 58 → 300 → **500+ TPS** peak, spike-and-soak). A shared `lib.js` handles login, key setup and scenario mix (70% send / 20% balance / 10% statement). Results summarized in `load/RESULTS.md`.
 
-## Why / what you'll learn
+## Why this step exists
 Load testing that **asserts** the SLOs rather than eyeballing graphs: k6 `thresholds` (e.g. `http_req_duration{endpoint:send}: p(99)<2000`, `{endpoint:balance}: p(99)<300`, error rate `<1%`) turn the brief's targets into a pass/fail gate. You'll model a realistic traffic mix and the three shapes (quiet, average, peak), and learn to read where the system bends under the Black Friday ramp — which is exactly the input to the clearing-shard experiment (step 52).
 
 ## Prerequisites
@@ -40,10 +40,10 @@ run-failing thresholds already here are the bulk of the work, and duplicating th
 would leave two owners of the same numbers. The four additions become tasks 5-8 below.
 
 **Two dependencies this creates:**
-- Run **after** [step 71](docs/steps/step-71.md) (outbox lanes + parallel settlement consumer), or the
+- Run **after** [step 71](step-71.md) (outbox lanes + parallel settlement consumer), or the
   measurement is of a ~25 events/s drain that `docs/load/RESULTS.md` Context 2 already characterised —
   a known bottleneck, re-measured.
-- Per-dependency p99 comes from [step 72](docs/steps/step-72.md)'s tracing. Without it, a p99 breach
+- Per-dependency p99 comes from [step 72](step-72.md)'s tracing. Without it, a p99 breach
   can be reported but not attributed, which is the difference between a number and a finding.
 
 ## Tasks

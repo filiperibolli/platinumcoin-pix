@@ -5,7 +5,7 @@
 ## Objective
 mock-bacen gains `POST /simulate/inbound-pix` (generates an inbound payment and delivers it to settlement-service's `POST /v1/inbound/pix` webhook — authenticated with the shared `SPI_WEBHOOK_TOKEN` — retrying like BACEN would). settlement-service validates the token, dedupes by `endToEndId` (conditional write), resolves the key, posts **debit `SPI_CLEARING` / credit user**, records an INBOUND transaction with a `PixReceived` outbox event, acks 200.
 
-## Why / what you'll learn
+## Why this step exists
 Receiving is the double-entry **mirror** of sending: outbound debits the payer and credits clearing; inbound debits clearing and credits the user — same symmetry, opposite direction. Idempotency by `endToEndId` is essential because **BACEN may redeliver** (the inbound webhook is at-least-once, like everything else). You'll dedupe with the conditional-put idiom before the credit posting, so a redelivered inbound never double-credits. And because this endpoint **credits money**, it is never anonymous: it is JWT-exempt (no user is calling it) but guarded by a shared webhook token — an unauthenticated inbound webhook would let any local process mint spendable balance (threat model, boundary B4; production posture is mTLS + BACEN message signing).
 
 ## Prerequisites

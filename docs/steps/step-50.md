@@ -5,7 +5,7 @@
 ## Objective
 Create the non-deployable lab module of ADR-0009: the ledger posting port implemented on PostgreSQL (Testcontainers) with **two interchangeable strategies** — pessimistic (`SELECT ... FOR UPDATE`, deterministic lock order) and optimistic (version-column conditional update with bounded retry). Never wired to the running platform.
 
-## Why / what you'll learn
+## Why this step exists
 ADR-0001 chose DynamoDB and honestly named PostgreSQL as the legitimate default — but "documented as the alternative" is *citation, not experience*. This lab holds the relational side of the argument with first-hand code: **pessimistic** locking (`SELECT ... FOR UPDATE` on both account rows in deterministic id order — deadlock avoidance by lock ordering) vs **optimistic** (`UPDATE ... WHERE version = :v AND balance_cents >= :amt` with retry-with-jitter). Same `LedgerPort` interface as ledger-service, so the guarantees are directly comparable. Scope guard (ADR-0009): the lab never grows API endpoints or production posture — it exists to answer design questions.
 
 ## Prerequisites

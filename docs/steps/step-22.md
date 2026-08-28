@@ -5,7 +5,7 @@
 ## Objective
 Status query per OpenAPI: owner-only access; internal→external status mapping (RECEIVED/FRAUD_CHECKED/DEBITED/SENT_TO_SPI ⇒ `PROCESSING`; SETTLED; FAILED; REVERSED; REJECTED); `settledAt`/`failureReason` when present.
 
-## Why / what you'll learn
+## Why this step exists
 The **external status vocabulary** deliberately hides the internal state machine: clients see `PROCESSING / SETTLED / FAILED / REVERSED / REJECTED`, not `DEBITED` or `SENT_TO_SPI`. Mapping at the edge means you can evolve the internal machine without breaking mobile clients (API versioning discipline). For internal Pix this endpoint already returns a terminal state quickly; for external Pix (Sprint 6) it becomes the poll target while settlement runs. Ownership is enforced from the JWT — a user cannot read another account's transaction.
 
 ## Prerequisites

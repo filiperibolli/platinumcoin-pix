@@ -5,7 +5,7 @@
 ## Objective
 Replace the single `ACCOUNT#SPI_CLEARING` hot item with `CLEARING_SHARDS` (default 16) sub-accounts `SPI_CLEARING#00..#15` selected by hash of `txId`, keep every invariant intact (including reversal correctness), and demonstrate the before/after under the 500+ TPS k6 profile in `docs/sharding-findings.md`.
 
-## Why / what you'll learn
+## Why this step exists
 The write-sharding pattern end to end — not the diagram version, the one with the sharp edge: **a compensating reversal must hit the same shard that was credited**, or money silently migrates between shards and reconciliation breaks. The mechanism that removes the coupling is persisting `clearingShard` on the transaction at debit time (step 33 already reads "the exact clearing account used") — the reversal reads it, never re-derives. You'll also learn what a hot partition looks like in metrics (throttle/conflict counts, p99 climb) and how to *prove* a mitigation instead of asserting it — closing the "documented, N=1 locally" gap.
 
 ## Prerequisites

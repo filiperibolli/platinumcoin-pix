@@ -3,7 +3,7 @@
 > **Executed:** 2026-08-24, step 45 (Sprint 12 hardening gate) · **Against:** `main` at
 > `37832eb` + the step-45 branch · **Companion docs:** [`docs/threat-model.md`](threat-model.md)
 > (what an attacker wants), [`SECURITY.md`](../SECURITY.md) (posture & deliberate gaps),
-> [ADR-0007](adr/0007-jwt-hs256-local-rs256-production.md), [ADR-0012](adr/0012-verbose-logs-with-real-values.md),
+> [ADR-0007](adr/0007-auth-service-jwt-no-mfa.md), [ADR-0012](adr/0012-verbose-logs-with-real-values.md),
 > [ADR-0013](adr/0013-aws-credentials-and-iam-posture.md), [ADR-0017](adr/0017-workload-identity-for-internal-ports.md)
 
 ## How to read this

@@ -7,7 +7,7 @@
 
 > **Amended during implementation.** The step was specified with four writes and GSI1-based replay detection; both changed, and `docs/data-model.md` §3 + `ARCHITECTURE.md` §6.3 were updated in the same commit. **(a)** Four writes do not make the posting idempotent: an entry's key is `ENTRY#<timestamp>#<txId>`, so a retry of the same `txId` at a new instant writes a *different* key, the `attribute_not_exists` condition passes, and the payer is debited twice — precisely the retry idempotency exists for. The `TX#<txId>/POSTING` item keys the guard on the `txId` alone. **(b)** With `ReturnValuesOnConditionCheckFailure=ALL_OLD` on that put, the cancellation itself carries the committed command, so the replay/mismatch decision is made **strongly consistently with no extra read** — the eventually-consistent GSI1 re-read the task below described is no longer needed, and GSI1 stays a pure audit index (the guard item carries no `gsi1pk`).
 
-## Why / what you'll learn
+## Why this step exists
 **The heart of the whole system** — the direct answer to "how do you guarantee money is never debited without being credited": debit and credit are one ACID `TransactWriteItems`, so no intermediate state can exist. You'll learn to read `TransactionCanceledException.cancellationReasons()` to tell *which* condition failed (funds vs double-post vs conflict), to retry `TransactionConflict` with jitter, and to make the operation idempotent by `txId`. System accounts (`SPI_CLEARING`, `SEED` — both may hold negative balances by construction) skip the non-negative condition — encode that as an explicit `AccountPolicy`, not an if scattered through the code.
 
 ## Prerequisites

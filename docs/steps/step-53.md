@@ -5,7 +5,7 @@
 ## Objective
 Historical statement (beyond the hot window) as an asynchronous export: `POST` an export request → `202 Accepted` with a status URL → a queue-driven worker assembles the artifact from the cold archive (step 43) into `pix-statement-exports` → the status endpoint flips to `READY` with a download URL. The standard fintech pattern for slow reads ("building your statement…").
 
-## Why / what you'll learn
+## Why this step exists
 The async-request/polling contract done properly: request resources with ids and lifecycle (`PENDING → READY | FAILED`), idempotent request creation, a worker that is safe to retry, and the UX contract that lets a front-end poll politely. Also the S3 assembly pattern: many monthly JSONL objects → one export artifact (CSV) → time-limited presigned download URL. It reuses everything the platform already has (outbox, queues, DLQ, S3 archive) — a fitting capstone.
 
 ## Prerequisites

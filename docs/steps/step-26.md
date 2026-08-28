@@ -5,7 +5,7 @@
 ## Objective
 Enable **SNS + SQS** on LocalStack and create the SNS topic `pix-events`, the `settlement-queue` with its `settlement-queue-dlq` (redrive policy, maxReceiveCount 5), and the SNS→SQS subscription with a filter policy on `eventType`.
 
-## Why / what you'll learn
+## Why this step exists
 The messaging backbone comes up **only now**, for the first asynchronous flow — everything before this was synchronous. You'll learn SNS fan-out + SQS per-consumer queues (ADR-0004), **DLQ via redrive policy** (native to SQS — you get it for free, unlike Kafka; see the Kafka appendix), and **subscription filter policies** so a queue only receives the event types it cares about. `SERVICES` in the compose LocalStack config grows to `dynamodb,sns,sqs`.
 
 ## Prerequisites

@@ -13,7 +13,7 @@ Stop treating a ledger timeout as proof that nothing was debited. Introduce an e
 outcome, resolve it by re-POSTing the **same** `txId` (which the ledger already answers idempotently),
 and read the `replayed` flag the ledger already returns and the client currently discards.
 
-## Why / what you'll learn
+## Why this step exists
 **A distributed system needs a third word, and most codebases only have two.** A call either returned
 or it threw — and *unknown* is neither. You'll see how a missing word in a port's vocabulary becomes a
 wrong belief in a comment and then a double debit in production, and why the honest fix is a return

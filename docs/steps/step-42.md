@@ -5,7 +5,7 @@
 ## Objective
 Enable **S3** on LocalStack; create the `audit-queue` (+DLQ) subscribed to `pix-events` with **no filter** (all events), and the buckets `pix-audit-log` (versioning + Object Lock config documented) and `pix-statement-archive`.
 
-## Why / what you'll learn
+## Why this step exists
 The audit queue subscribes to **every** event (no filter policy) — the audit trail must be complete, unlike the notification queue. S3 comes up only now, for the flow that needs object storage. You'll configure the immutability posture — **versioning + Object Lock (compliance mode) + 5-year retention** — which LocalStack accepts as configuration even though the hard guarantee is AWS-side; documenting the difference honestly is part of the exercise. `SERVICES` grows to `dynamodb,sns,sqs,s3`.
 
 ## Prerequisites

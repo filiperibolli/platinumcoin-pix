@@ -5,7 +5,7 @@
 ## Objective
 Extend the send flow to the **external** case: when the resolved key is external (or resolves via BACEN's DICT, step 30), command the ledger posting **debit payer / credit `ACCOUNT#SPI_CLEARING`**, persist `status=DEBITED`, and answer `202 PROCESSING`. The user is not waiting on BACEN — settlement is the async half (steps 28–31).
 
-## Why / what you'll learn
+## Why this step exists
 Why the credit leg goes to an **internal clearing account**: you cannot span a distributed ACID transaction across PlatinumCoin and another bank, so the money is debited from the payer and parked in `SPI_CLEARING` (money in flight). Double-entry symmetry is preserved — every external send still writes a balanced posting. This step reuses the exact ledger `post()` contract from step 14, passing `SPI_CLEARING` as the credit account: the seam that will later accept a *sharded* clearing id (step 52) without any change here.
 
 ## Prerequisites

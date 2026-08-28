@@ -5,7 +5,7 @@
 ## Objective
 Idempotent init scripts that LocalStack runs on readiness, creating `pix_accounts` and `pix_keys` (with their GSIs) per `docs/data-model.md`, plus demo seed data (users alice/bob, their accounts and daily limits).
 
-## Why / what you'll learn
+## Why this step exists
 The "infrastructure as init script" pattern for local AWS: LocalStack executes `/etc/localstack/init/ready.d/*.sh` once ready. You'll model the two account-domain tables exactly from their **access patterns** (get accounts of a user, get account by id, resolve key→account, list keys of an account) — the DynamoDB way (keys are the answer to the queries, not a normalized schema). Only the tables this flow needs are created; ledger/transactions/etc. come up in their own sprints.
 
 ## Prerequisites
