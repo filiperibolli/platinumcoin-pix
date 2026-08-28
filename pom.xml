@@ -66,6 +66,9 @@
         <module>services/settlement-service</module>
         <module>services/notification-service</module>
         <module>services/mock-bacen-spi</module>
+        <!-- ADR-0009's non-deployable relational lab. In the default reactor (unlike tests/e2e below)
+             because it needs nothing but Docker, which every other *IT already needs. -->
+        <module>labs/ledger-pg</module>
     </modules>
 
     <!--

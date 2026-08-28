@@ -193,7 +193,17 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 **Flow delivered:** the same ledger, measured on PostgreSQL; clearing sharding proven; async cold export.
 **Infra que sobe:** PostgreSQL (Testcontainers, lab only — never wired to the platform).
 
-- [ ] [Step 50](docs/steps/step-50.md) — `labs/ledger-pg`: same ledger port on PostgreSQL with pessimistic (`SELECT FOR UPDATE`) and optimistic (version column) strategies (ADR-0009)
+- [x] [Step 50](docs/steps/step-50.md) — `labs/ledger-pg`: same ledger port on PostgreSQL with pessimistic (`SELECT FOR UPDATE`) and optimistic (version column) strategies (ADR-0009)
+  > **Done 2026-08-28.** Two spec corrections are recorded in the step file rather than worked around: the
+  > tests are `*IT` (they need Docker, and the `docker.api.version` pin lives on failsafe only), and "the
+  > same `LedgerPort` as ledger-service" is a documented **mirror** — the deployable's artifact is a Boot
+  > fat jar, so depending on it would mean giving it a second artifact purely to serve a lab, which is the
+  > coupling ADR-0009 forbade. Parity is asserted by one shared contract suite, not by the compiler.
+  > **First result, before any benchmark:** of the two relational strategies the *optimistic* one is the
+  > closer relative of the DynamoDB path (guard inside the write), and the pessimistic one — the obvious
+  > relational answer — has no DynamoDB equivalent at all. Three findings handed to step 51 unfixed: a
+  > replay costs a lock under `FOR UPDATE`, the retry budgets differ on purpose (3 vs 8), and the
+  > `(account_id, posted_at)` index is deliberately absent so the `EXPLAIN` study can measure it both ways.
 - [ ] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB (findings doc + psql session)
 - [ ] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
 - [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact

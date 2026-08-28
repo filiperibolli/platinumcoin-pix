@@ -11,6 +11,60 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- labs/ledger-pg: relational ledger port on PostgreSQL with pessimistic and optimistic strategies (ADR-0009) (step 50) · 2026-08-28
+  - The non-deployable counterpart ADR-0001 owed the reader. "PostgreSQL is the legitimate default" was
+    **citation, not experience**; this module holds that side of the argument in code — the same
+    double-entry posting, the same invariants, two locking strategies, no wiring to the platform in
+    either direction (ADR-0020 §2: comparison and learning, **not** migration groundwork).
+  - **`PessimisticLedger`** locks both account rows with `SELECT … FOR UPDATE` in ascending id order,
+    then reads, decides and writes. **`OptimisticLedger`** locks nothing and conditions each write on
+    the version it read *and* on the funds — `UPDATE … WHERE version = :v AND balance_cents >= :amt` —
+    with a bounded retry-with-jitter. A shared `LedgerSql` holds everything that is *not* strategy, so
+    the two files differ only in the variable being compared.
+  - **The comparison already produced its first counter-intuitive result**, before any benchmark: of
+    the two relational strategies, the **optimistic** one is the closer relative of the DynamoDB path
+    (the guard is inside the write, exactly as a condition expression is), and the pessimistic one —
+    the obvious relational answer — has no DynamoDB equivalent at all, because DynamoDB has no "lock
+    this item" to offer. `PessimisticLedger` reads-then-checks and is still correct: the `FOR UPDATE`
+    makes the read and the write one *serialized region*, which is what Domain Safety Rule 3 is
+    actually about. The `CHECK (balance_cents >= 0)` stays as the backstop, and a test fires it on
+    every run so it is a constraint rather than a comment.
+  - **The idempotency guard is an index here.** `pix_ledger` needs a fifth item (`TX#<txId>`) because
+    its entry keys carry the timestamp, so a replay would collide with nothing; relationally the leg's
+    identity *is* `PRIMARY KEY (tx_id, direction)` and a replay is refused by a `23505`. Both
+    strategies insert the legs **before** evaluating the balance, mirroring the deployable's ordering
+    decision that idempotency outranks funds — a replay whose payer has since gone broke is still a
+    replay, and answering `INSUFFICIENT_FUNDS` would report a payment as failed that in fact succeeded.
+  - **12 tests, one contract written once and run twice**, and each asks the *database* rather than the
+    returned object: Σ balances conserved, Σ signed entries zero, exact entry counts (two, or zero),
+    account versions untouched when a posting is refused, no balance ever negative. Parity of
+    guarantees is the precondition ADR-0009 puts on any number step 51 later measures.
+  - **Reviewing the new code found a hole and it was closed in the same step, not noted for later.**
+    The deployable puts command validity in `PostDoubleEntryUseCase`, and the adapter is entitled to
+    assume it because the use case is the only way in. The lab has no use case layer, so `LedgerPort`
+    *is* the surface — and unguarded, two commands misbehaved. A **self-posting** committed as a
+    silent no-op under the pessimistic strategy (two entries against an unchanged balance, written
+    into an append-only history) and burned the whole retry budget before answering "busy" under the
+    optimistic one; DynamoDB refuses it outright, Postgres does not. A **negative amount** inverted
+    the posting entirely: `balance - (-x)` *adds* money to the debtor and `balance >= -x` is trivially
+    true, so the funds guard could not refuse it and only the credit side's `CHECK` eventually fired
+    as an opaque `23514`. Neither lost money, and both are now refused before a connection is opened.
+  - **Two spec corrections recorded in `docs/steps/step-50.md` rather than worked around**: the tests
+    are `*IT`, not `*Test` (they need Docker, and the `docker.api.version` pin lives on failsafe only);
+    and "the same `LedgerPort` as ledger-service" is a documented **mirror**, not a reuse — the
+    deployable's artifact is a Boot fat jar, so depending on it is impossible without giving it a second
+    artifact purely to serve a lab, which is the coupling ADR-0009 forbade. The parity is asserted by
+    the shared suite, not by the compiler.
+  - **Three findings handed forward to step 51, deliberately unfixed**: a replay costs a lock under the
+    pessimistic strategy (inherent to the ordering — checking `entries` first would be a read-then-check
+    race); the retry budgets differ on purpose (3 vs 8, because the two strategies pay for contention in
+    different currencies); and there is no `(account_id, posted_at)` index yet, because the `EXPLAIN`
+    study must measure it with and without.
+  - `docs/adr/0009-relational-ledger-counterpart-lab.md` gains an **amendment**: its decision 1 promised
+    "the same `LedgerPort` interface as ledger-service", which the code cannot deliver and the record
+    should not keep claiming. The ADR now states what was built and why, and notes the second-order
+    consequence — the lab has no use case layer, so command validity is enforced at the port.
+  AI: est 2h30 / actual 0h40 / ~95% generated / 2 issues caught in human review
 - Finalized single-file HTML API explorer: full guided journey (send → status → statement) and richer happy/error examples (step 49) · 2026-08-28
   - **Like step 48, the finalize step found the page could not be run.** Coverage was already complete —
     all ten paths of `docs/api/openapi.yaml` and all 21 controller routes had cards, and the guided

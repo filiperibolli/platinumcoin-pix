@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.platinumcoin.pix</groupId>
+        <artifactId>platinumcoin-pix-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>ledger-pg</artifactId>
+    <packaging>jar</packaging>
+
+    <name>PlatinumCoin Pix — labs/ledger-pg</name>
+    <description>Non-deployable lab (ADR-0009): the ledger's double-entry posting on PostgreSQL, in
+        two interchangeable strategies — pessimistic (SELECT ... FOR UPDATE, ordered locks) and
+        optimistic (version column + retry). Never wired to the platform, never dockerized.</description>
+
+    <!--
+      WHAT THIS MODULE IS NOT (ADR-0009, ADR-0020 §2). It is not a migration, not a second adapter for
+      ledger-service, and not a service: no Spring Boot, no Actuator, no Dockerfile, no compose entry,
+      no HTTP surface, and — deliberately — no dependency on any module of this repository, in either
+      direction. It exists to answer a design question with first-hand code, and the day its findings
+      favour PostgreSQL they authorize a new ADR, not a migration.
+
+      WHY IT IS IN THE DEFAULT REACTOR, unlike tests/e2e. tests/e2e needs the whole compose stack up;
+      this module needs nothing but Docker, which every other *IT here already needs. One disposable
+      Postgres container (~3s) is not worth a flag someone has to remember — the same reasoning that
+      pinned docker.api.version in the build instead of in a command (docs/local-dev.md §6).
+    -->
+
+    <!-- No <version> on any dependency: all versions come from the parent's BOMs. -->
+    <dependencies>
+        <!-- The JDBC driver. This lab talks to Postgres in plain SQL on purpose: the object of study
+             is the locking strategy, and an ORM would hide exactly the statements being compared. -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+
+        <!-- A real connection pool, not a convenience. Step 51 runs the step-15 invariant storm here
+             (dozens of threads posting at once); PGSimpleDataSource opens a fresh TCP connection and
+             a fresh backend process per call, so the numbers would measure connection setup rather
+             than contention — which is the one thing this lab exists to measure. -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+
+        <!-- SLF4J everywhere (ADR-0012), even here: never System.out, never a concrete logger API. -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- A binding only for the test run — the lab is a library, so it must not impose one on a
+             consumer. There is no consumer, and that is the point. -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Disposable Postgres. Same rule as every other *IT in this repo: the tests bring up their
+             own infrastructure and never depend on something already running. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
