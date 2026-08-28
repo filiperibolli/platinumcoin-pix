@@ -11,6 +11,73 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Finalized single-file HTML API explorer: full guided journey (send → status → statement) and richer happy/error examples (step 49) · 2026-08-28
+  - **Like step 48, the finalize step found the page could not be run.** Coverage was already complete —
+    all ten paths of `docs/api/openapi.yaml` and all 21 controller routes had cards, and the guided
+    journey had existed since step 39 — but nothing had ever *clicked* it. Driven in a headless Chromium
+    from `file://` against a freshly reset stack, **12 of 55 cards failed and one passed for the wrong
+    reason**. All 64 cards and all 52 journey steps are green now, with zero non-localhost requests.
+  - **The page had no payee.** The seed creates accounts, not keys, so nobody answered for
+    `bob@platinum.com` and four cards across three services returned `422 KEY_NOT_FOUND` — the internal
+    send, the idempotent replay, the inbound webhook and the BACEN inbound simulator. A new card
+    registers it **as bob** via a token minted for that one request (`asUser`), because the alternative
+    — logging in as bob — is the defect below.
+  - **`Login (bob)` was hijacking the session.** It captured the token, so every authenticated card on
+    every tab silently became bob: alice's e-mail registered on *bob's* account, and `Send Pix — alice →
+    bob` turned into bob paying bob. It no longer captures; **the Session panel owns identity and nothing
+    else may reassign it**, which is step 48's lesson transplanted from the collection to the page.
+  - **Ordering, again, not endpoints.** `DELETE /v1/pix-keys/alice@platinum.com` removed the key the two
+    Resolve cards below it and the internal send all needed — it now targets a disposable key registered
+    two cards above. Both balance cards sat *after* the sends, sharing one 5-second cache entry with the
+    same `asOf`, so the invalidation story they were written to tell could not happen; the first is now
+    the baseline, read before any money moves.
+  - **One card was passing for a reason unrelated to its rule.** `Send Pix — above daily limit` paid an
+    unregistered internal key: `422`, but `KEY_NOT_FOUND`, never `LIMIT_EXCEEDED`. It now pays
+    `bob@otherbank.com`, which resolves through the DICT and needs no setup.
+  - **All six observability cards failed the browser preflight**, while `curl` against the same URLs
+    answered `200`. The explorer seeds `X-Correlation-Id` on every card for its own benefit; Prometheus
+    is not our service and allows exactly `Accept, Authorization, Content-Type, Origin`, so the header
+    killed the request before it was sent. Prometheus is now marked `foreign` and gets no such header.
+  - **Two journey defects.** The observability step raced Prometheus's 10s scrape with a fixed 1.2s sleep
+    (a red step that measured the scrape interval, and stopped the two steps below it from ever running)
+    — it now polls for up to 25s. And it asserted `SENT_TO_SPI` had not moved: a process-wide counter
+    that any in-flight external payment moves, reporting somebody else's payment as this one's defect.
+    That is now **reported, not asserted**, with the reason — a sum by stage cannot attribute movement to
+    one transaction, which is the honest reason the trace step exists two rows below it.
+  - **New cards for the scenarios the coverage audit found missing**, all of which Postman had and the
+    page did not: a fraud `DENY` (against a *demo* account id — scoring records velocity, and demoing
+    R$ 50,000 against alice would deny her real payments for an hour), `403 INTERNAL_PORT_FORBIDDEN`
+    (the only place ADR-0017's refusal is watchable, via an opt-in `forceUserToken` no journey can
+    reach), a stream with no credential at all, and the DICT's `404`.
+  - **65 captured responses, on 64 of 64 cards** — the step's one genuinely unimplemented task. They are
+    transcripts, not prose: produced by the same headless run, with JWTs summarised to their claims.
+    Where the contract *is* the pair, both halves are kept — `201` then `409`, a cache miss then the hit
+    with the same `asOf`, a posting then the same `txId` replaying with `replayed: true`.
+  - **A fourth group, `Consoles`** — the UIs `docker compose up -d` already starts next to the eight
+    services, which nothing on the page mentioned before: Grafana (both provisioned dashboards),
+    Prometheus (targets, graph) and Jaeger (traces per service), each deep-linked to the view worth
+    seeing and carrying a live reachability dot (a `no-cors` fetch: it cannot read the response, but it
+    resolves on a connection and rejects when nothing is listening). Links rather than embeds, because
+    Grafana and Jaeger both refuse to be framed. It also states the two things that cost people time —
+    Prometheus is on `:9091` because mock-bacen-spi owns 9090 on the host, and `/alerts` is empty by
+    design since alerts are evaluated in settlement-service's `AlertEvaluator` — and lists the three
+    containers with no UI at all (LocalStack, DynamoDB Local, Redis) next to the shell command for each.
+  - **A fifth group, `Seed`** — one-click generators, because a freshly reset stack draws a wall of zeroes
+    and two seeded ledger rows cannot demonstrate pagination. **Everything, once** runs five recipes in
+    about 20 seconds: 12 internal Pix for the funnel, 8 sent + 6 received for the statement, 3 refusals
+    at 3 different stages for the rejected branch, 1 payment + 4 replays for `pix_idempotency_replayed_total`,
+    and 3 external sends plus one armed refusal for `SENT_TO_SPI` and `REVERSED`. On a pristine stack one
+    click takes every one of those series from empty to populated. It drives the **real public API** —
+    nothing is written behind the platform's back, or the dashboards would be showing something the code
+    path never did — and it is **sized against the platform's own rules**: every amount is a couple of
+    reais because the daily limit is R$ 5,000 and a single `HIGH_AMOUNT` would tip a velocity burst from
+    `REVIEW` into `DENY`. Measured on a fresh run: `REVIEW` 21, `DENY` 0, exactly as sized. The recipes
+    assert their own money invariants (Σ balances unchanged, one debit for five identical requests, an
+    exact refund) and the rail recipe disarms mock-BACEN in a `finally`.
+  - **Noted, not fixed** (recorded in `PLAN.md`'s backlog): paying your own Pix key hits the ledger's
+    permanent "both legs name the same account" refusal, which payment-service maps to
+    `503 LEDGER_UNAVAILABLE` + `Retry-After: 5` — asking the client to retry what can never succeed.
+  AI: est 5h / actual 0h50 / ~95% generated / 0 issues caught in human review
 - Unified Postman collection (all APIs by flow) with automated auth/idempotency and happy/error examples (step 48) · 2026-08-28
   - **The finalize step found the collection could not be run.** Its coverage was already complete — the
     gaps step-48.md names (mock-bacen chaos config, the inbound simulator, internal balance) had been

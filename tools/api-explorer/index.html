@@ -299,6 +299,46 @@
     .wire-status.ok { color: var(--ok); } .wire-status.bad { color: var(--err); }
     .wire-sec { padding: 8px 10px; }
     .wire-sec + .wire-sec { border-top: 1px dashed var(--line); }
+    /* Consoles: the web UIs the stack already ships. Cards, not an iframe — a dashboard squeezed into
+       a 900px column teaches nothing, and Grafana/Jaeger both refuse to be framed anyway. */
+    .con { border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+      padding: 16px 18px; margin-bottom: 12px; }
+    .con h4 { margin: 0 0 2px; font-size: 15px; display: flex; align-items: center; gap: 9px; }
+    .con h4 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+    .con h4 .dot.up { background: var(--ok); }
+    .con h4 .dot.down { background: var(--bad); }
+    .con h4 .port { font: 600 11px var(--mono); color: var(--muted); }
+    .con .q { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; font-style: italic; }
+    .con p { margin: 0 0 10px; font-size: 13px; }
+    .con .conlinks { display: flex; flex-wrap: wrap; gap: 8px; }
+    .con .conlinks a { display: inline-flex; align-items: center; gap: 6px; text-decoration: none;
+      font: 600 12px var(--sans); color: var(--text); background: var(--bg-2);
+      border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 11px; }
+    .con .conlinks a:hover { border-color: var(--accent); color: var(--accent); }
+    .con .conlinks a .why { font-weight: 400; color: var(--muted); }
+    .con .conlinks a:hover .why { color: var(--accent); }
+
+    /* Seed recipes: same card shell as a console, plus a running log. */
+    .con .vol { font: 600 11px var(--mono); color: var(--muted); }
+    .con .runbar { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    .con pre.log { margin-top: 10px; max-height: 240px; font-size: 12px; }
+    .con.wide { border-color: var(--accent); }
+    .seednote { border: 1px dashed var(--line-2); border-radius: 8px; padding: 11px 14px;
+      margin-bottom: 14px; color: var(--muted); font-size: 12.5px; }
+
+    /* Captured examples: the contract, readable with the stack down. Native <details> so a closed
+       example costs no JS and the page keeps working exactly the same from file://. */
+    .examples { margin-top: 14px; }
+    .examples > details { border: 1px solid var(--line); border-radius: 8px; margin-top: 6px; background: var(--bg); }
+    .examples > details > summary { cursor: pointer; padding: 8px 12px; font: 12px var(--mono); color: var(--muted);
+      display: flex; align-items: center; gap: 8px; list-style: none; }
+    .examples > details > summary::-webkit-details-marker { display: none; }
+    .examples > details > summary::before { content: '▸'; color: var(--muted); }
+    .examples > details[open] > summary::before { content: '▾'; }
+    .examples > details > summary .excode { font-weight: 700; }
+    .examples > details > summary .excode.ok { color: var(--ok); }
+    .examples > details > summary .excode.bad { color: var(--bad); }
+    .examples > details > pre { margin: 0 12px 12px; max-height: 300px; }
     .wire-label { font: 700 9.5px var(--sans); letter-spacing: .1em; text-transform: uppercase;
       color: var(--faint); margin-bottom: 5px; }
     .wire-label .cid { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--muted);
@@ -381,6 +421,9 @@
       phone: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18.5h2"/></svg>',
       route: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M9 19h6a4 4 0 0 0 0-8H9a4 4 0 0 1 0-8h3"/></svg>',
       grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+      screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3.5" width="19" height="13" rx="2"/><path d="M8 20.5h8M12 16.5v4"/></svg>',
+      spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5l2.2 5.6 5.6 2.2-5.6 2.2L12 18.1l-2.2-5.6L4.2 10.3l5.6-2.2z"/><path d="M18.5 16.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/></svg>',
+      out: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
       check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
     };
 
@@ -515,14 +558,20 @@
     }
 
     // ---- Core request helper ------------------------------------------------------------------
-    async function send({ method, path, headers = {}, body = null, auth = false, base = null, token = null }) {
+    async function send({ method, path, headers = {}, body = null, auth = false, base = null, token = null,
+                          userTokenOnly = false }) {
       const h = { ...headers };
       // An /internal/** path ALWAYS gets a freshly minted service token, overriding both the session
       // and any explicitly passed one. Not a convenience: presenting a user's token here is precisely
-      // the defect step 68 removed, so the explorer must not have a code path that can still do it —
-      // the journeys below pass a user token to helpers like balanceCents(), and this is what makes
-      // that harmless instead of a working exploit.
-      const minted = await serviceTokenFor(path);
+      // the defect step 68 removed, so no caller may reach that state by ACCIDENT — the journeys below
+      // pass a user token to helpers like balanceCents(), and this is what makes that harmless instead
+      // of a working exploit.
+      //
+      // `userTokenOnly` is the one deliberate exception, and it exists so the refusal is watchable:
+      // exactly one card asks for it (fraud-service → "403 INTERNAL_PORT_FORBIDDEN"), because a rule
+      // nobody can see fail is a rule a reader has to take on faith. It is opt-in per call, named for
+      // what it does, and never reachable from a journey helper — the accident stays impossible.
+      const minted = userTokenOnly ? null : await serviceTokenFor(path);
       if (minted) h['Authorization'] = 'Bearer ' + minted;
       // Otherwise an explicit token wins over the session: a journey routinely acts as TWO users (bob
       // registers the key that alice then pays), and it must not log in and out to do it.
@@ -618,6 +667,28 @@
       return r;
     }
 
+    /**
+     * A token for another user, minted for ONE call and never stored in the session.
+     *
+     * Registering bob@platinum.com is a BOB action, but the reader is alice — and until step 49 the
+     * explorer had no way to express that, so nothing on the page ever registered the payee. Every
+     * send card, the inbound webhook and the BACEN inbound simulator all pay `bob@platinum.com`, and
+     * all four answered KEY_NOT_FOUND on a fresh stack. The alternative (have the card log in as bob)
+     * is worse than the gap it fills: it silently repoints the session, and every authenticated card
+     * below it starts acting as bob without saying so.
+     */
+    async function tokenAs(username) {
+      const r = await send({
+        method: 'POST', path: '/v1/auth/login',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password: username }),
+      });
+      if (!r.ok || !r.json || !r.json.accessToken) {
+        throw new Error(`Could not log in as ${username} (${r.status}) — is auth-service up?`);
+      }
+      return r.json.accessToken;
+    }
+
     async function loginFromForm() {
       $('loginBtn').disabled = true;
       try { await doLogin($('loginUser').value, $('loginPass').value); }
@@ -643,12 +714,6 @@
             body: JSON.stringify({ username: 'alice', password: 'alice' }, null, 2),
           },
           {
-            method: 'POST', path: '/v1/auth/login', title: 'Login (bob)', auth: false, capturesToken: true,
-            desc: 'Authenticate the seeded user bob (acc-002). Switches the in-memory token to bob.',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'bob', password: 'bob' }, null, 2),
-          },
-          {
             method: 'POST', path: '/v1/auth/login', title: 'Login — bad credentials (401)', auth: false, capturesToken: false,
             desc: 'Wrong password ⇒ 401 application/problem+json (code: INVALID_CREDENTIALS, no stack trace). Shows the RFC 7807 contract.',
             headers: { 'Content-Type': 'application/json' },
@@ -658,6 +723,12 @@
             method: 'GET', path: '/v1/auth/me', title: 'Me (echo principal)', auth: true, capturesToken: false,
             desc: 'Returns the caller identity the common-lib JwtAuthFilter derived from the token ({userId, accountId}). Log in first. Without a token: 401 (code: UNAUTHORIZED).',
             headers: {}, body: null,
+          },
+          {
+            method: 'POST', path: '/v1/auth/login', title: 'Login (bob) — a second user, a different accountId claim', auth: false, capturesToken: false,
+            desc: 'The same endpoint, a different seeded user: read the accountId claim in the returned token and it says acc-002, not acc-001. THIS CARD DOES NOT TOUCH YOUR SESSION, and that is a deliberate change (step 49). It used to capture the token like the alice card above, which meant one click silently repointed every authenticated card on every tab: "My account" started answering acc-002, "Register a Pix key" put alice\'s e-mail on BOB\'s account, and "Send Pix — alice → bob" became bob paying bob — a self-transfer the ledger refuses. Nothing was wrong with the platform; the tool was lying about who you were. THE SESSION PANEL AT THE TOP OWNS IDENTITY, and nothing else may reassign it: type bob/bob there to actually become bob. For a single call as somebody else, see account-service → "Register bob@platinum.com (as bob)", which borrows bob\'s token for one request and leaves your session alone.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'bob', password: 'bob' }, null, 2),
           },
           {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
@@ -682,9 +753,22 @@
           },
           {
             method: 'POST', path: '/v1/pix-keys', title: 'Register a Pix key', auth: true, capturesToken: false,
-            desc: 'Register a Pix key. Global uniqueness via a conditional PutItem (attribute_not_exists(pk)) — a value already taken by any account ⇒ 409 (code: KEY_ALREADY_EXISTS). EMAIL is normalized (trim + lowercase); a malformed value ⇒ 422 (code: INVALID_PIX_KEY). Set keyType to EVP and the server mints a UUID, ignoring keyValue. Owner comes from the JWT. Log in first.',
+            desc: 'Register a Pix key. Global uniqueness via a conditional PutItem (attribute_not_exists(pk)) — a value already taken by any account ⇒ 409 (code: KEY_ALREADY_EXISTS). EMAIL is normalized (trim + lowercase); a malformed value ⇒ 422 (code: INVALID_PIX_KEY). Set keyType to EVP and the server mints a UUID, ignoring keyValue. OWNER COMES FROM THE JWT: send this while the Session panel says acc-002 and alice\'s e-mail lands on BOB\'s account, permanently and with no error — the key is global, the owner is your token, and nothing about the request body could say otherwise. Log in first.',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'alice@platinum.com' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/pix-keys', title: 'Register bob@platinum.com (as bob — the payee every send needs)',
+            auth: false, capturesToken: false, asUser: 'bob',
+            desc: 'THE SETUP CARD THE PAGE WAS MISSING. The seed creates ACCOUNTS, not keys — so on a fresh stack nobody answers for bob@platinum.com, and every card that pays it (payment-service → "Send Pix — alice → bob", the idempotent-replay card, settlement-service → "Deliver an inbound Pix", mock-bacen-spi → "Simulate an inbound Pix") came back 422 KEY_NOT_FOUND. Send this once and all four work. A key belongs to whoever\'s token registers it, and this one must belong to BOB, so the card borrows bob\'s token for this single request — look at the preview: your session is untouched, which is the whole difference between this card and auth-service → "Login (bob)", the card that shows you a second identity without adopting it. Already registered ⇒ 409 KEY_ALREADY_EXISTS, which is a no-op here: it means the payee is ready.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'bob@platinum.com' }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/pix-keys', title: 'Register a DISPOSABLE key (the one the Delete card removes)', auth: true, capturesToken: false,
+            desc: 'A second key on your own account, registered for the sole purpose of being deleted by the card two below. It exists because the Delete card used to point at alice@platinum.com — the key the two Resolve cards and the internal send all depend on — so clicking this tab top to bottom disarmed the rest of the page and the next card answered 404 KEY_NOT_FOUND. A destructive card must own a disposable target. Delete it, Send this again, delete it again: the pair is replayable forever.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'alice.disposable@platinum.com' }, null, 2),
           },
           {
             method: 'GET', path: '/v1/pix-keys', title: 'List my Pix keys', auth: true, capturesToken: false,
@@ -692,8 +776,8 @@
             headers: {}, body: null,
           },
           {
-            method: 'DELETE', path: '/v1/pix-keys/alice@platinum.com', title: 'Delete a Pix key', auth: true, capturesToken: false,
-            desc: 'Delete an owned key ⇒ 204. Ownership-guarded: another account\'s key ⇒ 403 (code: KEY_FORBIDDEN, existence revealed on purpose — Pix keys are globally resolvable); an absent key ⇒ 404 (code: KEY_NOT_FOUND). Edit the value in the path to target a different key.',
+            method: 'DELETE', path: '/v1/pix-keys/alice.disposable@platinum.com', title: 'Delete a Pix key (the disposable one)', auth: true, capturesToken: false,
+            desc: 'Delete an owned key ⇒ 204. It targets the DISPOSABLE key two cards above, on purpose: pointed at alice@platinum.com this card silently broke both Resolve cards below it and the internal send on the payment tab. Ownership-guarded: another account\'s key ⇒ 403 (code: KEY_FORBIDDEN, existence revealed on purpose — Pix keys are globally resolvable); an absent key ⇒ 404 (code: KEY_NOT_FOUND), which is also what a second click gives you. Edit the value in the path to target a different key — and if you point it at alice@platinum.com, re-register it above before using the rest of the page.',
             headers: {}, body: null,
           },
           {
@@ -718,8 +802,13 @@
         blurb: 'The send-Pix entry point — the one endpoint an end user reaches to move money. Step 18 ships the walking skeleton of POST /v1/payments/pix: validate the body, mint a txId and a Pix-standard endToEndId (E&lt;ISPB&gt;&lt;yyyyMMddHHmm-UTC&gt;&lt;random&gt;), persist the transaction as RECEIVED, and return 202 + Location. The debtor is the JWT accountId claim, never the payload (there is no source-account field to send). Idempotency, limits, key resolution and the ledger debit thicken this skeleton across steps 19–21; step 22 adds GET /v1/payments/{id}, the owner-only status poll that maps the internal state machine onto the external PROCESSING/SETTLED/FAILED/REVERSED/REJECTED vocabulary. Step 40 adds GET /v1/accounts/me/balance — the platform\'s highest-volume read, served cache-aside from Redis (5s TTL) with a ledger fallback and invalidated by ledger-service on every posting, under a hard 300ms p99 budget.',
         endpoints: [
           {
+            method: 'GET', path: '/v1/accounts/me/balance', title: 'Balance — the baseline (press Send TWICE: miss, then hit)', auth: true, capturesToken: false,
+            desc: 'READ THIS FIRST, BEFORE THE SENDS BELOW — it is the baseline the last balance card is compared against, and it used to sit AFTER them, so both balance cards answered from the same 5-second cache entry, showed the same asOf, and the invalidation story they were written to tell could not happen. The platform\'s highest-volume read (step 40, ADR-0008), and the one with a hard 300ms p99 budget: ~10 balance reads happen per transaction, every time somebody opens the app. It is served CACHE-ASIDE on Redis. Press Send ONCE: that is a MISS — payment-service asks ledger-service for a strongly-consistent balance, writes balance:&lt;accountId&gt; into Redis with EX 5, and answers. Press Send AGAIN within five seconds: that is a HIT, and ledger-service logs NOTHING AT ALL — the silence is the cache working. Confirm both from the outside: docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001 (the stored JSON) and ... TTL balance:acc-001 (≤ 5, the staleness ceiling in seconds); the hit rate itself is at /actuator/metrics/pix.cache.hit and /actuator/metrics/pix.cache.miss (a Prometheus registry, and the cache_hit_total series, arrive in step 44). THE ACCOUNT COMES FROM YOUR TOKEN: the path is /me and there is no parameter that could name another account — the same mechanism that protects the debited account on a send (Domain Safety Rule #1). asOf is WHEN THE LEDGER WAS READ, not the time of the response, so a hit honestly reports that its number may be up to 5s old. WHY THAT STALENESS IS SAFE: no money decision ever reads this value. The balance &gt;= amount guard is a condition expression INSIDE the ledger\'s atomic TransactWriteItems, so a cache that is stale, corrupt or entirely down changes what you SEE for at most five seconds and can never change what the ledger ALLOWS. The build enforces it — an ArchUnit rule fails if any use case other than GetBalanceUseCase so much as references the cache port. And the failure posture inverts the usual cache risk: stop Redis (docker compose ... stop redis) and this card still answers 200, just from the ledger every time. Losing the cache costs latency, never correctness or availability.',
+            headers: {}, body: null,
+          },
+          {
             method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — alice → bob (202)', auth: true, capturesToken: false, idempotent: true,
-            desc: 'Accept a send-Pix: 202 Accepted with a Location header (/v1/payments/&lt;txId&gt;) and {transactionId, endToEndId, status:"PROCESSING"}. The transaction is persisted as RECEIVED — 202 means "accepted for processing", not settled, and the external status hides the internal state machine. Note the body has pixKey, amount, description and NO source-account field: the debited account comes from your token\'s accountId claim (Domain Safety Rule #1), so a client cannot even express a different debtor. The endToEndId is minted now because it is stable for the transaction\'s whole life and later becomes the idempotency key toward BACEN. An Idempotency-Key header is auto-attached (required by the contract); this skeleton accepts and ignores it — the claim + replay + 409-on-mismatch is step 19.',
+            desc: 'Accept a send-Pix: 202 Accepted with a Location header (/v1/payments/&lt;txId&gt;) and {transactionId, endToEndId, status:"PROCESSING"}. The transaction is persisted as RECEIVED — 202 means "accepted for processing", not settled, and the external status hides the internal state machine. Note the body has pixKey, amount, description and NO source-account field: the debited account comes from your token\'s accountId claim (Domain Safety Rule #1), so a client cannot even express a different debtor. The endToEndId is minted now because it is stable for the transaction\'s whole life and later becomes the idempotency key toward BACEN. An Idempotency-Key header is auto-attached (required by the contract); this skeleton accepts and ignores it — the claim + replay + 409-on-mismatch is step 19. SETUP: bob@platinum.com must be registered or this answers 422 KEY_NOT_FOUND — one click on account-service → "Register bob@platinum.com (as bob)".',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '125.50', description: 'explorer manual test' }, null, 2),
           },
@@ -737,9 +826,9 @@
           },
           {
             method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — above daily limit (422 LIMIT_EXCEEDED)', auth: true, capturesToken: false, idempotent: true,
-            desc: 'Step 20\'s daily-limit check (ADR-0007). Before any money moves, the debtor\'s dailyLimitCents is read server-side from account-service and the amount is reserved against a per-account, São-Paulo-calendar-day counter. The seeded limit is R$ 5,000.00, so a single R$ 9,000 send alone exceeds it → 422 LIMIT_EXCEEDED and NO transaction is persisted. The check returns a decision object (ALLOW/DENY/REQUIRE_STEP_UP), not a boolean: REQUIRE_STEP_UP is the MFA seam — today it maps to deny, so adding a step-up challenge later changes one branch, not the flow. Usage is a maintained counter with reserve/release semantics, not a query-and-sum.',
+            desc: 'Step 20\'s daily-limit check (ADR-0007). Before any money moves, the debtor\'s dailyLimitCents is read server-side from account-service and the amount is reserved against a per-account, São-Paulo-calendar-day counter. The seeded limit is R$ 5,000.00, so a single R$ 9,000 send alone exceeds it → 422 LIMIT_EXCEEDED and NO transaction is persisted. The check returns a decision object (ALLOW/DENY/REQUIRE_STEP_UP), not a boolean: REQUIRE_STEP_UP is the MFA seam — today it maps to deny, so adding a step-up challenge later changes one branch, not the flow. Usage is a maintained counter with reserve/release semantics, not a query-and-sum. WHY THE PAYEE IS bob@otherbank.com AND NOT bob@platinum.com: this key resolves through BACEN\'s DICT and needs no setup, so the 422 you get back can only be LIMIT_EXCEEDED. Pointed at an unregistered internal key the card still answered 422 — but with code KEY_NOT_FOUND, passing for a reason unrelated to the rule it was written to prove, which is the most expensive kind of green.',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pixKey: 'bob@platinum.com', amount: '9000.00' }, null, 2),
+            body: JSON.stringify({ pixKey: 'bob@otherbank.com', amount: '9000.00' }, null, 2),
           },
           {
             method: 'POST', path: '/v1/payments/pix', title: 'Send Pix — external (bob@otherbank.com, 202 → async settlement)', auth: true, capturesToken: false, idempotent: true,
@@ -756,11 +845,6 @@
           {
             method: 'GET', path: '/v1/payments/{txId}', title: 'Get payment status (200)', auth: true, capturesToken: false, syncFromTxId: true,
             desc: 'Owner-only status query (step 22). Any send above captures its transactionId and drops it into the editable Request path below, so this card is already pointed at the Pix you just created — but the path is a plain input: paste ANY txId to inspect a different transaction (e.g. one from a previous run). The response is the EXTERNAL view of the internal state machine: clients see PROCESSING / SETTLED / FAILED / REVERSED / REJECTED, never internal names like DEBITED, so the machine can evolve without breaking mobile clients (API versioning discipline). An INTERNAL send has already settled — the atomic ledger posting IS the settlement — so it reads back SETTLED with settledAt even though the 202 said PROCESSING. An EXTERNAL send (bob@otherbank.com) is still PROCESSING at 202: hit "Auto-poll" and watch it flip to SETTLED once settlement-service walks it through the SPI (it re-queries every 2s and stops on any terminal status). Ownership comes from the JWT: another account\'s token, or an unknown id, both return 404 PAYMENT_NOT_FOUND (never 403) so existence never leaks.',
-            headers: {}, body: null,
-          },
-          {
-            method: 'GET', path: '/v1/accounts/me/balance', title: 'Balance — press Send TWICE (miss, then hit)', auth: true, capturesToken: false,
-            desc: 'The platform\'s highest-volume read (step 40, ADR-0008), and the one with a hard 300ms p99 budget: ~10 balance reads happen per transaction, every time somebody opens the app. It is served CACHE-ASIDE on Redis. Press Send ONCE: that is a MISS — payment-service asks ledger-service for a strongly-consistent balance, writes balance:&lt;accountId&gt; into Redis with EX 5, and answers. Press Send AGAIN within five seconds: that is a HIT, and ledger-service logs NOTHING AT ALL — the silence is the cache working. Confirm both from the outside: docker compose -f infra/docker-compose.yml exec redis redis-cli GET balance:acc-001 (the stored JSON) and ... TTL balance:acc-001 (≤ 5, the staleness ceiling in seconds); the hit rate itself is at /actuator/metrics/pix.cache.hit and /actuator/metrics/pix.cache.miss (a Prometheus registry, and the cache_hit_total series, arrive in step 44). THE ACCOUNT COMES FROM YOUR TOKEN: the path is /me and there is no parameter that could name another account — the same mechanism that protects the debited account on a send (Domain Safety Rule #1). asOf is WHEN THE LEDGER WAS READ, not the time of the response, so a hit honestly reports that its number may be up to 5s old. WHY THAT STALENESS IS SAFE: no money decision ever reads this value. The balance &gt;= amount guard is a condition expression INSIDE the ledger\'s atomic TransactWriteItems, so a cache that is stale, corrupt or entirely down changes what you SEE for at most five seconds and can never change what the ledger ALLOWS. The build enforces it — an ArchUnit rule fails if any use case other than GetBalanceUseCase so much as references the cache port. And the failure posture inverts the usual cache risk: stop Redis (docker compose ... stop redis) and this card still answers 200, just from the ledger every time. Losing the cache costs latency, never correctness or availability.',
             headers: {}, body: null,
           },
           {
@@ -820,6 +904,11 @@
           {
             method: 'GET', path: '/v1/notifications/stream', title: 'My notification stream (SSE \u2014 open it, then make money move)', auth: true, capturesToken: false, stream: true,
             desc: 'OPEN THIS FIRST, LEAVE IT OPEN, then go make something happen in another tab \u2014 that is the whole demo. Log in as bob, click Open stream, then use mock-bacen-spi \u2192 "Simulate an inbound Pix to bob" and watch PixReceived land here live. Or log in as alice and send an external Pix (payment-service tab) to watch PixSettled arrive seconds later, the same information GET /payments/{id} would have told you only if you kept asking.\n\nWHAT YOU WILL SEE ON THE WIRE. \u201c:connected sub-\u2026\u201d is the handshake, and \u201c:ping\u201d every 25s after that \u2014 both are SSE COMMENTS, which every client (EventSource included) ignores for free, so keeping a connection alive obliges no application code. Then each event is three lines: \u201cevent:PixReceived\u201d (the type, in the frame\'s own field, so a browser can addEventListener without parsing the body), \u201cid:evt-\u2026\u201d (the eventId, so a reconnect resumes via Last-Event-ID), and \u201cdata:{\u2026}\u201d \u2014 since step 39 ALWAYS the same seven fields, whatever the event: {transactionId, type, status, amount, counterpart, timestamp, failureReason}. Same external status vocabulary GET /payments/{id} answers (SETTLED / REVERSED), amount already a decimal string formatted at this edge, counterpart a display value and never an internal account id. One shape for all three events is what lets a client parse the push and the poll with the same code. To SEE it as a customer would, open the Phone tab \u2014 same endpoint, same bytes, rendered as an app.\n\nTHE PING IS ALSO THE GARBAGE COLLECTOR, which is the counter-intuitive part. Close this stream and the server is told NOTHING it will notice \u2014 an async response that is not being written to never learns its socket is gone \u2014 so the heartbeat is what discovers dead connections. A push service without one leaks a registration per customer who ever connected.\n\nYOU CAN ONLY EVER SEE YOUR OWN. The account comes from the JWT accountId claim; there is no path, query or body field naming an account, so \u201cstream someone else\'s payments\u201d is not a request this API can express \u2014 stronger than an ownership check, because nothing is left to check. Log in as the WRONG user and nothing arrives: that is the routing rule working (an outcome of a send belongs to the payer, an arrival belongs to the payee), not a failure.\n\nNOTE HOW THIS CARD AUTHENTICATES: it uses fetch with a real Authorization header, which a browser\'s EventSource cannot do \u2014 there is no API for setting headers on one. That limitation is exactly why the service also accepts ?access_token=; try the next card to see that it is a convenience and not a hole.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/v1/notifications/stream', title: 'Handshake \u2014 no credential at all (401 UNAUTHORIZED)', auth: false, capturesToken: false,
+            desc: 'The same stream with NO token in either place — no Authorization header, no ?access_token=. It answers 401 application/problem+json, exactly like every other guarded route: a stream is not a special case of authentication, and the refusal arrives as an ordinary finite response BEFORE any text/event-stream is opened. That ordering is the point — a 401 delivered as an SSE event would be unreadable to the very clients (EventSource) the query-string handshake exists for.',
             headers: {}, body: null,
           },
           {
@@ -899,6 +988,19 @@
             body: JSON.stringify({ accountId: 'acc-001', pixKey: 'bob@platinum.com', amountCents: 12550, timestamp: '2026-07-07T12:00:00Z' }, null, 2),
           },
           {
+            method: 'POST', path: '/internal/fraud/score', title: 'Score a transfer — high amount (DENY)', auth: true, capturesToken: false,
+            desc: 'R$ 50,000.00 fires HIGH_AMOUNT on its own, which alone reaches the deny band (≥70) → {decision:"DENY"}. NOTE THE accountId: it is a DEMO id, not acc-001, and that is a correctness detail rather than tidiness. This endpoint LOOKS like a query and is not — scoring RECORDS into the velocity windows it later reads (INCR + EXPIRE per minute and per hour), so scoring R$ 50,000 against alice pushes HER hourly VELOCITY_AMOUNT over the line and every genuine payment she makes for the next hour comes back 422 FRAUD_DENIED. The Postman collection did exactly that to itself and spent a while blaming the send path. A tool that demonstrates a check must not perturb the account the rest of the tool depends on.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId: 'acc-fraud-demo', pixKey: 'mule@otherbank.com', amountCents: 5000000 }, null, 2),
+          },
+          {
+            method: 'POST', path: '/internal/fraud/score', title: 'Score with a USER token (403 INTERNAL_PORT_FORBIDDEN)',
+            auth: true, capturesToken: false, forceUserToken: true,
+            desc: 'THE ONLY PLACE ON THIS PAGE WHERE STEP 68\'s RULE IS WATCHABLE. Every other /internal card silently mints a SERVICE token (typ=service, aud=fraud-service, scope=fraud:score) — which is right, and which also means you never see what happens when a customer credential is presented to a service-to-service port. This card deliberately sends YOUR LOGIN instead: 403 INTERNAL_PORT_FORBIDDEN, before any scoring runs. Log in first, or you get a 401 and learn nothing. Why the distinction matters: a user token is a claim about WHO IS SPENDING, a service token is a claim about WHICH SERVICE IS ASKING, and an internal port that accepts the first is one leaked customer JWT away from being an open scoring oracle. This is the one card in the explorer allowed to construct that request — the flag is named forceUserToken and no journey helper can reach it, so the mistake stays impossible everywhere else.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId: 'acc-fraud-demo', pixKey: 'bob@otherbank.com', amountCents: 1000 }, null, 2),
+          },
+          {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
             headers: {}, body: null,
@@ -949,6 +1051,11 @@
             headers: {}, body: null,
           },
           {
+            method: 'GET', path: '/spi/dict/ghost@nowhere.com', title: 'DICT \u2014 unknown key (404 DICT_KEY_NOT_FOUND)', auth: false, capturesToken: false,
+            desc: 'A key no participant holds ⇒ 404 DICT_KEY_NOT_FOUND. This is the THIRD of account-service\'s four resolution answers, and the only one you cannot see from the account-service tab: held here, held elsewhere, held NOWHERE (this card), directory unreachable. It is what turns a send into 422 KEY_NOT_FOUND at the edge, before any money moves — and note it is a 404 from the DICT but a 422 from the send: the directory is reporting a missing resource, while the payment is reporting a request that cannot be processed. A 404 on POST /v1/payments/pix would have said the PAYMENT endpoint does not exist.',
+            headers: {}, body: null,
+          },
+          {
             method: 'POST', path: '/simulate/inbound-pix', title: 'Simulate an inbound Pix to bob (money ARRIVES)', auth: false, capturesToken: false,
             desc: 'THE TRIGGER THAT MAKES MONEY ARRIVE (step 37) — and the one direction where this stub is the CALLER rather than the callee. It performs the two acts the originating side of a Pix performs: mint an endToEndId and present the payment to settlement-service\'s webhook (POST :8086/v1/inbound/pix, X-Webhook-Token), re-presenting it while the outcome is unknown. Register bob@platinum.com first (account-service tab), then Send and check bob\'s balance (ledger-service → Balance, account acc-002): debit SPI_CLEARING / credit acc-002, the exact mirror of an outbound send. Note /simulate/… and not /spi/…: everything under /spi stubs a real BACEN API that PlatinumCoin CALLS, while this has no real counterpart at all — no participant asks BACEN to send it money — so it is a test hook on the rail, in the same family as /admin/config, and naming it apart keeps the honest boundary visible. The minted endToEndId carries the PAYER\'s ISPB (99999999, Banco OtherBank), never PlatinumCoin\'s: an end-to-end id names the participant that ORIGINATED the payment. amount is a decimal string here because a HUMAN types it; the webhook one hop later carries integer amountCents. RETRYING IS THE FEATURE: a rail that delivered once and gave up would never exercise the receiving side\'s dedupe, so a 5xx or no answer re-presents the SAME id (3 attempts) while a 4xx stops at once and bounces — a decision, not a failure, and retrying a 401 forever is how a real integration wedges itself. The /admin/config dial deliberately does NOT apply here: those knobs model BACEN misbehaving TOWARD us on the settlement path. Try pixKey nobody@nowhere.com ⇒ 422 INBOUND_REFUSED (the participant answered 422 KEY_NOT_FOUND).',
             headers: { 'Content-Type': 'application/json' },
@@ -963,6 +1070,9 @@
       },
       {
         id: 'observability', name: 'observability', port: 9091, baseUrl: 'http://localhost:9091',
+        // `foreign` = not a PlatinumCoin service. It changes exactly one thing (no X-Correlation-Id is
+        // seeded onto these cards) and that one thing is what makes them work at all — see makeCard.
+        foreign: true,
         blurb: 'Not a service — the three layers that make the platform WATCHABLE (step 44): metrics (Micrometer → /actuator/prometheus, scraped every 10s), dashboards (Grafana at localhost:3000, anonymous Viewer so there is no login to get past, provisioned as code from infra/observability/ and never configured by hand) and alerts (an AlertEvaluator in settlement-service that announces FIRING/RESOLVED transitions with a runbook link). The base URL here is PROMETHEUS, so the cards below query it directly with PromQL — the same queries the Grafana panels run. Send a Pix from the payment-service tab (or run the Send Pix journey) and come straight back: the funnel moves in front of you. Full catalog and reasoning in docs/observability.md.',
         endpoints: [
           {
@@ -999,11 +1109,476 @@
       },
     ];
 
-    // ---- Navigation: three groups, because they answer three different questions ---------------
+    // ---- Consoles: the web UIs the stack already runs -------------------------------------------
+    // Everything else on this page is an API client. These are not — they are the three UIs docker-compose
+    // already brought up next to the eight services, and until now nothing said they existed, so a reader
+    // could finish the whole explorer without ever learning the platform ships dashboards and traces.
+    //
+    // Links, not embeds, and deliberately: Grafana and Jaeger both send X-Frame-Options / frame-ancestors
+    // that refuse an iframe, and a dashboard folded into a 900px column would teach less than its own tab.
+    // Each entry names the QUESTION its UI answers — the same split the Journeys/Services/Phone groups use —
+    // and every deep link goes straight to the view worth seeing rather than to a product's home page.
+    const CONSOLES = [
+      {
+        id: 'grafana', name: 'Grafana', port: 3000, url: 'http://localhost:3000',
+        question: 'Is the platform healthy, and is the money flowing?',
+        blurb: 'Two dashboards, provisioned as code from <code>infra/observability/grafana/</code> and never '
+          + 'configured by hand — delete the container, bring it back, they are still there. Anonymous Viewer '
+          + 'is on, so there is no login to get past; you also cannot save over them from the UI, which is the '
+          + 'point of provisioning. Both read the same Prometheus below.',
+        links: [
+          { label: 'Business funnel', href: 'http://localhost:3000/d/pix-business-funnel',
+            why: 'where payments die, by stage' },
+          { label: 'Technical', href: 'http://localhost:3000/d/pix-technical',
+            why: 'latency, errors, queues, cache' },
+        ],
+      },
+      {
+        id: 'prometheus', name: 'Prometheus', port: 9091, url: 'http://localhost:9091',
+        question: 'What is the raw number, right now?',
+        blurb: 'The metrics store the dashboards draw from — and the same instance the observability tab '
+          + 'queries with PromQL from inside this page. <b>It is on :9091 here, not :9090</b>: compose maps '
+          + '<code>9091:9090</code> because mock-bacen-spi already owns 9090 on the host, so Prometheus\'s own '
+          + 'links (which it builds from its internal port) can point somewhere unhelpful. <b>/alerts is empty '
+          + 'on purpose</b> — this platform evaluates alerts in-process, in settlement-service\'s '
+          + '<code>AlertEvaluator</code>, so they fire with the runbook link in the logs rather than here '
+          + '(docs/observability.md §4).',
+        links: [
+          { label: 'Targets', href: 'http://localhost:9091/targets',
+            why: 'the pull model, visible: 8 services scraped every 10s' },
+          { label: 'Graph', href: 'http://localhost:9091/graph',
+            why: 'ad-hoc PromQL, with autocomplete' },
+        ],
+      },
+      {
+        id: 'jaeger', name: 'Jaeger', port: 16686, url: 'http://localhost:16686',
+        question: 'What happened to THIS payment, across every service?',
+        blurb: 'The question a counter cannot answer. One send crosses payment-service → account-service → '
+          + 'fraud-service → ledger-service → SNS/SQS → settlement-service, and the trace is what holds those '
+          + 'six hops together as one story with per-hop latency — the asynchronous seam included, because the '
+          + 'traceparent rides on the message. Search by service, or paste the <code>X-Correlation-Id</code> '
+          + 'any card here shows you. Sampling is 1.0 in the sandbox (0.05 under load tests), so every request '
+          + 'you make from this page is there.',
+        links: [
+          { label: 'Traces — payment-service', href: 'http://localhost:16686/search?service=payment-service&limit=20',
+            why: 'start at the send, follow it outward' },
+          { label: 'Traces — settlement-service', href: 'http://localhost:16686/search?service=settlement-service&limit=20',
+            why: 'the far side of the queue' },
+        ],
+      },
+    ];
+
+    // The three backing containers with no UI at all. Listed because their ABSENCE is a question a reader
+    // will otherwise ask ("where is the DynamoDB console?"), and the honest answer is a command line.
+    const HEADLESS = [
+      { name: 'LocalStack (SNS/SQS/S3)', port: 4566,
+        how: 'aws --endpoint-url=http://localhost:4566 sqs list-queues' },
+      { name: 'DynamoDB Local', port: 8000,
+        how: 'aws --endpoint-url=http://localhost:8000 dynamodb list-tables' },
+      { name: 'Redis', port: 6379,
+        how: 'docker compose -f infra/docker-compose.yml exec redis redis-cli KEYS \'balance:*\'' },
+    ];
+
+    /**
+     * Is a console actually up? A cross-origin `no-cors` fetch cannot READ the response — that is the whole
+     * point of opaque responses — but it still resolves on a connection and rejects when there is nothing
+     * listening, which is exactly the one bit we want. It is why this works against Grafana and Jaeger,
+     * neither of which sends us a CORS header, and why the dot is the only thing it can honestly report.
+     */
+    async function probeConsole(con, dotEl) {
+      try {
+        await fetch(con.url, { mode: 'no-cors', cache: 'no-store' });
+        dotEl.className = 'dot up';
+        dotEl.title = con.name + ' is answering on :' + con.port;
+      } catch (_) {
+        dotEl.className = 'dot down';
+        dotEl.title = con.name + ' is not answering on :' + con.port
+          + ' — start it with: docker compose -f infra/docker-compose.yml up -d';
+      }
+    }
+
+    function renderConsolePanel() {
+      const wrap = $('servicePanel');
+      wrap.innerHTML = `
+        <div class="svc-head">
+          <h3>Consoles — the UIs the stack already runs</h3>
+          <p>Every other tab here is an API client; these are the ready-made web UIs
+             <code>docker compose -f infra/docker-compose.yml up -d</code> brought up alongside the eight
+             services. They open in a new tab (Grafana and Jaeger both refuse to be embedded). The dot next
+             to each name is a live reachability check.</p>
+        </div>`;
+
+      CONSOLES.forEach((con) => {
+        const el = document.createElement('div');
+        el.className = 'con';
+        el.innerHTML = `
+          <h4><span class="dot"></span>${con.name}
+            <span class="port">:${con.port}</span></h4>
+          <p class="q">${con.question}</p>
+          <p>${con.blurb}</p>
+          <div class="conlinks">
+            <a href="${con.url}" target="_blank" rel="noopener">${ICON.out}Open ${con.name}</a>
+            ${con.links.map((l) => `<a href="${l.href}" target="_blank" rel="noopener">${ICON.out}`
+              + `${l.label}<span class="why">· ${l.why}</span></a>`).join('')}
+          </div>`;
+        wrap.appendChild(el);
+        probeConsole(con, el.querySelector('.dot'));
+      });
+
+      const none = document.createElement('div');
+      none.className = 'con';
+      none.innerHTML = `
+        <h4>No console, on purpose</h4>
+        <p class="q">Where is the DynamoDB browser?</p>
+        <p>These three ship no UI, and none is missing: each is reached from a shell, which is also how it
+           is reached in the runbook (<code>docs/local-dev.md</code>).</p>
+        <pre>${HEADLESS.map((h) => `${(h.name + ' :' + h.port).padEnd(34)} ${h.how}`).join('\n')}</pre>`;
+      wrap.appendChild(none);
+    }
+
+    // ---- Seed: put real traffic through the platform so the graphs have something to draw -------
+    // A dashboard on a freshly reset stack is a wall of zeroes, and a statement with two seeded rows
+    // cannot show pagination — so the honest answer to "does this look like anything?" used to be
+    // "click thirty cards first". Each recipe below is ONE button that drives the REAL public API,
+    // in order, and then says what it produced and where to go and look at it.
+    //
+    // These are not fixtures written into DynamoDB behind the platform's back. Every peso moves through
+    // POST /v1/payments/pix (or the rail's inbound webhook), so what the graphs show afterwards is what
+    // the platform actually did — the moment a generator writes rows the code path never produced, the
+    // dashboard starts lying and the seed becomes worse than an empty one.
+    //
+    // THE NUMBERS ARE SIZED, NOT GUESSED. Two live rules bound them and both are easy to trip:
+    //   • the daily limit is R$ 5,000.00 per account (ADR-0007), so a full run spends ~R$ 90 and you can
+    //     press the button ~50 times a day before the platform correctly starts refusing;
+    //   • fraud scores every send, and a burst fires VELOCITY_COUNT (40) — with NEW_PAYEE (15) and, if
+    //     you run this overnight, ODD_HOURS (10), that is 65 against a deny band of 70. It stays REVIEW,
+    //     which still lets the payment through. One HIGH_AMOUNT (70, anything over R$ 5,000) would tip
+    //     the whole burst into DENY, which is exactly why every amount below is a couple of reais.
+    // Both are the platform working. A seeder that had to disable them would be seeding a different
+    // system than the one you are about to look at.
+    const dec = (cents) => (cents / 100).toFixed(2);
+    const between = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
+
+    /** One send through the public API, with a fresh idempotency key — never a reused one. */
+    async function seedSend(token, pixKey, cents, description, key) {
+      return send({
+        method: 'POST', base: baseOf('payment'), token, path: '/v1/payments/pix',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key || crypto.randomUUID() },
+        body: JSON.stringify({ pixKey, amount: dec(cents), description }),
+      });
+    }
+
+    /** The rail delivers a Pix to one of ours (mock-bacen is the caller here, as a real PSP would be). */
+    async function seedInbound(pixKey, cents, payerName) {
+      return send({
+        method: 'POST', base: baseOf('bacen'), path: '/simulate/inbound-pix',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pixKey, amount: dec(cents), payerName }),
+      });
+    }
+
+    /**
+     * Every recipe needs a payee that resolves, and the seed creates accounts, not keys — so this is the
+     * first thing each one does. 409 is success: it means the key is already there.
+     */
+    async function ensureBobKey(emit) {
+      const bob = await tokenAs('bob');
+      const r = await send({ method: 'POST', base: baseOf('account'), token: bob, path: '/v1/pix-keys',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyType: 'EMAIL', keyValue: 'bob@platinum.com' }) });
+      emit(r.status === 201 ? 'registered bob@platinum.com' : `bob@platinum.com already registered (${r.status})`);
+      return bob;
+    }
+
+    const GRAFANA_FUNNEL = 'http://localhost:3000/d/pix-business-funnel';
+    const GRAFANA_TECH = 'http://localhost:3000/d/pix-technical';
+
+    const RECIPES = [
+      {
+        id: 'funnel', name: 'Warm the funnel', volume: '12 internal Pix · about R$ 30',
+        goal: 'Give the business-funnel dashboard a shape instead of a row of zeroes.',
+        blurb: 'Twelve small internal transfers, alice → bob, each one walking RECEIVED → FRAUD_CHECKED → '
+          + 'DEBITED → SETTLED. An internal Pix settles in the single atomic posting, so SENT_TO_SPI stays '
+          + 'flat and the funnel gets its characteristic shape: four bars level, the rail untouched. '
+          + 'It also reads Σ of both balances before and after and checks it is <b>unchanged to the cent</b> '
+          + '— money moved between two accounts, none was created, which is the one thing a generator must '
+          + 'never get wrong.',
+        look: [{ label: 'Grafana — business funnel', href: GRAFANA_FUNNEL }],
+        run: async (emit) => {
+          const alice = await tokenAs('alice');
+          await ensureBobKey(emit);
+          const before = await balanceCents('acc-001', alice) + await balanceCents('acc-002', alice);
+          let moved = 0, ok = 0;
+          for (let i = 1; i <= 12; i++) {
+            const cents = between(100, 400);
+            const r = await seedSend(alice, 'bob@platinum.com', cents, `seed funnel ${i}/12`);
+            if (r.ok) { ok++; moved += cents; } else emit(`  ${i}/12 refused: ${r.status} ${r.json && r.json.code}`);
+            if (i % 4 === 0) emit(`  ${i}/12 sent (R$ ${dec(moved)} so far)`);
+            await sleep(120);
+          }
+          const after = await balanceCents('acc-001', alice) + await balanceCents('acc-002', alice);
+          emit(`Σ balances before ${before} cents → after ${after} cents`);
+          if (before !== after) throw new Error(`CONSERVATION BROKEN: Σ moved by ${after - before} cents`);
+          return `${ok}/12 settled · R$ ${dec(moved)} moved · Σ unchanged ✓`;
+        },
+      },
+      {
+        id: 'statement', name: 'Fill the statement', volume: '8 sent + 6 received · about R$ 24 out',
+        goal: 'Make GET /v1/accounts/me/statement worth paging — in both directions.',
+        blurb: 'Eight outbound transfers from alice and six arrivals delivered to bob by the rail, so both '
+          + 'sides end up with more history than one page holds and the cursor has something to do. The two '
+          + 'directions matter: a statement of debits only never shows you that amount is a <b>signed</b> '
+          + 'decimal string at this edge — negative on a debit, positive on a credit. Note that Σ over the '
+          + 'two users does <b>not</b> hold here and should not: an inbound Pix is money entering from '
+          + 'SPI_CLEARING, so the clearing account falls by exactly what the users gain.',
+        look: [{ label: 'Grafana — technical', href: GRAFANA_TECH }],
+        run: async (emit) => {
+          const alice = await tokenAs('alice');
+          await ensureBobKey(emit);
+          const clearBefore = await balanceCents('SPI_CLEARING', alice);
+          let out = 0;
+          for (let i = 1; i <= 8; i++) {
+            const cents = between(150, 450);
+            const r = await seedSend(alice, 'bob@platinum.com', cents, `seed statement ${i}/8`);
+            if (r.ok) out += cents;
+            await sleep(120);
+          }
+          emit(`8 outbound sent (R$ ${dec(out)})`);
+          let inb = 0;
+          for (let i = 1; i <= 6; i++) {
+            const cents = between(500, 2500);
+            const r = await seedInbound('bob@platinum.com', cents, `Seed Payer ${i}`);
+            if (r.ok) inb += cents; else emit(`  arrival ${i}/6 refused: ${r.status}`);
+            await sleep(150);
+          }
+          const clearAfter = await balanceCents('SPI_CLEARING', alice);
+          emit(`6 arrivals delivered (R$ ${dec(inb)})`);
+          emit(`SPI_CLEARING ${clearBefore} → ${clearAfter} cents (${clearAfter - clearBefore})`);
+          const page = await send({ method: 'GET', base: baseOf('payment'), token: alice,
+            path: '/v1/accounts/me/statement?limit=5' });
+          const more = page.json && page.json.nextCursor ? 'and a nextCursor to follow' : 'single page';
+          return `8 sent · 6 received · alice's statement: ${page.json ? page.json.entries.length : 0} on page 1, ${more}`;
+        },
+      },
+      {
+        id: 'rejected', name: 'Populate the rejected branch', volume: '3 refusals · R$ 0 moved',
+        goal: 'Make the "where do payments die?" panel non-empty — the question a technical dashboard cannot answer.',
+        blurb: 'Three refusals, each dying at a different stage, because a funnel with nothing rejected teaches '
+          + 'you nothing about where payments die. A single R$ 9,000 send exceeds the R$ 5,000 daily limit '
+          + '(<b>RECEIVED/rejected</b>, and note it dies before fraud is ever consulted); a key held by nobody '
+          + 'is refused at resolution; a zero amount is refused on wire shape alone. <b>Not produced here: '
+          + 'DEBITED/rejected</b> — that is insufficient funds, and alice would have to be drained past '
+          + 'R$ 5,000 in one send to reach it, which the daily limit refuses first. The two guards overlap on '
+          + 'purpose, and no amount of seeding can make one fire without the other letting go.',
+        look: [{ label: 'Grafana — business funnel', href: GRAFANA_FUNNEL }],
+        run: async (emit) => {
+          const alice = await tokenAs('alice');
+          const cases = [
+            ['bob@otherbank.com', 900000, 'seed over the daily limit', 'LIMIT_EXCEEDED'],
+            ['nobody@nowhere.com', 250, 'seed unknown key', 'KEY_NOT_FOUND'],
+            ['bob@otherbank.com', 0, 'seed zero amount', 'INVALID_AMOUNT'],
+          ];
+          const got = [];
+          for (const [key, cents, desc, want] of cases) {
+            const r = await seedSend(alice, key, cents, desc);
+            const code = (r.json && r.json.code) || String(r.status);
+            got.push(code);
+            emit(`${r.status} ${code}${code === want ? '' : `  (expected ${want})`}`);
+            await sleep(150);
+          }
+          return `3 refusals recorded: ${got.join(' · ')}`;
+        },
+      },
+      {
+        id: 'replays', name: 'Absorb duplicates', volume: '1 payment + 4 replays · about R$ 5',
+        goal: 'Move pix_idempotency_replayed_total — the live evidence for "0 duplicate debits" (KR1.1).',
+        blurb: 'One payment sent five times with the <b>same</b> Idempotency-Key. The first click accepts it; '
+          + 'the four after it are answered from the memoized 202 — same transactionId, no second debit. The '
+          + 'proof is the pairing, not either number on its own: replays climbs by four while the DEBITED '
+          + 'stage climbs by one, and the balance below moves exactly once. That pair is what turns an '
+          + 'invariant you assert in a test into one you can watch at runtime.',
+        look: [{ label: 'Grafana — business funnel', href: GRAFANA_FUNNEL }],
+        run: async (emit) => {
+          const alice = await tokenAs('alice');
+          await ensureBobKey(emit);
+          const key = 'seed-replay-' + crypto.randomUUID();
+          const cents = 500;
+          const before = await balanceCents('acc-001', alice);
+          const ids = new Set();
+          for (let i = 1; i <= 5; i++) {
+            const r = await seedSend(alice, 'bob@platinum.com', cents, 'seed idempotency', key);
+            if (r.json && r.json.transactionId) ids.add(r.json.transactionId);
+            emit(`  attempt ${i}/5 → ${r.status} ${r.json ? r.json.transactionId : ''}`);
+            await sleep(150);
+          }
+          const after = await balanceCents('acc-001', alice);
+          const delta = before - after;
+          if (ids.size !== 1) throw new Error(`expected ONE transaction id, got ${ids.size}`);
+          if (delta !== cents) throw new Error(`expected one debit of ${cents} cents, balance moved ${delta}`);
+          return `1 transaction, 4 replays absorbed · alice debited ${delta} cents, exactly once ✓`;
+        },
+      },
+      {
+        id: 'rail', name: 'Exercise the rail (and one reversal)', volume: '3 external + 1 reversed · about R$ 21',
+        goal: 'Move SENT_TO_SPI and REVERSED — the asynchronous half nothing else here reaches.',
+        blurb: 'Three external sends to bob@otherbank.com, each debited to the clearing account and settled '
+          + 'asynchronously by settlement-service over the mock SPI — this is the only recipe that moves '
+          + 'SENT_TO_SPI, and it takes seconds rather than milliseconds because a real rail does. Then one '
+          + 'more with the rail <b>armed to refuse it</b>, which walks the compensating reversal all the way '
+          + 'back to alice\'s balance. The disarm runs in a <code>finally</code>: leaving rejectKeys set is '
+          + 'how the next person\'s perfectly good external Pix mysteriously comes back REVERSED.',
+        look: [{ label: 'Grafana — business funnel', href: GRAFANA_FUNNEL },
+               { label: 'Grafana — technical', href: GRAFANA_TECH }],
+        run: async (emit) => {
+          const alice = await tokenAs('alice');
+          let settled = 0;
+          for (let i = 1; i <= 3; i++) {
+            const r = await seedSend(alice, 'bob@otherbank.com', 700, `seed external ${i}/3`);
+            if (!r.ok) { emit(`  ${i}/3 refused: ${r.status}`); continue; }
+            const done = await pollUntilTerminal(r.json.transactionId, alice);
+            const st = done.json && done.json.status;
+            emit(`  ${i}/3 ${r.json.transactionId} → ${st}`);
+            if (st === 'SETTLED') settled++;
+          }
+          const armed = await send({ method: 'POST', base: baseOf('bacen'), path: '/admin/config',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rejectKeys: ['bob@otherbank.com'] }) });
+          emit(`rail armed to refuse bob@otherbank.com (${armed.status})`);
+          try {
+            const before = await balanceCents('acc-001', alice);
+            const r = await seedSend(alice, 'bob@otherbank.com', 1000, 'seed reversal');
+            const done = await pollUntilTerminal(r.json.transactionId, alice);
+            const st = done.json && done.json.status;
+            const after = await balanceCents('acc-001', alice);
+            emit(`  ${r.json.transactionId} → ${st}; alice ${before} → ${after} cents`);
+            if (st !== 'REVERSED') throw new Error(`expected REVERSED, got ${st}`);
+            if (before !== after) throw new Error(`refund is short by ${before - after} cents`);
+            return `${settled}/3 settled over the rail · 1 reversed and refunded to the cent ✓`;
+          } finally {
+            const off = await send({ method: 'POST', base: baseOf('bacen'), path: '/admin/config',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rejectKeys: [] }) });
+            emit(`rail disarmed (${off.status}) — the sandbox is as you found it`);
+          }
+        },
+      },
+    ];
+
+    /** The one button the whole tab exists for: every recipe above, in order. */
+    const RECIPE_ALL = {
+      id: 'all', name: 'Everything, once', volume: 'all five recipes · about R$ 90 · ~1 minute',
+      goal: 'One click, a stack with a story in it.',
+      blurb: 'Runs the five recipes in order. Afterwards every panel on both Grafana dashboards has data, '
+        + 'the funnel has a rejected branch as well as a happy one, the statement pages, and the rail has '
+        + 'been both used and refused. Roughly R$ 90 of alice\'s R$ 5,000 daily limit — press it about '
+        + 'fifty times in one day and the platform will correctly start refusing, which is itself worth '
+        + 'seeing once.',
+      look: [{ label: 'Grafana — business funnel', href: GRAFANA_FUNNEL },
+             { label: 'Grafana — technical', href: GRAFANA_TECH },
+             { label: 'Jaeger — payment-service', href: 'http://localhost:16686/search?service=payment-service&limit=20' }],
+      run: async (emit) => {
+        const done = [];
+        for (const r of RECIPES) {
+          emit(`── ${r.name} ─────────────────────────`);
+          done.push(`${r.name}: ${await r.run(emit)}`);
+        }
+        return done.join('\n');
+      },
+    };
+
+    /** State per recipe: nothing persists across a reload, and a recipe never runs twice at once. */
+    const seedState = {};
+
+    function seedCard(recipe, wide) {
+      const el = document.createElement('div');
+      el.className = 'con' + (wide ? ' wide' : '');
+      el.innerHTML = `
+        <h4>${recipe.name} <span class="vol">${recipe.volume}</span></h4>
+        <p class="q">${recipe.goal}</p>
+        <p>${recipe.blurb}</p>
+        <div class="runbar">
+          <button data-run>${ICON.send}Run</button>
+          <span class="status" data-state></span>
+        </div>
+        <pre class="log" data-log style="display:none;"></pre>
+        <div class="conlinks" style="margin-top:10px;">
+          ${recipe.look.map((l) => `<a href="${l.href}" target="_blank" rel="noopener">`
+            + `${ICON.out}${l.label}<span class="why">· look here afterwards</span></a>`).join('')}
+        </div>`;
+
+      const btn = el.querySelector('[data-run]');
+      const state = el.querySelector('[data-state]');
+      const log = el.querySelector('[data-log]');
+      const emit = (line) => {
+        log.style.display = 'block';
+        log.textContent += line + '\n';
+        log.scrollTop = log.scrollHeight;          // follow the tail while it runs
+      };
+
+      // Replay whatever this recipe did earlier in the session, so switching tabs does not erase it.
+      const prev = seedState[recipe.id];
+      if (prev) {
+        log.style.display = 'block'; log.textContent = prev.log;
+        state.textContent = prev.state; state.className = 'status ' + prev.cls;
+      }
+
+      btn.onclick = async () => {
+        btn.disabled = true;
+        log.style.display = 'block'; log.textContent = '';
+        state.textContent = 'running…'; state.className = 'status pending';
+        // performance.now(), not Date.now(): the wall clock on this project's usual host (WSL2) drifts and
+        // can step BACKWARDS mid-run, which showed up here as a recipe reporting "done in -17.5s". A
+        // monotonic clock is the right tool for a duration in every environment; this one just made the
+        // wrong tool visible instead of merely wrong.
+        const started = performance.now();
+        try {
+          const summary = await recipe.run(emit);
+          const secs = ((performance.now() - started) / 1000).toFixed(1);
+          state.textContent = `done in ${secs}s`; state.className = 'status ok';
+          emit(''); emit(summary);
+          toast('Seed complete', `${recipe.name} · ${secs}s`, 'ok');
+        } catch (err) {
+          // A recipe that half-ran is worth more than a recipe that hides why it stopped: the log above
+          // still holds every call it made, and THAT is the diagnosis.
+          state.textContent = 'stopped: ' + err.message; state.className = 'status bad';
+          emit(''); emit('STOPPED: ' + err.message);
+          toast('Seed stopped', err.message, 'bad');
+        } finally {
+          btn.disabled = false;
+          seedState[recipe.id] = { log: log.textContent, state: state.textContent,
+            cls: state.className.replace('status ', '') };
+        }
+      };
+      return el;
+    }
+
+    function renderSeedPanel() {
+      const wrap = $('servicePanel');
+      wrap.innerHTML = `
+        <div class="svc-head">
+          <h3>Seed — put real traffic through the platform</h3>
+          <p>A freshly reset stack draws a wall of zeroes, and two seeded ledger rows cannot show you
+             pagination. Each button below drives the <b>real public API</b> — no rows are written behind
+             the platform's back — and then tells you what it produced and where to go and look at it.</p>
+        </div>
+        <div class="seednote">
+          <b>Sized against the platform's own rules, not around them.</b> Every amount is a couple of reais
+          because the daily limit is R$ 5,000.00 per account and a single send over R$ 5,000 would score
+          HIGH_AMOUNT and tip the whole burst into <code>DENY</code>. A full run spends about R$ 90, so the
+          button survives roughly fifty presses a day before the platform starts — correctly — refusing.
+          Nothing here is armed and left armed: the reversal recipe disarms the rail in a <code>finally</code>.
+        </div>`;
+      wrap.appendChild(seedCard(RECIPE_ALL, true));
+      RECIPES.forEach((r) => wrap.appendChild(seedCard(r, false)));
+    }
+
+    // ---- Navigation: five groups, because they answer five different questions -----------------
     // JOURNEYS answer "does the product work, end to end?" — the question a reviewer actually has, and
     // the one a wall of endpoints cannot answer. SERVICES answer "what exactly does this endpoint do?".
-    // PHONE answers "what does the customer see?". Splitting them also fixes a real layout failure: nine
-    // service tabs in one row overflowed the page and wrapped their names onto three lines.
+    // PHONE answers "what does the customer see?". CONSOLES answers "what can I LOOK at?" — the UIs the
+    // stack already runs, which nothing on this page mentioned before. SEED answers the question those
+    // UIs immediately raise on a fresh stack: "why is everything zero?". Splitting them also fixes a real
+    // layout failure: nine service tabs in one row overflowed and wrapped their names onto three lines.
     let activeGroup = 'journeys';
     let activeService = SERVICES[0].id;
     let activeJourney = null;                 // set on first render, from JOURNEYS[0]
@@ -1012,6 +1587,8 @@
       { id: 'journeys', name: 'Journeys', icon: ICON.route },
       { id: 'services', name: 'Services', icon: ICON.grid },
       { id: 'phone',    name: 'Phone',    icon: ICON.phone },
+      { id: 'consoles', name: 'Consoles', icon: ICON.screen },
+      { id: 'seed',     name: 'Seed',     icon: ICON.spark },
     ];
 
     function renderGroups() {
@@ -1027,8 +1604,10 @@
 
     function renderTabs() {
       const bar = $('tabs'); bar.innerHTML = '';
-      bar.style.display = activeGroup === 'phone' ? 'none' : 'flex';
-      if (activeGroup === 'phone') return;
+      // Two groups have nothing to sub-divide: one phone, one list of consoles.
+      const tabless = activeGroup === 'phone' || activeGroup === 'consoles' || activeGroup === 'seed';
+      bar.style.display = tabless ? 'none' : 'flex';
+      if (tabless) return;
 
       const items = activeGroup === 'journeys'
         ? JOURNEYS.map((j) => ({ id: j.id, name: j.name, active: j.id === activeJourney }))
@@ -1049,6 +1628,8 @@
     function renderAll() { renderGroups(); renderTabs(); renderPanel(); }
 
     function renderPanel() {
+      if (activeGroup === 'seed') { renderSeedPanel(); return; }
+      if (activeGroup === 'consoles') { renderConsolePanel(); return; }
       if (activeGroup === 'phone') { renderPhonePanel(); return; }
       if (activeGroup === 'journeys') { renderJourneyPanel(); return; }
       renderServicePanel();
@@ -1360,6 +1941,980 @@
     // moving, so the auto-poll loop stops. Anything else (PROCESSING, SENT_TO_SPI, …) means "keep looking".
     const TERMINAL_STATUS = ['SETTLED', 'FAILED', 'REVERSED', 'REJECTED'];
 
+    // ---- Captured example responses (step 49) ---------------------------------------------------
+    // GENERATED, NOT AUTHORED: every entry below was produced by opening this file in a browser against
+    // a freshly reset stack and clicking Send on every card, then writing down what came back. Keys are
+    // "<serviceId> · <card title>". Credentials are summarised to their claims on the way in (a JWT is
+    // never pasted into a file that ends up in screenshots — ADR-0012's line between values and secrets).
+    // Re-capture after changing a card, or the transcript starts lying about the contract.
+    const EXAMPLES = {
+      "auth · Login (alice)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accessToken": "eyJ… (claims: u-alice · account acc-001)",
+  "tokenType": "Bearer",
+  "expiresIn": 900
+}` },
+      ],
+      "auth · Login — bad credentials (401)": [
+        { status: "401 Unauthorized", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Invalid username or password.",
+  "instance": "/v1/auth/login",
+  "code": "INVALID_CREDENTIALS",
+  "correlationId": "d8a28da4-17b5-4aa7-b316-91bd55a34b0b"
+}` },
+      ],
+      "auth · Me (echo principal)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "userId": "u-alice",
+  "accountId": "acc-001"
+}` },
+      ],
+      "auth · Login (bob) — a second user, a different accountId claim": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accessToken": "eyJ… (claims: u-bob · account acc-002)",
+  "tokenType": "Bearer",
+  "expiresIn": 900
+}` },
+      ],
+      "auth · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "account · My account (from JWT)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accountId": "acc-001",
+  "status": "ACTIVE",
+  "dailyLimit": "5000.00"
+}` },
+      ],
+      "account · Internal lookup (by id)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accountId": "acc-001",
+  "userId": "u-alice",
+  "status": "ACTIVE",
+  "dailyLimitCents": 500000,
+  "createdAt": "2026-07-02T12:00:00Z"
+}` },
+      ],
+      "account · Register a Pix key": [
+        { status: "201 Created", label: "201 the first time", body: `{
+  "keyType": "EMAIL",
+  "keyValue": "alice@platinum.com",
+  "createdAt": "2026-08-28T12:45:55.217444727Z"
+}` },
+        { status: "409 Conflict", label: "409 every time after — the key is global", body: `{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "This Pix key is already registered.",
+  "instance": "/v1/pix-keys",
+  "code": "KEY_ALREADY_EXISTS",
+  "correlationId": "2a5942b8-8b6b-4f53-ab02-44a99ffffd58"
+}` },
+      ],
+      "account · Register bob@platinum.com (as bob — the payee every send needs)": [
+        { status: "201 Created", label: "201 the first time", body: `{
+  "keyType": "EMAIL",
+  "keyValue": "bob@platinum.com",
+  "createdAt": "2026-08-28T12:45:55.842985355Z"
+}` },
+        { status: "409 Conflict", label: "409 every time after — the payee is already there", body: `{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "This Pix key is already registered.",
+  "instance": "/v1/pix-keys",
+  "code": "KEY_ALREADY_EXISTS",
+  "correlationId": "fb9c05b9-4855-48a9-af7c-ed86824fc36e"
+}` },
+      ],
+      "account · Register a DISPOSABLE key (the one the Delete card removes)": [
+        { status: "201 Created", label: "happy path", body: `{
+  "keyType": "EMAIL",
+  "keyValue": "alice.disposable@platinum.com",
+  "createdAt": "2026-08-28T12:45:56.505439962Z"
+}` },
+      ],
+      "account · List my Pix keys": [
+        { status: "200 OK", label: "happy path", body: `[
+  {
+    "keyType": "EMAIL",
+    "keyValue": "alice.disposable@platinum.com",
+    "createdAt": "2026-08-28T12:45:56.505439962Z"
+  },
+  {
+    "keyType": "EMAIL",
+    "keyValue": "alice@platinum.com",
+    "createdAt": "2026-08-28T12:45:55.217444727Z"
+  }
+]` },
+      ],
+      "account · Delete a Pix key (the disposable one)": [
+        { status: "204 No Content", label: "204 — the key was yours", body: `(empty body)` },
+        { status: "404 Not Found", label: "404 — a second click, it is gone", body: `{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "No Pix key found for the given value.",
+  "instance": "/v1/pix-keys/alice.disposable@platinum.com",
+  "code": "KEY_NOT_FOUND",
+  "correlationId": "0d0dc042-c583-4552-af8e-e96cc172e9d0"
+}` },
+      ],
+      "account · Resolve a Pix key (internal / DICT)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "internal": true,
+  "accountId": "acc-001",
+  "externalBank": null,
+  "keyType": "EMAIL"
+}` },
+      ],
+      "account · Resolve a Pix key (external / BACEN DICT)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "internal": false,
+  "accountId": null,
+  "externalBank": "99999999",
+  "keyType": "EMAIL"
+}` },
+      ],
+      "account · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "payment · Balance — the baseline (press Send TWICE: miss, then hit)": [
+        { status: "200 OK", label: "first Send — a cache MISS, read from the ledger", body: `{
+  "accountId": "acc-001",
+  "balance": "10000.00",
+  "currency": "BRL",
+  "asOf": "2026-08-28T12:45:59.013Z"
+}` },
+        { status: "200 OK", label: "second Send within 5s — a HIT: same asOf, not re-read", body: `{
+  "accountId": "acc-001",
+  "balance": "10000.00",
+  "currency": "BRL",
+  "asOf": "2026-08-28T12:45:59.013Z"
+}` },
+      ],
+      "payment · Send Pix — alice → bob (202)": [
+        { status: "202 Accepted", label: "happy path", body: `{
+  "transactionId": "tx-addf4fd0-fdc3-4be8-9fdd-ad678f808cfb",
+  "endToEndId": "E12345678202608281245n8bigyPRR0F",
+  "status": "PROCESSING"
+}` },
+      ],
+      "payment · Send Pix — zero amount (400 INVALID_AMOUNT)": [
+        { status: "400 Bad Request", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Amount must be strictly positive: 0.00",
+  "instance": "/v1/payments/pix",
+  "code": "INVALID_AMOUNT",
+  "correlationId": "3a95862c-09dd-438b-b677-52dd2aaab397"
+}` },
+      ],
+      "payment · Send Pix — malformed amount (400 VALIDATION_ERROR)": [
+        { status: "400 Bad Request", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "One or more fields are invalid.",
+  "instance": "/v1/payments/pix",
+  "code": "VALIDATION_ERROR",
+  "correlationId": "89855904-9960-487a-b354-0b9d82bcfc9a"
+}` },
+      ],
+      "payment · Send Pix — above daily limit (422 LIMIT_EXCEEDED)": [
+        { status: "422 Unprocessable Entity", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unprocessable Entity",
+  "status": 422,
+  "detail": "Daily Pix limit exceeded",
+  "instance": "/v1/payments/pix",
+  "code": "LIMIT_EXCEEDED",
+  "correlationId": "230915d6-a335-493d-bab7-29b5c6feec4c"
+}` },
+      ],
+      "payment · Send Pix — external (bob@otherbank.com, 202 → async settlement)": [
+        { status: "202 Accepted", label: "happy path", body: `{
+  "transactionId": "tx-0817c39b-07e9-41e4-8842-9ee9569b3ddb",
+  "endToEndId": "E12345678202608281246VKU2nO7Q3oI",
+  "status": "PROCESSING"
+}` },
+      ],
+      "payment · Send Pix — idempotent replay (press Send twice, one debit)": [
+        { status: "202 Accepted", label: "first Send — a new payment", body: `{
+  "transactionId": "tx-953b6171-226b-46f8-8a3d-98eb01012598",
+  "endToEndId": "E12345678202608281246egXhZUf6RSb",
+  "status": "PROCESSING"
+}` },
+        { status: "202 Accepted", label: "second Send — the memoized 202: SAME transactionId, no second debit", body: `{
+  "transactionId": "tx-953b6171-226b-46f8-8a3d-98eb01012598",
+  "endToEndId": "E12345678202608281246egXhZUf6RSb",
+  "status": "PROCESSING"
+}` },
+      ],
+      "payment · Get payment status (200)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "transactionId": "tx-953b6171-226b-46f8-8a3d-98eb01012598",
+  "endToEndId": "E12345678202608281246egXhZUf6RSb",
+  "status": "SETTLED",
+  "amount": "42.00",
+  "pixKey": "bob@platinum.com",
+  "createdAt": "2026-08-28T12:46:01.617259617Z",
+  "settledAt": "2026-08-28T12:46:01.617259617Z",
+  "failureReason": null
+}` },
+      ],
+      "payment · Get payment status — unknown / not yours (404)": [
+        { status: "404 Not Found", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "No such payment for this account.",
+  "instance": "/v1/payments/tx-does-not-exist",
+  "code": "PAYMENT_NOT_FOUND",
+  "correlationId": "25dd72ff-4c48-4677-896b-ed7b2d959875"
+}` },
+      ],
+      "payment · Balance after a send — invalidated, not stale": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accountId": "acc-001",
+  "balance": "9757.50",
+  "currency": "BRL",
+  "asOf": "2026-08-28T12:46:02.862Z"
+}` },
+      ],
+      "payment · Statement — page 1 (newest first, limit 5)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "entries": [
+    {
+      "txId": "tx-0817c39b-07e9-41e4-8842-9ee9569b3ddb",
+      "direction": "DEBIT",
+      "amount": "-75.00",
+      "counterpart": "SPI***NG",
+      "timestamp": "2026-08-28T12:46:19.565Z"
+    },
+    {
+      "txId": "tx-953b6171-226b-46f8-8a3d-98eb01012598",
+      "direction": "DEBIT",
+      "amount": "-42.00",
+      "counterpart": "acc***02",
+      "timestamp": "2026-08-28T12:46:01.662Z"
+    },
+    {
+      "txId": "tx-addf4fd0-fdc3-4be8-9fdd-ad678f808cfb",
+      "direction": "DEBIT",
+      "amount": "-125.50",
+      "counterpart": "acc***02",
+      "timestamp": "2026-08-28T12:45:59.882Z"
+    },
+    {
+      "txId": "tx-seed-alice",
+      "direction": "CREDIT",
+      "amount": "10000.00",
+      "counterpart": "S***",
+      "timestamp": "2026-07-02T12:00:00.000Z"
+    }
+  ],
+  "nextCursor": null
+}` },
+      ],
+      "payment · Statement — tampered cursor (400 INVALID_CURSOR)": [
+        { status: "400 Bad Request", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "the pagination cursor is invalid or does not belong to account acc-001",
+  "instance": "/v1/accounts/me/statement",
+  "code": "INVALID_CURSOR",
+  "correlationId": "b509acdc-b466-4477-a57b-1470139a3d97"
+}` },
+      ],
+      "payment · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "settlement · Deliver an inbound Pix — SEND TWICE to watch the dedupe": [
+        { status: "200 OK", label: "first delivery — CREDITED", body: `{
+  "endToEndId": "E99999999202608201030explorer01",
+  "txId": "in-E99999999202608201030explorer01",
+  "outcome": "CREDITED"
+}` },
+        { status: "200 OK", label: "the rail re-presents it — ALREADY_PROCESSED, balance unmoved", body: `{
+  "endToEndId": "E99999999202608201030explorer01",
+  "txId": "in-E99999999202608201030explorer01",
+  "outcome": "ALREADY_PROCESSED"
+}` },
+      ],
+      "settlement · Forged webhook — no token (401, nothing credited)": [
+        { status: "401 Unauthorized", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "The inbound Pix webhook requires a valid X-Webhook-Token.",
+  "instance": "/v1/inbound/pix",
+  "code": "WEBHOOK_UNAUTHORIZED",
+  "correlationId": "6e3f1d33-6a84-4e3f-bf13-a3e87a793701"
+}` },
+      ],
+      "settlement · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "notification · My notification stream (SSE — open it, then make money move)": [
+        { status: "200 OK", label: "the first frames of a live stream — an excerpt, the response never ends", body: `:connected sub-c87c24b8-9b01-4292-b1cd-7cbeda61340b
+
+id:evt-522351c6-d8c3-4ba7-8de3-c3ca637aa3eb
+event:PixSettled
+data:{"transactionId":"tx-5ef0aa55-59c9-4dc6-85a3-1d2860b46fcb","type":"PixSettled","status":"SETTLED","amount":"12.50","counterpart":"bob@platinum.com","timestamp":"2026-08-28T12:47:17.839Z","failureReason":null}
+
+:ping` },
+      ],
+      "notification · Handshake — no credential at all (401 UNAUTHORIZED)": [
+        { status: "401 Unauthorized", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Authentication is required.",
+  "code": "UNAUTHORIZED",
+  "correlationId": "fc96858b-e39e-46e7-ab08-fa006094ceda"
+}` },
+      ],
+      "notification · Handshake — tampered ?access_token= (401, same contract)": [
+        { status: "401 Unauthorized", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "Authentication is required.",
+  "code": "UNAUTHORIZED",
+  "correlationId": "ea7a4e18-7059-4861-bc60-75a9c31c7842"
+}` },
+      ],
+      "notification · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "ledger · Balance (alice)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accountId": "acc-001",
+  "balance": "9757.50",
+  "balanceCents": 975750,
+  "version": 3
+}` },
+      ],
+      "ledger · Balance (SEED — the money supply)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "accountId": "SEED",
+  "balance": "-20000.00",
+  "balanceCents": -2000000,
+  "version": 0
+}` },
+      ],
+      "ledger · Balance — unknown account (404)": [
+        { status: "404 Not Found", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "No ledger account found for id acc-999.",
+  "instance": "/internal/ledger/accounts/acc-999/balance",
+  "code": "LEDGER_ACCOUNT_NOT_FOUND",
+  "correlationId": "e7ff067e-c5c3-4fb8-b22f-db4a8bd390a1"
+}` },
+      ],
+      "ledger · Posting — alice → bob (and press Send twice)": [
+        { status: "200 OK", label: "the posting — replayed:false", body: `{
+  "txId": "tx-explorer-1",
+  "debitAccount": "acc-001",
+  "creditAccount": "acc-002",
+  "amount": "125.50",
+  "amountCents": 12550,
+  "entryType": "PIX_INTERNAL",
+  "description": "explorer manual test",
+  "postedAt": "2026-08-28T12:46:07.436Z",
+  "replayed": false
+}` },
+        { status: "200 OK", label: "the same txId again — replayed:true, no second movement", body: `{
+  "txId": "tx-explorer-1",
+  "debitAccount": "acc-001",
+  "creditAccount": "acc-002",
+  "amount": "125.50",
+  "amountCents": 12550,
+  "entryType": "PIX_INTERNAL",
+  "description": "explorer manual test",
+  "postedAt": "2026-08-28T12:46:07.436Z",
+  "replayed": true
+}` },
+      ],
+      "ledger · Posting — same txId, different money (409)": [
+        { status: "409 Conflict", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Transaction id tx-explorer-1 was already used for a different posting (12550 cents acc-001 → acc-002).",
+  "instance": "/internal/ledger/postings",
+  "code": "POSTING_TXID_MISMATCH",
+  "correlationId": "90d41df5-402b-4cc5-86a9-c59dcd2b8e93"
+}` },
+      ],
+      "ledger · Posting — insufficient funds (422)": [
+        { status: "422 Unprocessable Entity", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Unprocessable Entity",
+  "status": 422,
+  "detail": "Account acc-001 has 963200 cents, which is short of the 99999999 cents requested.",
+  "instance": "/internal/ledger/postings",
+  "code": "INSUFFICIENT_FUNDS",
+  "correlationId": "ef4044c0-a7c6-4596-ba7b-1434ac401a8f"
+}` },
+      ],
+      "ledger · Statement — page the entries (newest first)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "entries": [
+    {
+      "txId": "tx-0817c39b-07e9-41e4-8842-9ee9569b3ddb",
+      "direction": "DEBIT",
+      "amount": "-75.00",
+      "amountCents": -7500,
+      "counterpartAccountId": "SPI_CLEARING",
+      "timestamp": "2026-08-28T12:46:19.565Z",
+      "entryType": "PIX_OUT"
+    },
+    {
+      "txId": "tx-explorer-1",
+      "direction": "DEBIT",
+      "amount": "-125.50",
+      "amountCents": -12550,
+      "counterpartAccountId": "acc-002",
+      "timestamp": "2026-08-28T12:46:07.436Z",
+      "entryType": "PIX_INTERNAL"
+    },
+    {
+      "txId": "tx-953b6171-226b-46f8-8a3d-98eb01012598",
+      "direction": "DEBIT",
+      "amount": "-42.00",
+      "amountCents": -4200,
+      "counterpartAccountId": "acc-002",
+      "timestamp": "2026-08-28T12:46:01.662Z",
+      "entryType": "PIX_INTERNAL"
+    },
+    {
+      "txId": "tx-addf4fd0-fdc3-4be8-9fdd-ad678f808cfb",
+      "direction": "DEBIT",
+      "amount": "-125.50",
+      "amountCents": -12550,
+      "counterpartAccountId": "acc-002",
+      "timestamp": "2026-08-28T12:45:59.882Z",
+      "entryType": "PIX_INTERNAL"
+    },
+    {
+      "txId": "tx-seed-alice",
+      "direction": "CREDIT",
+      "amount": "10000.00",
+      "amountCents": 1000000,
+      "counterpartAccountId": "SEED",
+      "timestamp": "2026-07-02T12:00:00.000Z",
+      "entryType": "SEED_FUNDING"
+    }
+  ],
+  "nextCursor": "eyJzayI6eyJTIjoiRU5UUlkjMjAyNi0wNy0wMlQxMjowMDowMC4wMDBaI3R4LXNlZWQtYWxpY2UifSwicGsiOnsiUyI6IkFDQ09VTlQjYWNjLTAwMSJ9fQ"
+}` },
+      ],
+      "ledger · Statement — tampered cursor (400)": [
+        { status: "400 Bad Request", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "The pagination cursor could not be decoded.",
+  "instance": "/internal/ledger/accounts/acc-001/entries",
+  "code": "INVALID_CURSOR",
+  "correlationId": "5cbfbce2-5db7-47d1-8481-7a6d7d355841"
+}` },
+      ],
+      "ledger · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "fraud · Score a transfer (APPROVE)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "decision": "APPROVE",
+  "score": 0,
+  "reasons": []
+}` },
+      ],
+      "fraud · Score a transfer — high amount (DENY)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "decision": "DENY",
+  "score": 100,
+  "reasons": [
+    "HIGH_AMOUNT",
+    "VELOCITY_AMOUNT",
+    "NEW_PAYEE"
+  ]
+}` },
+      ],
+      "fraud · Score with a USER token (403 INTERNAL_PORT_FORBIDDEN)": [
+        { status: "403 Forbidden", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Forbidden",
+  "status": 403,
+  "detail": "Internal ports accept service credentials only.",
+  "code": "INTERNAL_PORT_FORBIDDEN",
+  "correlationId": "6baf3a3f-b524-4433-8724-fac1b881bf75"
+}` },
+      ],
+      "fraud · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "bacen · Settle a Pix (200 SETTLED)": [
+        { status: "200 OK", label: "settled on the rail", body: `{
+  "endToEndId": "E12345678202608121000abc123",
+  "status": "SETTLED",
+  "amountCents": 20000,
+  "creditorKey": "bob@otherbank.com",
+  "creditorIspb": "99999999",
+  "rejectionReason": null,
+  "recordedAt": "2026-08-28T12:46:14.164307371Z"
+}` },
+        { status: "200 OK", label: "replayed — byte for byte the original, recordedAt included", body: `{
+  "endToEndId": "E12345678202608121000abc123",
+  "status": "SETTLED",
+  "amountCents": 20000,
+  "creditorKey": "bob@otherbank.com",
+  "creditorIspb": "99999999",
+  "rejectionReason": null,
+  "recordedAt": "2026-08-28T12:46:14.164307371Z"
+}` },
+      ],
+      "bacen · Settlement status (SETTLED / FAILED / UNKNOWN)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "endToEndId": "E12345678202608121000abc123",
+  "status": "SETTLED",
+  "amountCents": 20000,
+  "creditorKey": "bob@otherbank.com",
+  "creditorIspb": "99999999",
+  "rejectionReason": null,
+  "recordedAt": "2026-08-28T12:46:14.164307371Z"
+}` },
+      ],
+      "bacen · Arm a failure drill (failureRate = 1.0)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "latencyMs": 2000,
+  "failureRate": 1,
+  "timeoutRate": 0,
+  "timeoutHangMs": 15000,
+  "rejectKeys": []
+}` },
+      ],
+      "bacen · Arm a settlement rejection (rejectKeys)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "latencyMs": 2000,
+  "failureRate": 1,
+  "timeoutRate": 0,
+  "timeoutHangMs": 15000,
+  "rejectKeys": [
+    "bob@otherbank.com"
+  ]
+}` },
+      ],
+      "bacen · Disarm (back to compose defaults)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "latencyMs": 2000,
+  "failureRate": 0,
+  "timeoutRate": 0,
+  "timeoutHangMs": 15000,
+  "rejectKeys": []
+}` },
+      ],
+      "bacen · Current config": [
+        { status: "200 OK", label: "happy path", body: `{
+  "latencyMs": 2000,
+  "failureRate": 0,
+  "timeoutRate": 0,
+  "timeoutHangMs": 15000,
+  "rejectKeys": []
+}` },
+      ],
+      "bacen · DICT — which bank holds this key": [
+        { status: "200 OK", label: "happy path", body: `{
+  "key": "bob@otherbank.com",
+  "keyType": "EMAIL",
+  "ispb": "99999999",
+  "participant": "Banco OtherBank S.A."
+}` },
+      ],
+      "bacen · DICT — unknown key (404 DICT_KEY_NOT_FOUND)": [
+        { status: "404 Not Found", label: "the refusal — RFC 7807 problem+json", body: `{
+  "type": "about:blank",
+  "title": "Not Found",
+  "status": 404,
+  "detail": "No participant holds the Pix key ghost@nowhere.com",
+  "instance": "/spi/dict/ghost@nowhere.com",
+  "code": "DICT_KEY_NOT_FOUND",
+  "correlationId": "b7eca9ef-6577-4bab-8bc4-df311991bcb2"
+}` },
+      ],
+      "bacen · Simulate an inbound Pix to bob (money ARRIVES)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "endToEndId": "E99999999202608281246rRtGy4qHq6X",
+  "creditorKey": "bob@platinum.com",
+  "amountCents": 30000,
+  "payerName": "External Payer",
+  "payerIspb": "99999999",
+  "participantTxId": "in-E99999999202608281246rRtGy4qHq6X",
+  "outcome": "CREDITED",
+  "deliveryAttempts": 1
+}` },
+      ],
+      "bacen · Health": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "UP",
+  "groups": [
+    "liveness",
+    "readiness"
+  ]
+}` },
+      ],
+      "observability · The business funnel, by stage": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "stage": "DEBITED"
+        },
+        "value": [
+          1787921179.4,
+          "3"
+        ]
+      },
+      {
+        "metric": {
+          "stage": "FRAUD_CHECKED"
+        },
+        "value": [
+          1787921179.4,
+          "3"
+        ]
+      },
+      {
+        "metric": {
+          "stage": "RECEIVED"
+        },
+        "value": [
+          1787921179.4,
+          "4"
+        ]
+      },
+      {
+        "metric": {
+          "stage": "REVERSED"
+        },
+        "value": [
+          1787921179.4,
+          "0"
+        ]
+      },
+      {
+        "metric": {
+          "stage": "SENT_TO_SPI"
+        },
+        "value": [
+          1787921179.4,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "stage": "SETTLED"
+        },
+        "value": [
+          1787921179.4,
+          "3"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+      "observability · R$ settled (integer cents)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {},
+        "value": [
+          1787921179.684,
+          "24250"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+      "observability · Duplicates absorbed (KR1.1)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {},
+        "value": [
+          1787921179.968,
+          "1"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+      "observability · Fraud decision mix + fail-open rate": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "decision": "APPROVE"
+        },
+        "value": [
+          1787921180.251,
+          "2"
+        ]
+      },
+      {
+        "metric": {
+          "decision": "DENY"
+        },
+        "value": [
+          1787921180.251,
+          "0"
+        ]
+      },
+      {
+        "metric": {
+          "decision": "FRAUD_ERROR"
+        },
+        "value": [
+          1787921180.251,
+          "0"
+        ]
+      },
+      {
+        "metric": {
+          "decision": "REVIEW"
+        },
+        "value": [
+          1787921180.251,
+          "0"
+        ]
+      },
+      {
+        "metric": {
+          "decision": "SKIPPED"
+        },
+        "value": [
+          1787921180.251,
+          "1"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+      "observability · Are all targets up?": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "auth-service:8081",
+          "job": "pix-services",
+          "service": "auth-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "mock-bacen-spi:9090",
+          "job": "pix-services",
+          "role": "external-rail",
+          "service": "mock-bacen-spi"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "notification-service:8087",
+          "job": "pix-services",
+          "service": "notification-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "account-service:8082",
+          "job": "pix-services",
+          "service": "account-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "ledger-service:8085",
+          "job": "pix-services",
+          "service": "ledger-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "fraud-service:8083",
+          "job": "pix-services",
+          "service": "fraud-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "payment-service:8084",
+          "job": "pix-services",
+          "service": "payment-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      },
+      {
+        "metric": {
+          "__name__": "up",
+          "instance": "settlement-service:8086",
+          "job": "pix-services",
+          "service": "settlement-service"
+        },
+        "value": [
+          1787921180.534,
+          "1"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+      "observability · Reconciliation age vs the 5-min SLO (KR3.1)": [
+        { status: "200 OK", label: "happy path", body: `{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": {},
+        "value": [
+          1787921180.818,
+          "0"
+        ]
+      }
+    ]
+  }
+}` },
+      ],
+    };
+
+    /**
+     * The captured examples for one card, as collapsed <details> blocks.
+     *
+     * Task 3 of step 49: "the contract visible WITHOUT a live call". Everything else on this page needs
+     * eight containers running; these are the same responses, readable on a plane. They are TRANSCRIPTS,
+     * not prose — captured by driving this exact page against a live stack — so an example that drifts
+     * from the service is a bug in the capture, not an opinion someone typed. Keyed by "<serviceId> ·
+     * <card title>" rather than by index, so reordering cards never silently repoints an example.
+     */
+    function examplesHtml(ep, svc) {
+      const list = EXAMPLES[svc.id + ' · ' + ep.title];
+      if (!list || !list.length) return '';
+      const blocks = list.map((ex) => {
+        const good = /^2\d\d/.test(ex.status);
+        return `<details><summary><span class="excode ${good ? 'ok' : 'bad'}">${escapeHtml(ex.status)}</span>`
+          + `<span>${escapeHtml(ex.label)}</span></summary><pre>${escapeHtml(ex.body)}</pre></details>`;
+      }).join('');
+      return `<div class="examples"><label class="muted" style="margin-top:2px;">Captured responses `
+        + `<span class="muted">· real transcripts from a live run — no stack needed to read them</span></label>`
+        + blocks + `</div>`;
+    }
+
     function makeCard(ep, key, svc) {
       const card = document.createElement('div');
       card.className = 'card';
@@ -1383,7 +2938,13 @@
       if (ep.idempotent && !('Idempotency-Key' in seededHeaders)) {
         seededHeaders['Idempotency-Key'] = crypto.randomUUID(); generatedKeys.push('Idempotency-Key');
       }
-      if (!ep.capturesToken && !('X-Correlation-Id' in seededHeaders)) {
+      // …and NOT on a foreign service. Prometheus is not ours: its CORS policy allows exactly
+      // `Accept, Authorization, Content-Type, Origin`, so a browser preflighting an unknown
+      // X-Correlation-Id gets no matching Access-Control-Allow-Headers and refuses the request before
+      // it is ever sent. That is how all six observability cards came to fail with "Failed to fetch"
+      // while `curl` against the same URL answered 200 — the header the explorer adds for OUR benefit
+      // is the thing that broke them, and Prometheus would never have echoed it back anyway.
+      if (!ep.capturesToken && !svc.foreign && !('X-Correlation-Id' in seededHeaders)) {
         seededHeaders['X-Correlation-Id'] = crypto.randomUUID(); generatedKeys.push('X-Correlation-Id');
       }
       const showHeaders = !ep.capturesToken && Object.keys(seededHeaders).length > 0;
@@ -1412,6 +2973,7 @@
           </div>
           <div class="respmeta" id="meta-${key}" style="display:none;"></div>
           <pre id="out-${key}" style="display:none;"></pre>
+          ${examplesHtml(ep, svc)}
         </div>`;
       card.querySelector('.head').onclick = () => card.classList.toggle('open');
       if (ep.syncFromTxId) card.dataset.syncTxId = '1';
@@ -1431,8 +2993,16 @@
         // An internal port is authenticated by a MINTED service token, not by your session — so the
         // preview must say so, or the lock icon would keep implying "log in first" for a call that has
         // no user at all. Getting this line wrong is how a tool teaches the wrong mental model.
-        const internalRoute = INTERNAL_ROUTES.find((r) => effPath().indexOf(r.match) > -1);
-        if (internalRoute) {
+        const internalRoute = ep.forceUserToken
+          ? null : INTERNAL_ROUTES.find((r) => effPath().indexOf(r.match) > -1);
+        if (ep.asUser) {
+          lines.push(`Authorization: Bearer …  (${ep.asUser}'s token — minted for this call only;`
+            + ` your session stays ${identity ? identity.accountId : 'as it is'})`);
+        } else if (ep.forceUserToken) {
+          lines.push(accessToken
+            ? `Authorization: Bearer …  (your USER token, on purpose — session: ${identity ? identity.accountId : 'logged in'})`
+            : `Authorization: —  (not logged in; log in to see the 403 this card is about)`);
+        } else if (internalRoute) {
           lines.push(`Authorization: Bearer …  (service token · aud=${internalRoute.aud}`
             + ` scope=${internalRoute.scope} — minted per call, not your login)`);
         } else if (ep.auth) {
@@ -1440,13 +3010,14 @@
             ? `Authorization: Bearer …  (session: ${identity ? identity.accountId : 'logged in'})`
             : `Authorization: —  (not logged in; this endpoint will 401)`);
         }
+
         Object.entries(effHeaders()).forEach(([k, v]) => lines.push(`${escapeHtml(k)}: ${escapeHtml(v)}`));
         if (hasBody && bodyEl()) { lines.push(''); lines.push(escapeHtml(bodyEl().value)); }
         prev.innerHTML = lines.join('\n');
         const authEl = $('auth-' + key);
         // An internal card is never "blocked on login": it mints its own credential.
         if (authEl) authEl.className = 'authnote '
-          + (internalRoute || accessToken ? 'muted' : 'status bad');
+          + (internalRoute || ep.asUser || accessToken ? 'muted' : 'status bad');
       }
       // Recompute the preview as the user edits any field, and once now.
       ['input', 'change'].forEach((evt) => card.querySelector('.body').addEventListener(evt, refreshPreview));
@@ -1468,11 +3039,14 @@
       // Everything sent comes from the editable fields — the preview above is literally these same values.
       async function runRequest() {
         const path = effPath();
+        // A card that acts as somebody else borrows that identity for this call only (see tokenAs).
+        const asToken = ep.asUser ? await tokenAs(ep.asUser) : null;
         const r = ep.capturesToken
           ? await doLogin(...bodyToCreds(bodyEl() ? bodyEl().value : ep.body))
           : await send({ method: ep.method, path, headers: effHeaders(),
                          body: hasBody && bodyEl() ? bodyEl().value : null, auth: ep.auth,
-                         base: currentServiceBase(svc) });
+                         base: currentServiceBase(svc), token: asToken,
+                         userTokenOnly: !!ep.forceUserToken });
         // A returned transactionId is remembered and pushed into any status card that follows a payment.
         if (r.json && r.json.transactionId) captureTxId(r.json.transactionId);
         statusEl().textContent = `${r.status} ${r.statusText}`;
@@ -1985,8 +3559,17 @@
               + 'same answer, arriving on its own. Best-effort push, authoritative poll: two views of one truth.',
             run: async (ctx) => {
               const r = await pollUntilTerminal(ctx.txId, ctx.aliceToken);
-              return { ok: r.ok && r.json.status === 'SETTLED', state: `${r.json ? r.json.status : r.status}`,
-                body: pretty(r), note: 'Check the phone: event:PixSettled, same amount, same transactionId.' };
+              const status = r.json ? r.json.status : String(r.status);
+              // REVERSED here is almost never the rail failing on its own: it is the Reversal journey's
+              // rejectKeys still armed, because that journey was navigated away from before its `always`
+              // disarm step ran. Say so — a red step whose cause is one tab away should not send the
+              // reader looking through service logs.
+              const note = status === 'REVERSED'
+                ? 'REVERSED, not SETTLED — mock-BACEN is probably still armed from the Reversal journey. '
+                  + 'Check mock-bacen-spi → "Current config"; if rejectKeys still lists bob@otherbank.com, '
+                  + 'run "Disarm" there and re-run this journey.'
+                : 'Check the phone: event:PixSettled, same amount, same transactionId.';
+              return { ok: r.ok && status === 'SETTLED', state: status, body: pretty(r), note };
             },
           },
         ],
@@ -2412,20 +3995,53 @@
             title: 'Read the funnel AFTER — which counters moved?', call: 'GET :9091 /api/v1/query (×2)',
             why: 'The payoff. Four stages advance by exactly <b>1</b> and R$ 4,20 lands in the settled total as '
               + '<b>420 cents</b> — money is integer cents end to end, and the division by 100 happens on a '
-              + 'dashboard, never in the platform. Note what did NOT move: SENT_TO_SPI. Note also that '
-              + 'Prometheus scrapes every 10s, so if a stage reads 0 here, wait a few seconds and re-run this '
-              + 'step — the counter already moved inside the service, the scraper simply has not been round yet.',
+              + 'dashboard, never in the platform. SENT_TO_SPI is <b>reported, not asserted</b>: an internal '
+              + 'Pix never touches the rail, but this counter is process-wide, so an external payment left '
+              + 'settling by another tab lands in the same window — and no sum by stage can say which '
+              + 'transaction moved it. That limit is the honest reason the trace exists two steps down. '
+              + 'Note also that '
+              + 'Prometheus scrapes every 10s, so this step POLLS for up to 25s rather than reading once: '
+              + 'a counter that reads 0 immediately after a send has already moved inside the service and is '
+              + 'merely unscraped, and failing on that would be measuring the scrape interval, not the platform.',
             run: async (ctx) => {
-              await sleep(1200);
-              const after = await funnelSnapshot();
+              // WAIT FOR THE SCRAPE, do not race it. Prometheus pulls every 10s, so a fixed sleep here
+              // was a coin flip: the counter had already moved inside the service and the scraper simply
+              // had not been round yet, so "Run all steps" stopped on a red step that was measuring the
+              // scrape interval rather than the platform — and the two steps below it never ran. Polling
+              // for up to ~25s turns a known timing gap into a wait, which is what a human would do.
+              const stages = ['RECEIVED', 'FRAUD_CHECKED', 'DEBITED', 'SENT_TO_SPI', 'SETTLED'];
+              const moved = (a) => a && (a.RECEIVED || 0) - (ctx.before.RECEIVED || 0) >= 1
+                && (a.FRAUD_CHECKED || 0) - (ctx.before.FRAUD_CHECKED || 0) >= 1
+                && (a.DEBITED || 0) - (ctx.before.DEBITED || 0) >= 1
+                && (a.SETTLED || 0) - (ctx.before.SETTLED || 0) >= 1;
+              let after = null, waited = 0;
+              for (;;) {
+                await sleep(1200); waited += 1200;
+                after = await funnelSnapshot();
+                if (moved(after) || waited >= 25000) break;
+              }
               const afterSettled = await scalar('sum(pix_settled_amount_cents_total)');
               if (!ctx.before || !after) return { ok: false, state: 'no data', body: 'Prometheus did not answer.' };
-              const stages = ['RECEIVED', 'FRAUD_CHECKED', 'DEBITED', 'SENT_TO_SPI', 'SETTLED'];
               const delta = {}; stages.forEach((k) => { delta[k] = (after[k] || 0) - (ctx.before[k] || 0); });
               const cents = (afterSettled || 0) - (ctx.beforeSettled || 0);
-              const good = delta.RECEIVED >= 1 && delta.FRAUD_CHECKED >= 1 && delta.DEBITED >= 1
-                && delta.SETTLED >= 1 && delta.SENT_TO_SPI === 0;
-              return { ok: good, state: good ? 'four stages +1, rail untouched ✓' : 'scrape may still be in flight',
+              // WHAT THIS STEP MAY ASSERT, and what it may not. The four internal stages advancing is
+              // caused by OUR send and is safe to require. SENT_TO_SPI being unchanged is NOT: this is a
+              // process-wide counter, and an EXTERNAL payment left in flight by another tab (or by the
+              // "Send Pix · external" journey a few minutes ago) settles asynchronously and lands in the
+              // same window — which used to fail this step with "the rail moved", reporting somebody
+              // else's payment as this one's defect. That is not a flaw in the metric; it is what a
+              // counter IS. A sum by stage answers "how is the platform flowing?", never "what happened
+              // to THIS payment" — and needing the second question answered is precisely why the step
+              // two below reaches for the trace instead of the funnel.
+              const good = delta.RECEIVED >= 1 && delta.FRAUD_CHECKED >= 1
+                && delta.DEBITED >= 1 && delta.SETTLED >= 1;
+              const rail = delta.SENT_TO_SPI === 0
+                ? 'SENT_TO_SPI +0 — an internal Pix never touches the rail ✓'
+                : `SENT_TO_SPI +${delta.SENT_TO_SPI} — NOT from this payment: an external Pix settled in `
+                  + 'the same window. A shared counter cannot attribute movement to one transaction.';
+              return { ok: good, state: good ? `four stages +1 (after ${(waited / 1000).toFixed(1)}s)`
+                  : 'no scrape landed in 25s — is Prometheus scraping payment-service?',
+                note: rail,
                 body: stages.map((k) => `${k.padEnd(15)} ${String(ctx.before[k] || 0).padStart(6)} → `
                   + `${String(after[k] || 0).padStart(6)}   ${delta[k] >= 0 ? '+' : ''}${delta[k]}`).join('\n')
                   + `\n\nsettled amount  ${String(ctx.beforeSettled || 0).padStart(6)} → `

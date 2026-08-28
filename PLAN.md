@@ -173,12 +173,20 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 **Infra que sobe:** none.
 
 - [x] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
-- [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
+- [x] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
   > Partly delivered early (2026-08-20, during step 39): the **Journeys · Services · Phone** grouping, the
   > five runnable journeys (receive · internal · external · reversal · idempotency) and the layout fix
   > landed when the step-39 review found the explorer could not answer "how do I test receiving a Pix?".
   > What step 49 still owns: coverage audit against `docs/api/openapi.yaml`, richer error examples, and
   > journeys for the flows that land after Sprint 8 (cache, statement, audit).
+  > **Done 2026-08-28, and it found what step 48 found:** coverage was already complete, but the page had
+  > never been *run*, and 12 of 55 cards failed when clicked top to bottom on a fresh stack (nothing
+  > registered the payee; the bob-login card hijacked the session; the delete card removed the key its
+  > neighbours needed; every Prometheus card failed the browser preflight). Cache and statement already had
+  > a journey; **audit does not, deliberately** — the trail is S3-only (step 43 verifies it with `aws s3 ls`),
+  > and LocalStack answers an unsigned `ListObjectsV2` but sends no `Access-Control-Allow-Origin`, so a
+  > browser opened from `file://` cannot read it. A runnable audit journey would need an infra change
+  > (`EXTRA_CORS_ALLOWED_ORIGINS` on the LocalStack container), which is not this step's scope.
 
 ## Sprint 14 — Relational counterpart & staff-grade extensions (Block Q)
 > Steps 50–51 may be taken any time after Sprint 3; 52 requires 47; 53 requires 41 & 43.
@@ -196,6 +204,16 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 
 From the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)). Recorded here so a
 reader finds the answer next to the question; none of these is an unfinished task.
+
+- **P2 · a self-transfer answers `503 LEDGER_UNAVAILABLE`, and asks the client to retry it.** Found by the
+  step-49 explorer audit, not fixed there (adjacent to that step's scope). Paying your own Pix key reaches
+  `PostDoubleEntryUseCase`'s guard — "both legs name the same account", a `422 InvalidPostingException` and a
+  permanent refusal — but payment-service maps every ledger failure to `503 LEDGER_UNAVAILABLE` with
+  `Retry-After: 5`. So a request that can *never* succeed is reported as a transient outage, and a well-behaved
+  client retries it on a schedule the platform itself suggested. Reachable through the public API by any user
+  with a registered key. The fix is small (distinguish the ledger's *permanent* refusals from its *unavailable*
+  ones in `PaymentExceptionHandler`) but it changes a public error contract, so it wants its own step and an
+  `openapi.yaml` entry rather than a drive-by.
 
 - **P2 · versioned internal contracts (events & DTOs).** Real and open. A versioned schema, backward/forward
   compatibility and consumer-driven contract tests would stop a status enum drifting between two services — the
