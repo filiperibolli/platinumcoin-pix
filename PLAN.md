@@ -173,7 +173,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 **Flow delivered:** the two living manual-test harnesses — Postman collection + single-file HTML API explorer — **finalized** (both grown incrementally, one entry per endpoint, since their first endpoint).
 **Infra que sobe:** none.
 
-- [ ] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
+- [x] [Step 48](docs/steps/step-48.md) — **finalize** the unified Postman collection (grown incrementally since step 04): all services, auth pre-request, happy/error examples
 - [ ] [Step 49](docs/steps/step-49.md) — **finalize** the single-file HTML API explorer (grown incrementally since auth-service): polish the guided journey, add richer happy/error examples, audit coverage
   > Partly delivered early (2026-08-20, during step 39): the **Journeys · Services · Phone** grouping, the
   > five runnable journeys (receive · internal · external · reversal · idempotency) and the layout fix

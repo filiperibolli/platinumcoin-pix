@@ -11,6 +11,58 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Unified Postman collection (all APIs by flow) with automated auth/idempotency and happy/error examples (step 48) · 2026-08-28
+  - **The finalize step found the collection could not be run.** Its coverage was already complete — the
+    gaps step-48.md names (mock-bacen chaos config, the inbound simulator, internal balance) had been
+    closed incrementally steps ago — but `newman` against a live stack failed **28 of 154 assertions**
+    across ten root causes, and nothing in the repo executed it, so none of them had ever been seen.
+  - **What was actually broken was arrival order, not endpoints.** `Delete a Pix key` removed
+    `alice@platinum.com` and the two *Resolve* requests below it needed that key; the external send
+    overwrote `paymentTxId` so the status request asserted the internal payment's terminal state against
+    the external payment's; the before/after balance pair captured a number and compared it to itself
+    because both reads sat *after* the sends; the dedupe demo read an `endToEndId` that only a later
+    folder set; and `{{inboundTxId}}` defaulted to a hard-coded id from somebody's old run. The fixes
+    are ordering and ownership, not new code: each folder now reads top to bottom as a story and mints
+    what it needs.
+  - **Two requests could never have passed.** `Get payment status — a Pix RECEIVED` polled bob's arrival
+    with **alice's** token, which is a `404` by design and always would have been. And `bob@platinum.com`
+    was never registered by anything — the seed creates accounts, not keys — so every send answered
+    `422 KEY_NOT_FOUND`, *including the negative tests*, which failed for a reason unrelated to the rule
+    each was written to prove.
+  - **Auth is a collection pre-request now**: it logs in only when the stored token is missing or within
+    60s of expiring, reading `exp` from the token itself. That condition is what keeps identity
+    switching intact — and `Login (bob)` stopped overwriting the shared token, because doing so silently
+    re-pointed every request after it and registered alice's key on bob's account.
+  - **New requests, for gaps the audit found rather than the ones the step predicted:** the inbound
+    happy path (`200 CREDITED`, minting its own `endToEndId`, so the dedupe demo stands alone), a fraud
+    `DENY`, `403 INTERNAL_PORT_FORBIDDEN` — the only place ADR-0017's refusal is watchable — and a
+    Jaeger query asserting that one send crosses a service boundary inside **one** trace.
+  - **`Flows — the journeys`**: a send and a receive as ordered chains, carrying what no single request
+    can assert — Σ over both parties' ledger balances conserved across a payment, and alice's balance
+    *unmoved* after replaying the same `Idempotency-Key`. One payment, not two, stated as a fact about
+    a balance rather than a claim in a response body.
+  - **Every request ships a saved example, and every one is a transcript** — the collection was run
+    against a live stack and the real responses captured, with the two registration requests carrying
+    both their `201` and their `409`. Three oversized ones are excerpted, and the excerpt says what was
+    cut. JWTs and the webhook secret are put back into `{{variable}}` form before being written to disk.
+  - **Three defects the collection had inherited from the platform's own history.** The Prometheus
+    requests sent PromQL raw in the query string and all three returned `400` — the identical mistake
+    `docs/observability.md` §6 records the platform making in its alert rules, fixed the identical way
+    (a form body, which is also what Grafana does). The funnel assertion compared `SETTLED` to `DEBITED`
+    across two independently-scraped targets, so it failed at random with `expected 9 to be at most 8`,
+    which reads like money settling without a debit and is scrape skew; stage ordering is now asserted
+    where it is atomic and the cross-target totals are logged. And the ledger balance card pinned the
+    seeded R$ 10,000.00 unconditionally, so it passed only until the first payment moved money.
+  - **`/internal/fraud/score` looks like a query and is not** — it records before it reads, so scoring
+    R$ 60,000 against alice pushed her hourly velocity window over the line and every genuine payment
+    she made for the next hour came back `422 FRAUD_DENIED`. The collection did that to itself. The
+    scoring demos now use a demo account id, and the request says why.
+  - **One request is skipped on purpose and says so out loud**: an SSE stream has no completion for a
+    runner to assert. It logs `SKIPPED ON PURPOSE`, ships an example captured with `curl -N` (the
+    `:connected` comment plus a real `PixReceived` frame), and is sent anyway with `sseInteractive=true`.
+  - Registered in `docs/local-dev.md` §6 as the fourth check that cannot be a `mvn verify`. Verified by
+    three consecutive clean runs on a freshly reseeded stack and three more on a used one.
+  AI: est 4h / actual 50m / ~95% generated / 0 issues caught in human review
 - k6 load profiles (low, standard ~58 TPS, Black Friday 500+ TPS) with SLO-failing thresholds and RESULTS.md (step 47) · 2026-08-25
   - `load/k6/` — `lib.js` (auth, the 200-account ring, the 70/20/10 mix, the tags, the thresholds),
     the three profiles, `run.sh` (posture + run + artifacts + restore), `run-degradation.sh`,
