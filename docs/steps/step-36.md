@@ -5,7 +5,7 @@
 ## Objective
 Create `notification-queue` + DLQ, subscribed to `pix-events` with a filter policy `eventType IN [PixSettled, PixReceived, PixReversed]`. Extend the SNS subscriptions accordingly. (The inbound webhook, step 37, is handled synchronously and idempotently by settlement-service — a buffering queue in front of it is a documented production evolution, not local infra.)
 
-## Why / what you'll learn
+## Why this step exists
 Fan-out in action: the **same** SNS topic `pix-events` now feeds *another* consumer (notification-service) alongside settlement — each with its own physical queue and filter policy, the SNS+SQS analogue of Kafka consumer groups (see the Kafka appendix). You'll refine filter policies so notifications only wake on user-facing events, not internal ones. Also the discipline of *not* creating infrastructure nothing consumes: an earlier draft added an `inbound-pix-queue` here, but step 37 processes the webhook synchronously — a queue with no consumer is worse than no queue.
 
 ## Prerequisites

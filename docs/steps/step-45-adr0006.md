@@ -1,6 +1,6 @@
-# Learning — ADR-0006 (Microservices decomposition) · finalized by Step 45
+# Design note — ADR-0006 (Microservices decomposition) · finalized by Step 45
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0006-microservices-decomposition.md](../adr/0006-microservices-decomposition.md) · **Concept finalized by:** [Step 45](step-45.md) (the hardening quality gate).
 > **Why Step 45:** the eight services come online gradually across Sprints 1–11, but ADR-0006 is not "there are eight JVMs" — it's a set of **disciplines**: seams drawn on consistency/latency/scaling profiles, API/event-only communication, exactly two documented shared-table exceptions, a thin `common-lib`, guarded write surfaces. Those disciplines are only *verified* — adversarially, across the whole surface — in Step 45 (guarded-transition sweep, error-contract audit, versioning review, security checklist). That's where the decomposition is finalized as a property, not just a fact.
 

@@ -5,7 +5,7 @@
 ## Objective
 `mock-bacen-spi` (port 9090) gains the SPI surface: `POST /spi/settlements` (idempotent by `endToEndId`; waits `BACEN_LATENCY_MS`; fails/hangs per configured rates), `GET /spi/settlements/{endToEndId}` (status lookup), `POST /admin/config` (runtime latency/failureRate/timeoutRate), plus `GET /spi/dict/{key}` for external key resolution — closing the seam left open in step 11.
 
-## Why / what you'll learn
+## Why this step exists
 A **controllable external dependency** is what makes the resilience work (Sprint 7) testable: configurable latency (0–10s, the SPI SLA), failure and timeout injection. Idempotency by `endToEndId` mirrors the real SPI — retrying a settlement after a timeout is safe. This step also completes **external key resolution**: account-service's step-11 seam now delegates unknown keys here (`GET /spi/dict/{key}` answers for a configured set of "external bank" keys), so `bob@otherbank.com` resolves and the external send flow is fully wired.
 
 ## Prerequisites

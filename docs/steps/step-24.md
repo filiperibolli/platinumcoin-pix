@@ -5,7 +5,7 @@
 ## Objective
 `POST /internal/fraud/score` evaluating cheap synchronous rules — velocity (tx count + amount in sliding windows via Redis), unusually high amount vs account profile, new payee, odd hours — returning `{decision: APPROVE|REVIEW|DENY, score, reasons[]}` with **p99 < 150ms**.
 
-## Why / what you'll learn
+## Why this step exists
 Real-time fraud scoring engineered to a **latency budget**: no heavy inference in-path — only pre-computed features read from fast stores (velocity counters in Redis, account age, payee novelty). The 150ms internal target leaves margin inside the 200ms budget the caller enforces (step 25). You'll learn sliding-window counters in Redis (`INCR` + `EXPIRE`, or sorted-sets) and why the *design* (features precomputed, model async) is what makes sub-200ms scoring possible; heavy/ML scoring runs asynchronously on the event stream and feeds block-lists this cheap check reads.
 
 ## Prerequisites

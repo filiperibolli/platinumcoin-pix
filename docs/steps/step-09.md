@@ -5,7 +5,7 @@
 ## Objective
 `account-service` (port 8082) reads `pix_accounts` from DynamoDB: `GET /v1/accounts/me` returns the authenticated user's account (id, status, daily limit); an internal `GET /internal/accounts/{accountId}` serves other services.
 
-## Why / what you'll learn
+## Why this step exists
 The first service that talks to DynamoDB via the AWS SDK. You'll practice the **hexagonal-lite** split: an `AccountRepository` port in `domain/`, a `DynamoAccountRepository` in `infra/` (the only place AWS SDK types appear), a controller in `api/`. `GET /accounts/me` derives the account from the JWT `accountId` claim (never a path/body param) — the same principle that protects the send flow later. The internal endpoint is how service-to-service reads work without sharing tables (ADR-0006).
 
 ## Prerequisites

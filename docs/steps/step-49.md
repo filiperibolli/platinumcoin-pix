@@ -12,7 +12,7 @@ scratch; it enriches it: audits coverage (every public endpoint has a working ca
 guided **full journey** (send → poll status → statement) now that the money flows exist, and adds
 richer happy/error examples.
 
-## Why / what you'll learn
+## Why this step exists
 A zero-dependency, open-from-disk explorer is the friendliest possible front door to the platform — no
 Postman install, no npm. The discipline is keeping it truly self-contained and every pre-filled
 request **valid** (a reviewer clicks and it *works* against the seed data). The guided journey is the

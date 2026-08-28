@@ -5,7 +5,7 @@
 ## Objective
 Shared foundations every service uses: RFC 7807 `application/problem+json` error handling with a `code` field, a servlet filter that reads/creates `X-Correlation-Id` and puts it in MDC, and structured JSON logging (logstash-logback-encoder) including `correlationId`.
 
-## Why / what you'll learn
+## Why this step exists
 In a distributed system, a request touches 4+ services; the **correlation id** is the thread you pull to reconstruct what happened — generated at the edge if absent, propagated on every outgoing call, attached to every log line via MDC. Structured JSON logs make that grep-able (`jq 'select(.correlationId=="...")'`). A uniform problem+json error contract means clients (and you, debugging) parse one error shape platform-wide, and stack traces never leak. Building this *before* the first service means the identity flow is already observable.
 
 ## Prerequisites

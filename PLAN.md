@@ -16,8 +16,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - Work top-to-bottom; a step may only start when its prerequisites are checked.
 - Rules of engagement: see [CLAUDE.md](CLAUDE.md).
 
-> **Legend** — ✍️ = hand-written zone (human writes it without AI code generation; AI reviews only).
-> "Infra que sobe" = infrastructure that comes up **for the first time** in that sprint; it stays up afterwards.
+> **Legend** — "Infra que sobe" = infrastructure that comes up **for the first time** in that sprint; it stays up afterwards.
 
 ---
 
@@ -49,7 +48,7 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 - [x] [Step 12](docs/steps/step-12.md) — LocalStack init: `pix_ledger` table + seed postings
 - [x] [Step 13](docs/steps/step-13.md) — ledger-service: data model + balance read (strongly consistent)
 - [x] [Step 14](docs/steps/step-14.md) — atomic double-entry posting via TransactWriteItems (debit+credit+2 entries+txId guard)
-- [x] [Step 15](docs/steps/step-15.md) — invariant test suite: concurrency storm, no-negative-balance, no-double-post, conservation of money **✍️ hand-written zone**
+- [x] [Step 15](docs/steps/step-15.md) — invariant test suite: concurrency storm, no-negative-balance, no-double-post, conservation of money
 - [x] [Step 16](docs/steps/step-16.md) — statement query (paginated, newest first) + posting API polish
 
 ## Sprint 4 — Send Pix (internal, synchronous)
@@ -124,8 +123,8 @@ progressively, sprint by sprint (see the cumulative-infra diagram in `ARCHITECTU
 > **Inserted, not renumbered.** An independent staff-level review by **Geison Flores** (Mercado Livre) landed as
 > [`docs/solucao-e-sugestoes.html`](docs/solucao-e-sugestoes.html) via [PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58),
 > classifying its findings P0 (money correctness & security) / P1 (operations & scale) / P2. This sprint sits
-> **between Sprints 11 and 12** so the later sprint numbers — referenced by ARCHITECTURE §6.12-6.14, the README,
-> the CHANGELOG and Sprint 15's prerequisites — stay valid. Its steps take the **next free numbers (65+)**, as
+> **between Sprints 11 and 12** so the later sprint numbers — referenced by ARCHITECTURE §6.12-6.14, the README
+> and the CHANGELOG — stay valid. Its steps take the **next free numbers (65+)**, as
 > step 64 already did; each step file records that it was numbered out of order and why.
 > Every finding was verified against the code before a spec was written; findings already covered
 > (PII in logs → ADR-0012's deliberate sandbox trade-off; PostgreSQL for the ledger → ADR-0020) produced an ADR
@@ -141,7 +140,7 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 - [x] [Step 66](docs/steps/step-66.md) — a ledger timeout is an **unknown result**: resolve by re-posting the same `txId` and read the `replayed` flag the ledger already returns ([ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md)) · *requires 65*
 - [x] [Step 67](docs/steps/step-67.md) — finalization fencing: CAS into `FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL` **before** any posting; settle XOR reverse ([ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md), amends ADR-0003)
 - [x] [Step 68](docs/steps/step-68.md) — internal-port isolation: scoped service tokens (`typ`/`iss`/`aud`/`scope`); a user JWT gets `403` on every `/internal/**` route ([ADR-0017](docs/adr/0017-workload-identity-for-internal-ports.md), amends ADR-0007)
-- [x] [Step 69](docs/steps/step-69.md) — recovery & fencing invariant suite: crash-after-commit, ambiguous timeout, concurrent settle×reverse, lateral-access matrix, conservation everywhere · *requires 65-68* · *was a ✍️ zone; reassigned 2026-08-23 — the practice moved to [step 73](docs/steps/step-73.md), which explains this suite*
+- [x] [Step 69](docs/steps/step-69.md) — recovery & fencing invariant suite: crash-after-commit, ambiguous timeout, concurrent settle×reverse, lateral-access matrix, conservation everywhere · *requires 65-68*
 
 **P1 — operations & scale.**
 
@@ -187,26 +186,9 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 **Infra que sobe:** PostgreSQL (Testcontainers, lab only — never wired to the platform).
 
 - [ ] [Step 50](docs/steps/step-50.md) — `labs/ledger-pg`: same ledger port on PostgreSQL with pessimistic (`SELECT FOR UPDATE`) and optimistic (version column) strategies (ADR-0009)
-- [ ] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB **✍️ hand-written zone (findings doc + psql session)**
+- [ ] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB (findings doc + psql session)
 - [ ] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
 - [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
-
-## Sprint 15 — Concept mastery & design defense (✍️ hand-written)
-> Each step here is gated on the implementation step that **builds** the concept it examines — you validate a decision only after living the code that proves it. Take each one as its prerequisite is checked; the sprint is not sequential.
-**Flow delivered:** a written, defensible account of every core design decision — the design defense, in *your own words*. For each concept you locate it in the code/docs, explain it in `docs/concepts/concept-NN-*.md`, name the trade-off it accepts and the failure mode it prevents; **Claude then reviews the finished write-up, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question** (it never drafts the explanation — hand-written zone, CLAUDE.md).
-**Infra que sobe:** none (docs only — no build, no tests, no `mvn`). · **Deliverables:** `docs/concepts/`
-
-- [ ] [Step 54](docs/steps/step-54.md) — Concept: **atomic double-entry ledger** — never debit without credit; one `TransactWriteItems`; no-negative-balance *inside* the transaction; append-only corrections **✍️** (prereq: step 15)
-- [ ] [Step 55](docs/steps/step-55.md) — Concept: **idempotency, the three layers** — API claim/replay/409, ledger `txId` guard, SPI `endToEndId`; the claim-crash window **✍️** (prereq: step 19)
-- [ ] [Step 56](docs/steps/step-56.md) — Concept: **debited account from the JWT, never the payload** — authority from the token; the field made inexpressible in the API shape **✍️** (prereq: step 18)
-- [ ] [Step 57](docs/steps/step-57.md) — Concept: **DynamoDB-for-ledger storage trade-off** — why not Postgres here; what is given up and how it's compensated (Question 3) **✍️** (prereq: step 14)
-- [ ] [Step 58](docs/steps/step-58.md) — Concept: **clean/hexagonal-lite + explicit use cases** — dependency rule inward, ports only for outbound infra, one `UseCase` per inbound op, ArchUnit as the guard **✍️** (prereq: step 09)
-- [ ] [Step 59](docs/steps/step-59.md) — Concept: **fraud fail-open under a 200ms budget** — fail-open vs fail-closed, the hard client timeout, bounded risk (Question 5) **✍️** (prereq: step 25)
-- [ ] [Step 60](docs/steps/step-60.md) — Concept: **transactional outbox + polling publisher** — the dual-write problem, same-partition atomic write, sparse GSI, at-least-once + consumer dedup **✍️** (prereq: step 29)
-- [ ] [Step 61](docs/steps/step-61.md) — Concept: **async settlement + bounded reconciliation** — `202` not `200`, query-before-retry, DLQ, "eventual" made *< 5 min* (Questions 4 & 7) **✍️** (prereq: step 35)
-- [ ] [Step 62](docs/steps/step-62.md) — Concept: **correlation-id observability** — the id in the log *pattern*, one `grep` reconstructs a transaction across services; silence alerts (ADR-0012) **✍️** (prereq: step 44)
-- [ ] [Step 63](docs/steps/step-63.md) — Concept: **99.99% availability & the ledger-down-30s behavior** — fail-fast `503`, nothing debited, retry-safe; the error-budget math (Question 7) **✍️** (prereq: step 45)
-- [ ] [Step 73](docs/steps/step-73.md) — Concept: **adversarial testing** — where each fault is injected and *why that instant*, why a race drill repeats, conservation as the assertion of last resort (and the case where Σ holds and money was still created) **✍️** (prereq: step 69) · *added 2026-08-23, next free number, when step 69 stopped being a ✍️ zone — see its note*
 
 ---
 
@@ -231,8 +213,8 @@ reader finds the answer next to the question; none of these is an unfinished tas
   everything in Sprint 11.5.
 - **P3 · multi-AZ production plan** (RTO/RPO, PITR, KMS + key rotation, tested failover, degraded capacity).
   Out of scope by construction: this platform is 100% local, no Kubernetes, no cloud account (CLAUDE.md). It is
-  already treated as target architecture in ARCHITECTURE and defended in writing by
-  [step 63](docs/steps/step-63.md). No step.
+  already treated as target architecture in [ARCHITECTURE.md](ARCHITECTURE.md) §7.4 (availability budget and the
+  ledger-outage behaviour). No step.
 - **Modular monolith / service consolidation.** The review says "evolução seletiva… consolidar deve reduzir uma
   falha concreta, não apenas implantações". The concrete failure it names — the payment/settlement state machine
   split across two services — is what [ADR-0016](docs/adr/0016-finalization-fencing-settle-xor-reverse.md)

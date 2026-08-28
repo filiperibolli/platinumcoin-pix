@@ -375,8 +375,8 @@ The platform reached its halfway mark: **the full money path is built, tested an
   bearer to every internal port, making any user's login a valid credential on
   `POST /internal/ledger/postings`. **Planned as Sprint 11.5** (inserted between Sprints 11 and 12 so
   no later sprint number moves; steps take the next free numbers 65-72, as step 64 already did):
-  steps 65-68 (the P0s, all preceding step 45), step 69 (✍️ hand-written recovery & fencing invariant
-  suite), steps 70-72 (the P1s). **Reconciled rather than duplicated:** step 47's scope was widened for
+  steps 65-68 (the P0s, all preceding step 45), step 69 (the recovery & fencing invariant suite),
+  steps 70-72 (the P1s). **Reconciled rather than duplicated:** step 47's scope was widened for
   the 500+ TPS finding, step 44 was left intact with step 72 delivering only its delta (OTel + error
   budgets), and step 45 keeps AWS/IAM while the HTTP-identity P0 moved to step 68.
   **ADR-0014 … ADR-0021 added**, each crediting the review and linking PR #58 — durable operation
@@ -838,9 +838,9 @@ The platform reached its halfway mark: **the full money path is built, tested an
     rollover. `aResumeDebitsOnceButReservesTheDailyLimitTwice` pins the doubled value on purpose, so a
     future step that makes the reservation idempotent per `txId` fails loudly and must update the claim
     rather than quietly widen it. Nothing else was found open.
-  - Step 69 **was** a ✍️ hand-written zone until 2026-08-23; the practice moved to step 73, which takes this
-    suite as its subject — so every kill point carries a comment naming *why that instant* and what moving
-    it would stop catching (`CrashPoint`'s four constants, and the class javadocs of the other two suites).
+  - Every kill point carries a comment naming *why that instant* and what moving it would stop catching
+    (`CrashPoint`'s four constants, and the class javadocs of the other two suites) — a trap nobody can
+    explain is a trap nobody can maintain.
 - Prometheus + Grafana (technical + business-funnel dashboards as code), silence alerts and correlationId
   path tracing (step 44)
   Sprint 11's flow: **see the whole system**. Three layers — logs (what happened to *this* request),
@@ -2436,8 +2436,8 @@ The platform reached its halfway mark: **the full money path is built, tested an
   settlement, the `OUTBOX#` sibling) are deliberately not invented. The write is an unconditional
   `PutItem`: the `txId` is a fresh UUID and request-level de-dup is step 19's layer.
   **Idempotency-Key: accepted and ignored, on purpose.** The header is required by the OpenAPI
-  contract, but the conditional claim + response replay + `409`-on-hash-mismatch is step 19 (a
-  hand-written-test zone). The controller neither reads nor enforces it this step, with a
+  contract, but the conditional claim + response replay + `409`-on-hash-mismatch is step 19.
+  The controller neither reads nor enforces it this step, with a
   `// step 19` seam noted — a knowing, documented deviation from Domain Safety Rule #2 for the
   skeleton, closed next step.
   **Full new-service checklist per CLAUDE.md:** module + POM in the parent `<modules>`, `Application`,
@@ -2542,12 +2542,11 @@ The platform reached its halfway mark: **the full money path is built, tested an
   this exact query and cursor (written ahead in the schema), so no doc drift to correct.
   AI: est 2h / actual 2h / ~90% generated / 0 issues caught in human review
 - Ledger invariant suite: concurrent storm proving no-negative-balance, no-double-spend and conservation of money (step 15)
-  **✍️ Hand-written zone** — the entire `LedgerInvariantsIT` was written by the human, by hand, without
-  AI code generation (AI assisted with Java syntax only); Claude's role was limited to reviewing the
-  finished suite, running it, and wiring the docs. So the metrics line below is **inverted** from every
-  other entry: `issues caught in human review` normally counts defects the human found in AI code — here
-  it counts defects **Claude found in the human's code** (zero; three trivial non-defect notes recorded
-  below). This is the deliberate-practice payoff the hand-written zones exist for: `ExecutorService` +
+  This suite was written by the human, not generated (AI assisted with Java syntax only); Claude's role
+  was limited to reviewing the finished suite, running it, and wiring the docs. So the metrics line below
+  is **inverted** from every other entry: `issues caught in human review` normally counts defects the
+  human found in AI code — here it counts defects **Claude found in the human's code** (zero; three
+  trivial non-defect notes recorded below). What the suite rests on: `ExecutorService` +
   `CountDownLatch` to release N threads at once, worker threads that **return** rather than assert (an
   `AssertionError` on a pool thread never reaches JUnit — a test that goes green while testing nothing),
   and **system-level** invariants (Σ balances constant, Σ entry legs == 0) rather than per-call outcomes.
@@ -2574,7 +2573,7 @@ The platform reached its halfway mark: **the full money path is built, tested an
   or config change was needed. Verified: `mvn -pl services/ledger-service -am verify` green —
   `LedgerInvariantsIT` 4/0/0/0, module total **68 tests** (37 unit + architecture, 31 integration),
   `BUILD SUCCESS`.
-  AI: est 4h / actual 6h / ~0% generated (hand-written zone; AI: Java syntax help only) / 0 defects found in Claude's review
+  AI: est 4h / actual 6h / ~0% generated (human-written suite; AI: Java syntax help only) / 0 defects found in Claude's review
   Notes from Claude's review (all non-defects, left as-is by design):
   1. `legsOf(txId)` reads **GSI1** with `.hasSize(2)` in the replay test; a GSI is eventually
      consistent, so on real DynamoDB that one assertion could flake (on single-node LocalStack it is
@@ -2651,8 +2650,7 @@ The platform reached its halfway mark: **the full money path is built, tested an
   every failure path both the exception **and zero writes** (no balance moved, no leg appended, no
   guard left behind), plus the retry-at-a-later-instant that would double-post without the guard.
   `AccountPolicyTest` and `PostDoubleEntryUseCaseTest` cover the policy and the refusals. Concurrency
-  is deliberately absent: the debit storm and Σ-conservation under contention are step 15's
-  hand-written suite. The posting ITs open their **own fixture accounts** rather than spending alice's
+  is deliberately absent: the debit storm and Σ-conservation under contention are step 15's suite. The posting ITs open their **own fixture accounts** rather than spending alice's
   seeded money — the step-13 ITs assert the seeded supply in absolute terms and all `*IT` classes share
   one container, so moving that money would have made the suite order-dependent (it did, once, and
   that is how the fixture was found).
@@ -3054,8 +3052,7 @@ The platform reached its halfway mark: **the full money path is built, tested an
   the Black Friday k6 profile; async cold statement export (202 + polling status URL).
 - `docs/messaging-kafka-appendix.md`: SNS/SQS ↔ Kafka concept mapping, referenced
   from ADR-0004 and the README.
-- CLAUDE.md workflow additions: hand-written zones (✍️ steps 15, 19, 51) and
-  mandatory per-step AI metrics line in CHANGELOG entries.
+- CLAUDE.md workflow addition: the mandatory per-step AI metrics line in CHANGELOG entries.
 - `docs/brief.md`: the exercise brief and the **seven design questions stated verbatim**
   — previously the docs referenced "the brief" ~10 times without it existing in-repo,
   so the answers could not be judged against the questions.

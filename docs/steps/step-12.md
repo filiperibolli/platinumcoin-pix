@@ -5,7 +5,7 @@
 ## Objective
 Extend the init scripts to create `pix_ledger` (PK `ACCOUNT#<accountId>`, SK `BALANCE` or `ENTRY#<ts>#<txId>`, GSI1 `TX#<txId>`) per `docs/data-model.md`, seed the demo balances (R$ 10,000.00 for alice/bob funded from `ACCOUNT#SEED`) and the system accounts `SPI_CLEARING` and `SEED`.
 
-## Why / what you'll learn
+## Why this step exists
 The single-table shape of the ledger: **one partition per account** holding a mutable `BALANCE` item and immutable `ENTRY` items sorted by timestamped sort keys. Timestamp-prefixed sort keys give chronological ordering for free (used by the statement). You'll also encode the **system accounts** here: `SPI_CLEARING` (money in flight, exempt from the non-negative rule) and `SEED` (the funding source), so the money supply is explicit and the conservation invariant (Σ balances constant) is checkable from step 15 on.
 
 ## Prerequisites

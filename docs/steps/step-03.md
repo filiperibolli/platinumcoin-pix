@@ -5,7 +5,7 @@
 ## Objective
 The first runnable deployable: `auth-service` boots on port 8081, depends on `common-lib`, exposes `/actuator/health`, and (per the vertical plan) is the first service to join `infra/docker-compose.yml` with a Dockerfile — establishing the pattern every later service reuses.
 
-## Why / what you'll learn
+## Why this step exists
 Walking skeleton first: get a deployable to boot, own a port and report health *before any business logic*. Actuator health is the contract that docker-compose healthchecks and the runbook rely on. Unlike the old horizontal plan (all 8 skeletons at once), here **each service is scaffolded in its own sprint**, so the topology grows with the flows — you never boot a service that has nothing to do yet.
 
 ## Prerequisites

@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-My staff/architect-level answer to one question: *if I owned Pix at a fintech and started from a blank page, how would I build it?* The artifact is a realistic instant-payments platform where money correctness is non-negotiable and everything else is an explicit budget, every non-trivial decision is written down with its trade-off (ADRs), and the code exists to prove the design survives real failure modes. The build doubles as deliberate practice with the underlying stack (AWS/LocalStack, DynamoDB modeling, messaging, distributed-systems patterns, observability) — so **every step still explains the *why***, and decisions optimize for clarity and reviewability over cleverness.
+My staff/architect-level answer to one question: *if I owned Pix at a fintech and started from a blank page, how would I build it?* The artifact is a realistic instant-payments platform where money correctness is non-negotiable and everything else is an explicit budget, every non-trivial decision is written down with its trade-off (ADRs), and the code exists to prove the design survives real failure modes. It is meant to be read and argued with end to end — so **every step states the *why*** behind its decision, and the code optimizes for clarity and reviewability over cleverness.
 
 ## Project in one paragraph
 
@@ -90,12 +90,6 @@ tools/api-explorer/    single-file HTML API explorer with valid sample requests 
 8. Commit with **Conventional Commits** (`feat(ledger): atomic double-entry posting (step 14)`), one step = one commit (or a small clean series).
 9. **STOP.** Never start the next step in the same run without explicit instruction from the human.
 
-## Hand-written zones (✍️ in PLAN.md)
-
-Some deliverables are marked **✍️ hand-written zone**: the human writes them personally, without AI code/text generation and without autocomplete on the first pass; Claude's role there is limited to reviewing the finished work and pointing out defects. Current zones: the step-15 invariant suite, the step-51 findings doc + psql session, and the **Sprint 15 concept-mastery docs (steps 54–63 and 73)** — the human writes each `docs/concepts/concept-NN-*.md` explanation in their own words; Claude then reviews it, grades it against the ADRs/ARCHITECTURE/code, and closes with one Socratic question (it never drafts the explanation). Purpose: these artifacts double as deliberate practice of language mechanics and design articulation under realistic conditions. Do not generate code or prose for a hand-written deliverable even if asked casually — instead remind the human it is a marked zone.
-
-**A zone can be reassigned, but only by the human, and never silently.** Step 69 (the recovery & fencing invariant suite) was a ✍️ zone and is not one any more — the human moved it on 2026-08-23 so Claude writes the suite, and the practice moved to the new step 73, which explains it. The pattern to follow if it happens again: the implementation step keeps a note saying it *was* a zone, why it was one, and where the practice went; the receiving step says what it is compensating for and is honest that the substitute exercises a different skill. Do not initiate such a move, and do not treat a casual "just write it" as one — ask.
-
 ## Per-step AI metrics (mandatory)
 
 Every CHANGELOG step entry is followed by one metrics line collected during the step:
@@ -113,7 +107,7 @@ Estimate (`est`) is written down **before** starting the step. Keep it honest an
 - Validate against the step's acceptance criteria explicitly (quote them, check them off).
 - If reality diverges from the docs (API, schema, ADR), **stop and update the doc in the same change** — docs and code must not drift. Keep this CLAUDE.md updated when conventions change.
 - When unsure about a design point, check ARCHITECTURE.md and the ADRs first; if still ambiguous, ask the human — do not invent architecture.
-- The Human's primary objective is to learn. Therefore, explain your reasoning concisely but explicitly—focus on trade-offs, edge cases, and deviations from the standard pattern. Adjust verbosity to the task's complexity. Crucially, never end an implementation without posing one open-ended, conceptual question designed to test the human's grasp of the underlying architecture or trade-offs introduced in this step. The question must require synthesis, not mere recall.
+- Explain your reasoning concisely but explicitly — focus on trade-offs, edge cases, and deviations from the standard pattern. Adjust verbosity to the task's complexity. When a step introduces a trade-off whose consequences are not obvious, say so plainly rather than leaving it implicit in the diff.
 
 ## Useful commands
 

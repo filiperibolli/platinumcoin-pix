@@ -5,7 +5,7 @@
 ## Objective
 The DEBITED transition and the `PixDebited` outbox item are written in **one `TransactWriteItems`** on `pix_transactions` (tx META update + OUTBOX put on the sparse GSI3). The same mechanism serves later transitions (SETTLED/REVERSED/FraudCheckSkipped). Nothing publishes yet — that's step 29.
 
-## Why / what you'll learn
+## Why this step exists
 The **outbox pattern**, the *guarantee* half (ADR-0004): writing to the DB and publishing to SNS are two systems → the **dual-write problem** (crash between them loses the event → money stuck in clearing, or emits an event for a state that never committed). Because the outbox item lives in the **same table/partition** as the transaction (single-table design), both commit atomically in one transaction — no dual-write window. The outbox item carries `gsi3pk=OUTBOX#UNPUBLISHED` so it appears in the sparse publisher index; the event envelope (`eventId`, `eventType`, `payload`, `occurredAt`, `correlationId`) is broker-agnostic by design.
 
 ## Prerequisites

@@ -15,7 +15,7 @@ Stop presenting the end user's bearer token as a service credential. Every inter
 a user token on `/internal/**` with `403`, and rejects a service token whose `aud`/`scope` do not
 match the route. Each internal endpoint ships a four-case negative test.
 
-## Why / what you'll learn
+## Why this step exists
 **The confused deputy, in its natural habitat.** payment-service is trusted to post to the ledger; it
 carries out that duty holding a credential that belongs to someone else. The token is valid, the
 signature checks, every log line looks normal — and the authority being exercised is not the

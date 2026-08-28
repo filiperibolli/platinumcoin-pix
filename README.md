@@ -88,7 +88,7 @@ graph TB
 
 ## Why one domain (and what splitting it would cost)
 
-Eight deployables, but **one bounded context** — a deliberate choice, and the honest first reason is the one people skip past: **this is a single-machine, single-team, learning-and-portfolio artifact.** The whole platform runs under one `docker-compose`, is owned by one person in one repo, and exists to be read and argued with end to end. At that scale, carving it into separate *business* domains would be organizational machinery with no organization to serve — coordination cost with nothing to coordinate.
+Eight deployables, but **one bounded context** — a deliberate choice, and the honest first reason is the one people skip past: **this is a single-machine, single-team portfolio artifact.** The whole platform runs under one `docker-compose`, is owned by one person in one repo, and exists to be read and argued with end to end. At that scale, carving it into separate *business* domains would be organizational machinery with no organization to serve — coordination cost with nothing to coordinate.
 
 But "it's local" is not the only reason it *should* stay one domain even at real scale-for-one-team:
 
@@ -335,17 +335,16 @@ STEP = <blank = first unchecked step in PLAN.md>
 
 Before writing any code:
 1. Read CLAUDE.md in full: conventions, the six domain safety rules, the mandatory per-step workflow,
-   hand-written zones (✍️), and the per-step AI-metrics rule.
+   and the per-step AI-metrics rule.
 2. Open PLAN.md and take that step only (or the first unchecked one if STEP is blank).
 3. Read its docs/steps/step-XX.md completely — the step file IS the spec (spec-driven). Also read
-   anything it references: the relevant ARCHITECTURE.md § and ADRs, and the step's ADR learning
-   companion if one exists (docs/steps/step-XX-adrNNNN.md).
+   anything it references: the relevant ARCHITECTURE.md § and ADRs, and the step's ADR companion
+   if one exists (docs/steps/step-XX-adrNNNN.md).
 4. Confirm the step's prerequisites are checked in PLAN.md. If not, STOP and tell me.
 
 Then, BEFORE coding, reply with a short plan and WAIT for my "go":
 - Restate the step's objective in one or two sentences.
 - List the exact files you intend to add or change.
-- Flag whether any part is a ✍️ hand-written zone — if so, you review only, you do NOT generate that code.
 - Write down your honest time estimate now (the `est` metric).
 
 After I say "go":

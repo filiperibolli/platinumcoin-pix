@@ -5,7 +5,7 @@
 ## Objective
 `settlement-service` (port 8086) long-polls `settlement-queue`, dedupes by `eventId`, calls mock-bacen (`POST /spi/settlements`, timeout 12s), and on success drives the guarded transition SENT_TO_SPI→SETTLED with a `PixSettled` outbox event. **Happy path only** — retries/DLQ/reversal come in Sprint 7.
 
-## Why / what you'll learn
+## Why this step exists
 The first **queue-driven consumer**: scaling is driven by queue depth, not user traffic (ADR-0006). You'll wire SQS long-polling, dedup-before-side-effect with `ProcessedEventStore` (at-least-once ⇒ effectively-once), and the two guarded transitions (DEBITED→SENT_TO_SPI before the call, SENT_TO_SPI→SETTLED after). Settlement writes its own outbox event (`PixSettled`) via the same transactional-outbox mechanism, so the notification flow (Sprint 8) can pick it up — the walking skeleton of the external flow is now complete end-to-end for the sunny day.
 
 ## Prerequisites

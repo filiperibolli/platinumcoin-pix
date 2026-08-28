@@ -5,7 +5,7 @@
 ## Objective
 **Finalize** `tools/postman/pix-platform.postman_collection.json` + `pix-platform.local.postman_environment.json`. The collection already exists and has grown incrementally since step 04 — **one folder per service**, every endpoint added in its own step (CLAUDE.md convention). This step does not create it from scratch; it enriches it: covers any still-missing public/internal-admin endpoints (mock-bacen chaos config, inbound-pix simulator, internal balance), makes auth and idempotency automatic, and adds happy + error example responses.
 
-## Why / what you'll learn
+## Why this step exists
 DX as a first-class deliverable: a collection where **auth is a pre-request script** (login once, token auto-attached) and **idempotency keys auto-generate** removes the friction that makes people mis-test money APIs. The primary structure stays **per service** (how you test a service right after building it); a thin set of **flow-oriented example runs** (Send Pix → settle → receive) is layered on top as living documentation. Example responses for error paths make the RFC 7807 contract visible to anyone poking the API.
 
 ## Prerequisites

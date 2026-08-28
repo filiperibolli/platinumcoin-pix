@@ -89,7 +89,7 @@ deliverable. What did not exist was a decision about what it is *for*.
 - Sprint 11.5 contains no storage work, and its steps are free to use DynamoDB-specific mechanisms
   (conditional writes, `TransactWriteItems`, sparse GSIs) without hedging against a future port. The
   fencing CAS of ADR-0016 is a conditional `UpdateItem`; that is a deliberate, recorded commitment.
-- Steps 50-51 keep their scope and their `✍️` hand-written findings document, now with an explicit
+- Steps 50-51 keep their scope and their findings document, now with an explicit
   question to answer: *does the measured contention profile clear the bar in §4 of this ADR?* A "no"
   is a valid and useful result.
 - The trade-offs ADR-0001 accepted stand and are not re-litigated here: no ad-hoc analytical queries

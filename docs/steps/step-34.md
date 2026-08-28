@@ -5,7 +5,7 @@
 ## Objective
 A scheduled job (60s) in settlement-service queries `pix_transactions` GSI2 (`STATUS#DEBITED` and `STATUS#SENT_TO_SPI`, `updatedAt < now-2min`) and emits each stuck tx onto an internal reconciliation path (in-process queue / direct call to the step-35 resolver). Age exposed as metric `reconciliation.oldest.seconds`.
 
-## Why / what you'll learn
+## Why this step exists
 The scanner half of reconciliation: how to **find** transactions that fell through the cracks (consumer crashed after debit, SPI response lost, DLQ'd message). GSI2 keyed `STATUS#<status>` + `updatedAt` makes "all DEBITED/SENT_TO_SPI older than 2 minutes" a cheap query. You'll learn why the age metric matters — it's the leading indicator of the <5-min SLO — and the scale-out note (at very large scale you'd shard the status GSI `STATUS#DEBITED#<0-15>`; N=1 locally).
 
 ## Prerequisites

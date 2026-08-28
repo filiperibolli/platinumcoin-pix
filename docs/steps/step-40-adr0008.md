@@ -1,6 +1,6 @@
-# Learning — ADR-0008 (Redis cache-aside for balance) · finalized by Step 40
+# Design note — ADR-0008 (Redis cache-aside for balance) · finalized by Step 40
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0008-redis-balance-cache.md](../adr/0008-redis-balance-cache.md) · **Concept finalized by:** [Step 40](step-40.md) (Redis cache-aside for balance + invalidation on postings + 5s TTL).
 > **Why Step 40:** Redis comes up in Sprint 5 for fraud velocity counters, but ADR-0008 is specifically about the **balance read path** — cache-aside, invalidation-on-write, and the correctness rule that the cache never feeds a money decision. That whole mechanism lands in Step 40, so that's where the ADR is finalized and demoable.
 

@@ -1,6 +1,6 @@
-# Learning — ADR-0005 (Fraud latency budget, fail-open) · finalized by Step 25
+# Design note — ADR-0005 (Fraud latency budget, fail-open) · finalized by Step 25
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0005-fraud-latency-budget-fail-open.md](../adr/0005-fraud-latency-budget-fail-open.md) · **Concept finalized by:** [Step 25](step-25.md) (payment-service integration: 200ms hard budget + fail-open).
 > **Why Step 25:** Step 24 builds a fast `/score` engine, but ADR-0005 is not about the engine — it's about the **decision under a deadline**: what the *caller* does when fraud is slow or down. That call (the 200ms budget and fail-open with a `FRAUD_SKIPPED` flag) is made in Step 25, which is therefore where the ADR is finalized. This is the single most debated design call in the project.
 

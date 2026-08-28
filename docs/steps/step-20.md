@@ -5,7 +5,7 @@
 ## Objective
 Before any money moves, payment-service **reserves** the amount against the account's calendar-day usage counter (`LIMIT#<accountId>` / `DAY#<yyyy-MM-dd>` in `pix_transactions`, per `docs/data-model.md` §4) and checks it against `dailyLimitCents` (from account-service). Above limit ⇒ `422 LIMIT_EXCEEDED`. The check returns a **decision object** with an explicit `REQUIRE_STEP_UP` branch — today mapped to deny — the documented MFA seam (ADR-0007).
 
-## Why / what you'll learn
+## Why this step exists
 Where MFA *would* plug in, made explicit without building it. The limit check returns `ALLOW / DENY / REQUIRE_STEP_UP` rather than a boolean, so adding a step-up challenge later changes **one branch, not the flow** — a small design move that pays off when requirements grow. Usage is a **maintained counter item** with reserve/release semantics — *not* a query-and-sum: `pix_transactions` deliberately has no index by debtor account, so summing today's transactions would be an unsupported access pattern, and a counter is what makes "release" well-defined (a rejection or reversal returns exactly what it reserved). The window is the **calendar day** (America/Sao_Paulo), matching how Pix limits are communicated to users. The check must run **server-side before any debit** (never trust the client).
 
 ## Prerequisites

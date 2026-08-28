@@ -7,7 +7,7 @@
 ## Objective
 Full observability: every service exposes `/actuator/prometheus` (Micrometer); a Prometheus container scrapes all of them; Grafana (provisioned as code in `infra/observability/`) ships two dashboards — **Technical** (latency p50/p99 vs SLO lines, throughput, errors, queue/DLQ depth, cache hit, JVM) and **Business Funnel** (payments per stage RECEIVED→…→SETTLED with REJECTED/REVERSED branches, conversion %, fraud mix, reconciliation actions, R$ settled). An `AlertEvaluator` implements the silence alerts. The SLF4J path-logging contract is audited end to end.
 
-## Why / what you'll learn
+## Why this step exists
 Observability in three layers — logs (what happened to *this* request), metrics (how the *system* behaves), dashboards (who needs to see it) — plus the underrated craft of **business observability**: the funnel answers product questions ("where do payments die? what % gets fraud-denied?") from the same Micrometer counters that feed technical panels. Grafana **provisioning as code** (JSON dashboards + YAML datasource committed — no click-ops). **Silence alerts**: async systems fail by *absence*, so the watchdog compares input-side vs output-side activity. Finally the **SLF4J path audit**: prove that one `correlationId` reconstructs a transaction's full journey across all services — the logging contract from CLAUDE.md, now enforced.
 
 ## Prerequisites

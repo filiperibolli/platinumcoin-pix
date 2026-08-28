@@ -5,7 +5,7 @@
 ## Objective
 Bring up **Redis** in docker-compose (its own container — LocalStack does not emulate ElastiCache) and scaffold `fraud-service` (port 8083) with health, Dockerfile and compose wiring.
 
-## Why / what you'll learn
+## Why this step exists
 Redis rides alongside LocalStack **because LocalStack does not emulate ElastiCache** (documented explicitly, ADR-0008) — in production this maps 1:1 to ElastiCache for Redis. It comes up in *this* sprint, not earlier, because fraud is the first flow that needs it (velocity counters); the balance cache (Sprint 9) will reuse the same container. You'll add a `RedisTestBase` to the Testcontainers harness so fraud ITs get a disposable Redis.
 
 ## Prerequisites

@@ -5,7 +5,7 @@
 ## Objective
 payment-service calls fraud **between limit-check and ledger debit** with a **hard 200ms budget**: DENY ⇒ 422 `FRAUD_DENIED` (release limit); REVIEW ⇒ proceed flagged; timeout/error ⇒ **proceed with `fraudSkipped=true`** + `FraudCheckSkipped` event marker (ADR-0005). Transition RECEIVED→FRAUD_CHECKED recorded.
 
-## Why / what you'll learn
+## Why this step exists
 The **fail-open** trade-off, implemented. A hard client-side timeout (connect 50ms / read 150ms = 200ms) protects the send SLO from a slow fraud-service. On timeout or error the payment **proceeds unscored, flagged** — because fail-*closed* would let any fraud-service blip reject 100% of legitimate payments to stop a fraction of a percent of fraud, and for a core money-movement product availability wins *at this layer* (risk bounded by daily limits + async re-scoring). This is the single most debated design call in the project; ADR-0005 holds the full argument and the documented production evolution (hybrid: fail-closed above a value threshold).
 
 ## Prerequisites

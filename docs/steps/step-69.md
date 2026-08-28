@@ -7,24 +7,11 @@
 > **Origin:** external review by **Geison Flores** (Mercado Livre), section **07 · pronto quando** —
 > the three P0 acceptance criteria: *"0 duplicações"*, *"1 estado terminal"*, *"0 acesso lateral"*.
 
-> **No longer a hand-written zone — reassigned 2026-08-23, by the human's decision.** This step was
-> originally marked ✍️ and is now written with AI assistance like any other implementation step. The
-> reason it *was* marked matters and is not discarded: steps 65-68 change what the platform claims
-> about crash recovery, ambiguous outcomes and exclusivity, and a claim of that kind is worth exactly
-> what its adversarial test is worth. Writing that test by hand is what turns "the ADR says so" into
-> knowing where the window is.
->
-> **That practice moved rather than vanished.** It is now [step 73](step-73.md) in Sprint 15: after
-> this suite is green, the human reads it, closes it, and explains from memory — in their own words —
-> *where* each fault is injected and *why that instant*, what each scenario would fail to catch if the
-> injection point moved, and why conservation is asserted instead of the call's outcome. Articulating
-> the trap is a different skill from building it; the trade is deliberate. Step 73 is the ✍️ zone now,
-> and this step's suite is its subject.
->
-> The mechanics this suite needs are still worth naming, because step 73 will examine them:
-> `CountDownLatch` release, fault injection at a chosen instant, and asserting **system-level**
-> invariants (`Σ balances`) rather than per-call outcomes. See step 15, whose ledger storm this suite
-> is the distributed counterpart of.
+> **Why this suite carries so much weight.** Steps 65-68 change what the platform *claims* about crash
+> recovery, ambiguous outcomes and exclusivity — and a claim of that kind is worth exactly what its
+> adversarial test is worth. The mechanics it rests on: `CountDownLatch` release, fault injection at a
+> chosen instant, and asserting **system-level** invariants (`Σ balances`) rather than per-call
+> outcomes. See step 15, whose ledger storm this suite is the distributed counterpart of.
 
 ## Objective
 One consolidated suite that attacks the four P0 remediations with crashes, races and forged
@@ -36,7 +23,7 @@ together**, where the interactions live.
 Steps 65, 66, 67, 68 — all four merged. This suite is meaningless against any subset, because every
 scenario below crosses at least two of them.
 
-## Why / what you'll learn
+## Why this step exists
 Ordinary tests prove a mechanism does what it says on a good day. These prove it does the right thing
 at the **worst possible instant** — after the commit but before the record; between the fence and the
 posting; with two paths released simultaneously. The skills: choosing the injection point (the whole
@@ -111,8 +98,7 @@ mvn verify          # the whole suite runs in a normal build, not behind a flag
 - [ ] A short findings note in the CHANGELOG entry if any scenario revealed a residual window — an
       honest "here is what is still open" beats a silent green
 - [ ] Every injection point carries a comment saying **why that instant** and what moving it would stop
-      catching — this suite is the subject of [step 73](step-73.md), and a trap nobody can explain is a
-      trap nobody can maintain
+      catching — a trap nobody can explain is a trap nobody can maintain
 
 ## CHANGELOG entry
 `### Added` → `Recovery & fencing invariant suite: crash-after-commit, ambiguous-timeout, concurrent settle×reverse and lateral-access drills proving the three P0 acceptance criteria from the external review (step 69)`

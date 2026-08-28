@@ -5,7 +5,7 @@
 ## Objective
 Implement ADR-0002 on the send endpoint: conditional claim of `IDEM#account#key`, request-hash comparison, stored-response replay, `409` on hash mismatch, `IN_PROGRESS` handling, TTL 24h.
 
-## Why / what you'll learn
+## Why this step exists
 The full lifecycle of an idempotency record — claim (conditional put, atomically wins or loses), execute, memoize (store status+response), replay — and the sharp edges: canonicalizing the body before hashing (key order, whitespace), the crash-between-claim-and-response window (`IN_PROGRESS` → 409 + Retry-After; a claim whose `claimedAt` is older than 60s is stale — the crash left an orphan — and is re-claimed by the retry, so no client is blocked until the TTL), why DynamoDB's lazy TTL means `expiresAt` must also be checked on read, and why the record's TTL (24h) must exceed any client retry horizon. This is the API-layer answer to "the user tapped twice / the network retried".
 
 ## Prerequisites

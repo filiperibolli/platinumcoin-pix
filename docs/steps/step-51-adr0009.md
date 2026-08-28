@@ -1,7 +1,7 @@
-# Learning — ADR-0009 (Relational ledger counterpart lab) · finalized by Step 51
+# Design note — ADR-0009 (Relational ledger counterpart lab) · finalized by Step 51
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
-> **ADR:** [docs/adr/0009-relational-ledger-counterpart-lab.md](../adr/0009-relational-ledger-counterpart-lab.md) · **Concept finalized by:** [Step 51](step-51.md) (invariant parity + `EXPLAIN`/deadlock study + contention benchmark). *Step 51 is a ✍️ hand-written zone — the findings doc and the psql session are written by hand; this companion only references them.*
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
+> **ADR:** [docs/adr/0009-relational-ledger-counterpart-lab.md](../adr/0009-relational-ledger-counterpart-lab.md) · **Concept finalized by:** [Step 51](step-51.md) (invariant parity + `EXPLAIN`/deadlock study + contention benchmark). *The findings doc and the psql session are Step 51's own deliverables; this companion only references them.*
 > **Why Step 51:** Step 50 *builds* the two Postgres strategies, but ADR-0009's purpose is to upgrade ADR-0001's "when to choose which" rule of thumb from **citation to measured claim**. That upgrade happens when the same invariant storm passes on Postgres *and* the numbers exist (query plans, index write-cost, reproduced deadlock, contention benchmark) — i.e. Step 51.
 
 ---
@@ -37,7 +37,7 @@ mvn -q -pl labs/ledger-pg verify       # disposable Postgres via Testcontainers;
 -- entries(..., UNIQUE (tx_id, direction))   -- the "no double-post" rule as a UNIQUE index
 ```
 
-**(c) The staff-level investigation (hand-written psql session behind the findings):**
+**(c) The staff-level investigation (the psql session behind the findings):**
 ```bash
 psql "$PG_URL"
 -- EXPLAIN (ANALYZE) the statement query with and without the covering index — compare plans/rows/time
@@ -71,8 +71,8 @@ This ADR produces **evidence artifacts**, not runtime logs — that is the whole
 | Shared `LedgerPort` (parity with ledger-service) | reused interface (Step 50); posting semantics from [ADR-0001 companion](step-16-adr0001.md) |
 | `PessimisticLedger` (`SELECT … FOR UPDATE`, ordered locks) | `labs/ledger-pg/...` (Step 50) |
 | `OptimisticLedger` (version check + retry-with-jitter) | `labs/ledger-pg/...` (Step 50) |
-| Invariant storm reused from Step 15 | Step 51 task 1 (the ✍️ hand-written suite) |
-| Findings (hand-written) | `docs/ledger-pg-findings.md` (Step 51) — cross-referenced from ADR-0001 |
+| Invariant storm reused from Step 15 | Step 51 task 1 |
+| Findings | `docs/ledger-pg-findings.md` (Step 51) — cross-referenced from ADR-0001 |
 | Design narrative | [ARCHITECTURE.md §8](../../ARCHITECTURE.md) (Question 3) |
 
 ---

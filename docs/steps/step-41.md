@@ -5,7 +5,7 @@
 ## Objective
 `GET /v1/accounts/me/statement?cursor&limit` on payment-service, proxying the ledger statement (step 16), decimal-string amounts, masked counterparts, contract-exact pagination.
 
-## Why / what you'll learn
+## Why this step exists
 The public read model over the internal ledger query: payment-service is the public edge for **money views**, so the statement (like balance) is exposed here rather than directly from ledger-service — auth, accounts/keys and notifications keep their own public edges; there is no gateway in this build (the OpenAPI per-path `servers` document which port serves what). You'll pass the **opaque cursor** straight through (base64 `LastEvaluatedKey`), format money at the edge (cents → decimal string), and mask counterpart display (don't leak internal account ids). This keeps the OpenAPI contract stable while the storage detail (single-table ledger, cold archive later) stays hidden.
 
 ## Prerequisites

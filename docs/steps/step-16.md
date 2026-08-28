@@ -5,7 +5,7 @@
 ## Objective
 `GET /internal/ledger/accounts/{id}/entries?cursor=&limit=` returns ledger entries newest-first with DynamoDB-native pagination (`LastEvaluatedKey` as an opaque base64 cursor).
 
-## Why / what you'll learn
+## Why this step exists
 The statement is *free* from the ledger's key design: `Query pk=ACCOUNT#id AND begins_with(sk,"ENTRY#")`, `ScanIndexForward=false` gives reverse-chronological order because the sort key is timestamp-prefixed. You'll learn **cursor pagination** the DynamoDB way — the cursor is the base64 of `LastEvaluatedKey`, opaque to the client (never offset/limit, which doesn't exist in DynamoDB). This internal endpoint is what the public statement API (step 41) proxies.
 
 ## Prerequisites

@@ -5,7 +5,7 @@
 ## Objective
 `GET /internal/pix-keys/resolve?key=...` on account-service resolves **internal** keys from `pix_keys` to their account. Result shape `{internal: true, accountId, keyType}` or `KEY_NOT_FOUND`. External-key delegation to mock-bacen's DICT is deferred to step 30 (Sprint 6), when mock-bacen exists.
 
-## Why / what you'll learn
+## Why this step exists
 account-service plays the role of BACEN's **DICT** for keys that live inside PlatinumCoin — this is the hot lookup on the send path (every Pix resolves the destination first). Designing the response as `{internal: bool, accountId? | externalBank?, keyType}` **now** — even though the external branch is a stub returning `KEY_NOT_FOUND` until step 30 — means the send orchestration (step 21) can code against the final contract and the external path slots in later without a reshape. Deferring the external branch is the vertical plan working as intended: no mock-bacen exists yet, so we don't pretend it does.
 
 ## Prerequisites

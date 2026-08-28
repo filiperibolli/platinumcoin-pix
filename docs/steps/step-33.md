@@ -5,7 +5,7 @@
 ## Objective
 Close the money loop on definitive outcomes: SPI **FAILED** ⇒ compensating ledger posting (debit `SPI_CLEARING` / credit payer, new `txId` suffix `-rev`), transition FAILED→REVERSED, release the daily-limit reservation, emit `PixReversed`; SPI **SETTLED** ⇒ a `CLEARING_RELEASE` entry (per ARCHITECTURE §6.3) and `PixSettled` (already flowing).
 
-## Why / what you'll learn
+## Why this step exists
 **Compensation, not deletion.** When an external send definitively fails, the money parked in clearing must return to the payer — via a *new* posting (`debit clearing / credit payer`), never by updating or deleting the original entries. The ledger stays append-only and auditable; the reversal is itself atomic and idempotent (its own `txId`). On success, the clearing balance is drawn down against the real BACEN position (`CLEARING_RELEASE`). This is where "money moves, never created or destroyed" is proven for the failure branch — and where the shard-pinning rule of step 52 matters: a reversal must hit the **same** clearing shard that was credited.
 
 ## Prerequisites

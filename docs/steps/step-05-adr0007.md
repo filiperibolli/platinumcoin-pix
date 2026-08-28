@@ -1,6 +1,6 @@
-# Learning — ADR-0007 (Dedicated auth-service, JWT, MFA deferred) · finalized by Step 05
+# Design note — ADR-0007 (Dedicated auth-service, JWT, MFA deferred) · finalized by Step 05
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0007-auth-service-jwt-no-mfa.md](../adr/0007-auth-service-jwt-no-mfa.md) · **Concept finalized by:** [Step 05](step-05.md) (common-lib JWT validation filter + `AuthenticatedUser` principal).
 > **Why Step 05:** Step 04 *issues* the token; ADR-0007's load-bearing decision is that **every service trusts the token the same way and derives the debited account from it, never from the payload**. That becomes true only when validation is a shared filter turning the `accountId` claim into a first-class principal — Step 05. (The MFA-deferred seam is realized later in [Step 20](step-20.md) as the `REQUIRE_STEP_UP` branch; this companion notes it but anchors the ADR at Step 05, where the auth model is finalized.)
 

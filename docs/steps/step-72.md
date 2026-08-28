@@ -13,7 +13,7 @@ Add the two things step 44 did not deliver: **timing per hop** (OpenTelemetry sp
 HTTP *and* the queues) and **error-budget burn-rate alerts** on the two stated SLOs. The correlation
 id and everything ADR-0012 built stay exactly as they are.
 
-## Why / what you'll learn
+## Why this step exists
 **A log is an event; a span is an interval — and only one of them can answer "where did the time
 go?"** The instinct on adding tracing is to treat it as a better version of the correlation id and
 retire the old thing. That would be a downgrade: ADR-0012's log path is complete and unsampled and

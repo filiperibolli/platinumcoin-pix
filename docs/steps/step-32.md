@@ -5,7 +5,7 @@
 ## Objective
 Settlement becomes failure-proof: on SPI timeout/5xx the message is **not** deleted (visibility timeout drives redelivery/backoff, max 5 receives then DLQ by redrive policy); before any retry the consumer **queries `GET /spi/settlements/{endToEndId}` first** — a timeout may have settled. DLQ depth is exposed as a metric.
 
-## Why / what you'll learn
+## Why this step exists
 The subtle, important rule of settling against a slow external system: **after a timeout you must query before retrying blind** — the request may have succeeded at BACEN, and a blind retry without the query would be wrong if `endToEndId` weren't the idempotency key (it is, which makes the retry safe either way). You'll learn SQS at-least-once mechanics (don't-ack → visibility-timeout redelivery = backoff), redrive to DLQ after `maxReceiveCount`, and that a DLQ message is not a lost message — it's a *flagged* one the reconciliation loop and alerts own.
 
 ## Prerequisites

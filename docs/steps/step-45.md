@@ -5,7 +5,7 @@
 ## Objective
 A deliberate quality gate before E2E: verify guarded transitions everywhere (attempt illegal jumps in tests), an error-contract audit (every non-2xx is problem+json with `code`+`correlationId` — scripted check), an API versioning review (all public routes `/v1`, additive-change policy documented), a security checklist executed, a dependency/CVE scan, and the TLS/prod-posture doc section.
 
-## Why / what you'll learn
+## Why this step exists
 Hardening is a *distinct* activity from building — you go back over the whole surface with an adversarial eye. You'll script an error-contract audit (hit every error path, assert the shape) so the RFC 7807 promise is machine-checked, not hoped for; try illegal status jumps (SETTLED→SENT_TO_SPI) and confirm the guarded transitions reject them; and run the security checklist (JWT everywhere, debit-from-token, no stack traces, limits server-side, audit immutability). This is where "it works on the happy path" becomes "it holds under abuse".
 
 ## Prerequisites

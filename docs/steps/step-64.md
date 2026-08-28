@@ -23,7 +23,7 @@ Give `fraud-service` the same runtime-armable behavior dial `mock-bacen-spi` alr
 (step 25, ADR-0005) can be exercised from outside a test process — by a human running a drill, or by a
 load-testing tool like `tools/k6/`.
 
-## Why / what you'll learn
+## Why this step exists
 **The gap this closes.** `docs/load/RESULTS.md` (S4) found that `mock-bacen-spi`'s settlement leg is
 drillable at runtime (`POST /admin/config` — latency, failure rate, timeout rate, reject-by-key, all
 armable without a restart) but `fraud-service` is not: `FraudProperties` only binds the *scoring rule*

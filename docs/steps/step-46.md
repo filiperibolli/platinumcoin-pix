@@ -7,7 +7,7 @@
 ## Objective
 One automated E2E suite (and a mirrored manual runbook script) proving the whole story on the full compose stack: login → register key → check balance → send internal Pix (idempotent retry included) → send external Pix → settlement completes → sender notified → inbound Pix → receiver notified in real time → statement shows everything → **failure drill** (BACEN down: DLQ fills, reconciliation reverses or completes < 5 min, alerts fire and resolve) → conservation of money asserted across all accounts.
 
-## Why / what you'll learn
+## Why this step exists
 The E2E is the *single artifact* that proves the vertical slices compose into the whole system — every sprint's flow, exercised in one run, across all services by correlation id. The **failure drill** is the part that separates a demo from a system: you deliberately break BACEN and assert the platform self-heals within the SLO. The final **conservation-of-money assertion across all accounts** is the ultimate invariant — if it holds after a chaotic run, the money mechanics are sound.
 
 ## Prerequisites

@@ -1,6 +1,6 @@
-# Learning — ADR-0002 (Idempotency strategy) · finalized by Step 19
+# Design note — ADR-0002 (Idempotency strategy) · finalized by Step 19
 
-> **Type:** ADR learning companion (not an implementation step — no tasks/DoD of its own).
+> **Type:** ADR companion (not an implementation step — no tasks/DoD of its own).
 > **ADR:** [docs/adr/0002-idempotency-strategy.md](../adr/0002-idempotency-strategy.md) · **Concept finalized by:** [Step 19](step-19.md) (the API idempotency layer on the send endpoint). *This companion only references Step 19, it does not modify it.*
 > **Why Step 19:** ADR-0002 is a *three-layer* strategy — API key, ledger `txId`, SPI `endToEndId`. The ledger layer already exists (Step 14) and the SPI layer arrives with settlement (Step 30/31), but the **headline layer — the client-facing `Idempotency-Key` with claim / replay / 409** — is the one the ADR is *about*, and it is completed in Step 19. That's where "the user tapped twice / the network retried" gets its definitive answer.
 

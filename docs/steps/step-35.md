@@ -7,7 +7,7 @@
 ## Objective
 `ReconciliationResolver` completes the loop: for each stuck tx, query SPI by `endToEndId` — SETTLED there ⇒ finalize locally; FAILED/not-found (and older than a safety window) ⇒ reverse via the step-33 path; SPI unreachable ⇒ leave for next cycle. Alert when `reconciliation.oldest.seconds > 300` (the SLO). DLQ messages become redundant-but-harmless (the resolver is idempotent).
 
-## Why / what you'll learn
+## Why this step exists
 This loop is what turns "eventual" into "eventually **bounded**": no transaction stays indefinite past 5 minutes. It's not optional plumbing — it's part of the consistency design, the mechanism that forces convergence between the two momentary sources of truth (us vs BACEN). Because the resolver is **idempotent** (guarded transitions + posting idempotency), it can safely race with a late SQS redelivery or a DLQ redrive — whoever gets there first wins, the other is a no-op. Answers the failure half of design Question 4.
 
 ## Prerequisites

@@ -5,7 +5,7 @@
 ## Objective
 An `AuditWriter` in settlement-service consumes `audit-queue` (all events) and appends JSON lines to S3 `pix-audit-log` partitioned `yyyy/MM/dd/HH/<service>-<uuid>.jsonl` (batched: ~100 events or 30s). A scheduled `StatementArchiver` copies ledger entries older than a configurable window to `pix-statement-archive` (JSON lines). Deletion from hot storage is deliberately **not** done locally (documented).
 
-## Why / what you'll learn
+## Why this step exists
 The audit trail is the platform's **long-term event store** — the SNS/SQS equivalent of Kafka's replayable log is exactly this S3 archive (see the Kafka appendix). You'll learn batched writes (cost/throughput vs latency of small objects), time-partitioned keys for cheap range retrieval, and the immutability posture for the 5-year BACEN retention. The cold-archive job sets up Sprint 14's async export (step 53): the archive is the source those exports read from.
 
 ## Prerequisites

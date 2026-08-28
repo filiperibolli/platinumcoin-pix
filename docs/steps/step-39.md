@@ -5,7 +5,7 @@
 ## Objective
 Every user-visible outcome pushes in real time: sender gets `PixSettled`/`PixReversed`; receiver gets `PixReceived`. Payload = external status vocabulary + amount + counterpart display + timestamp. Full journey verified: send → settle → both parties notified, all within seconds.
 
-## Why / what you'll learn
+## Why this step exists
 Closing the F2 loop end to end and making the async UX honest: the user saw `202 PROCESSING`, and now the final state arrives as a push (with polling `GET /payments/{id}` as the fallback). You'll standardize the **notification payload** on the same external vocabulary the status endpoint uses (step 22) — clients parse one shape everywhere. This is also the first time the *whole* platform runs a real journey across all services by one `correlationId`, foreshadowing the observability audit (step 44).
 
 ## Prerequisites

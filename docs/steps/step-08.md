@@ -5,7 +5,7 @@
 ## Objective
 A reusable test foundation in `common-lib` (test-jar): `LocalStackTestBase` that spins a disposable LocalStack container, runs the **same init scripts from step 07**, and injects endpoints/credentials into Spring properties — so integration tests never depend on the compose stack being up.
 
-## Why / what you'll learn
+## Why this step exists
 The separation that keeps tests hermetic: **compose = manual/E2E playground; Testcontainers = automated tests**. Reusing the *same* init scripts in tests means the schema you test against is the schema you run — no drift between a hand-maintained test fixture and the real init. You'll learn `@DynamicPropertySource` to point the AWS SDK at the container, and how to make the base class fast (container reuse across a module's ITs).
 
 ## Prerequisites
