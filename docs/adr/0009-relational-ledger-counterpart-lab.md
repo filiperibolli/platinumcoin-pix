@@ -12,7 +12,7 @@ Add **`labs/ledger-pg`** — a Maven module that is **not part of the running pl
    - **Pessimistic**: `SELECT ... FOR UPDATE` on both account rows **in deterministic id order** (deadlock avoidance by lock ordering), then balance updates + two entry inserts in one DB transaction.
    - **Optimistic**: `UPDATE accounts SET balance_cents = balance_cents - :amt, version = version + 1 WHERE account_id = :id AND version = :v AND balance_cents >= :amt` with a bounded retry-with-jitter loop.
 2. It must pass the **same invariant suite as step 15** (storm, conservation of money, replay-under-concurrency) for both strategies — parity of guarantees is the point.
-3. Findings are written to **`docs/ledger-pg-findings.md`**: `EXPLAIN (ANALYZE)` of the statement query with and without the covering index, measured insert-throughput cost of extra indexes, a reproduced-then-fixed deadlock (unordered vs ordered `FOR UPDATE`), and a contention benchmark comparing pessimistic vs optimistic vs the DynamoDB conditional-write path.
+3. Findings are written to **[`docs/ledger-pg-findings.md`](../ledger-pg-findings.md)** (delivered by step 51): `EXPLAIN (ANALYZE)` of the statement query with and without the covering index, measured insert-throughput cost of extra indexes, a reproduced-then-fixed deadlock (unordered vs ordered `FOR UPDATE`), and a contention benchmark comparing pessimistic vs optimistic vs the DynamoDB conditional-write path.
 
 ## Amendment (2026-08-28, step 50) — "the same interface" is a documented mirror, not a reuse
 
@@ -43,6 +43,31 @@ One consequence worth naming: the lab has **no use case layer** (ADR-0010's scop
 `domain/`/`api/`/`infra/` optional here), so `LedgerPort` is the public surface and command validity —
 which `PostDoubleEntryUseCase` owns in the deployable — is enforced at the port instead. Same rules,
 different home.
+
+## Amendment (2026-08-28, step 51) — the benchmark has two of its three legs, and the third is not obtainable here
+
+Decision 3 promises "a contention benchmark comparing pessimistic vs optimistic **vs the DynamoDB
+conditional-write path**". Two thirds of that was delivered and is in
+[`docs/ledger-pg-findings.md`](../ledger-pg-findings.md) §6. The DynamoDB third was attempted,
+measured, and found to be **unobtainable on this infrastructure** — recorded here rather than quietly
+reported as if it were a result:
+
+- The DynamoDB run answered **~40 postings/s flat across contended and uncontended shapes**, with
+  p50 ≈ p99 and not one exhausted retry budget. That is the signature of a saturated server, not of a
+  concurrency-control design.
+- `docs/load/BOTTLENECK.md` RUNG 2 had already measured the cause independently, before this step
+  asked: LocalStack's DynamoDB caps at **~45 write ops/s flat from concurrency 1 through 32**, because
+  LocalStack 3 runs the real `DynamoDBLocal.jar` file-backed behind a 10-connection proxy pool.
+- Two further disqualifications stand even if that ceiling were lifted: the transports are not
+  comparable (JDBC on a socket vs signed HTTP to a Java process), and the DynamoDB properties this
+  platform actually bought — on-demand capacity, multi-AZ durability, per-partition throttling — do
+  not exist in an emulator on one laptop.
+
+So the honest scope of this ADR's decision 3 is: **the two relational strategies are compared with
+each other, and the DynamoDB path is compared with neither.** Making the third leg real needs real
+DynamoDB driven from in-region compute, which CLAUDE.md rules out by construction (100% local, no
+cloud account). This does not weaken decision 2 — parity of guarantees was proven, on both strategies,
+and that was always the load-bearing half.
 
 ## Consequences
 - Parent POM gains one module and CI gains one Testcontainers suite (Postgres) — acceptable; the lab can be excluded from the default build profile if it slows the loop.

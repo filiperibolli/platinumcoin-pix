@@ -11,6 +11,62 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Postgres ledger invariant parity + EXPLAIN/index/deadlock study + contention benchmark vs DynamoDB (step 51) · 2026-08-28
+  - **Parity first, because a benchmark of an incorrect implementation compares nothing.** The step-15
+    invariant storm now runs against both Postgres strategies (`PostgresLedgerInvariantsIT`, one suite
+    and two subclasses): exactly ⌊balance/amount⌋ successes and never one more, conservation across a
+    random transfer storm, one `txId` from many threads moving the money once, and a sampler that never
+    sees a negative balance. Until this step **no line of `labs/ledger-pg` had ever seen two threads**.
+  - **What that suite is worth, demonstrated rather than claimed.** Deleting two words — `FOR UPDATE` —
+    left the step-50 sequential contract **6/6 green** and the new storm **3 of 4 red**, with the
+    engine reporting `Failing row contains (acc-storm-payer, -10000, 11)`. An eleventh posting against
+    a balance that could afford ten: the read-then-check *is* a race without the serialized region, and
+    the `CHECK (balance_cents >= 0)` that step 50 called a backstop **fired in anger**.
+  - **The deadlock, built rather than hoped for** (`LockOrderDeadlockIT`): two transactions, a
+    `CyclicBarrier`, and Postgres killing exactly one with `40P01` after `deadlock_timeout`. The same
+    traffic — 40 A→B postings racing 40 B→A — goes through the real `PessimisticLedger` with zero
+    deadlocks, because its ids are sorted before they are locked. A deadlock is not an outage; it is a
+    *choice the engine makes for you*, and its price is one aborted transaction plus a second of wall
+    clock during which both parties do nothing.
+  - **The study found a bug in the lab's own code, and it is the deadlock one level up the stack.**
+    `LedgerSql.replayOrConflict` opened its *own* connection to read the committed legs back while its
+    caller still held one, so sixteen threads replaying one committed `txId` deadlocked the
+    sixteen-connection pool outright (`total=16, active=16, idle=0, waiting=11`) — thirty seconds of
+    nothing, then a hard failure on a call whose only correct answer was "yes, that already committed".
+    Rows are fixed by a global acquisition order; connections are fixed by **never needing two**: a
+    replay wants a new *transaction*, and a rolled-back connection already is one. No money was ever at
+    risk (nothing is written on that path), but under load it converts an idempotent retry — the thing
+    a payment system does most of when it is already having a bad day — into a stall for every caller.
+    The storm now replays from `POOL_SIZE + 4` threads so the fix is pinned by a test that runs on every
+    build, not only by the benchmark that found it.
+  - **The measurements** (`docs/ledger-pg-findings.md`, raw captures in `labs/ledger-pg/study/raw/`).
+    The statement query without its index sequentially scans all 200,000 legs to return 20 — **2,858
+    buffers → 21** once `(account_id, posted_at DESC)` exists, and the cost of one customer's statement
+    otherwise grows with every other customer's traffic. The **covering `INCLUDE` variant is not worth
+    it here**: 9 MB more for a difference inside the run-to-run noise, because `Heap Fetches: 20` says
+    the visibility map never delivered the index-only scan — *a covering index is a bet on `VACUUM`*.
+    Five read indexes cost **~20% of insert throughput** (1.19-1.23× across three runs).
+  - **The contention result is not about throughput, it is about who pays.** With no contention the two
+    strategies are the same program (COLD differs by ~2%); contention costs ~8× throughput and the
+    strategy barely moves that — *if a hot account is your problem, your locking strategy is not your
+    fix, sharding is* (step 52). What differs is the distribution: optimistic p50 is **25× better**
+    (1.64 ms vs 40.24 ms) and its p99 **4× worse** (800 ms vs 198 ms), with **8 of 800 callers** getting
+    a `LedgerBusyException` the pessimistic strategy never produced. Pessimistic is a queue, optimistic
+    is a race — and the callers a race turns away are precisely the ones contending for the hot account.
+  - **The third leg could not be measured, and saying so is the deliverable.** The DynamoDB run answered
+    ~40 postings/s *flat across contended and uncontended shapes*, p50 ≈ p99 — a saturated server, not a
+    concurrency-control profile. `docs/load/BOTTLENECK.md` RUNG 2 had already measured LocalStack's
+    DynamoDB at ~45 write ops/s flat from concurrency 1 through 32, before this step asked. Inventing a
+    number to fill the cell would have been worse than an empty one; `ADR-0009` gains an amendment
+    saying the benchmark has two legs, and `ADR-0001` now records that **no measurement here speaks to
+    its availability/elasticity or retention pillars**.
+  - Three spec corrections recorded in `docs/steps/step-51.md`: task 2 asks for the plan of a statement
+    query the lab did not have (written for the study, deliberately *not* added to `LedgerPort` —
+    ADR-0009's scope guard); the "`psql` exploratory session" became a runnable harness whose captures
+    are committed, since a pasted transcript cannot be re-run; and task 5's third leg is a finding
+    rather than a gap. The harnesses are JUnit classes deliberately **not** named `*IT`, so a normal
+    build neither runs them nor leaves a *skipped* test behind.
+  AI: est 4h / actual 0h45 / ~90% generated / 0 issues caught in human review
 - labs/ledger-pg: relational ledger port on PostgreSQL with pessimistic and optimistic strategies (ADR-0009) (step 50) · 2026-08-28
   - The non-deployable counterpart ADR-0001 owed the reader. "PostgreSQL is the legitimate default" was
     **citation, not experience**; this module holds that side of the argument in code — the same

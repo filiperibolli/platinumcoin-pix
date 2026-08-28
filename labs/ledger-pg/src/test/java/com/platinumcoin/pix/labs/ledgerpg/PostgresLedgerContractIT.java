@@ -3,19 +3,11 @@ package com.platinumcoin.pix.labs.ledgerpg;
 import com.platinumcoin.pix.labs.ledgerpg.exception.InsufficientFundsException;
 import com.platinumcoin.pix.labs.ledgerpg.exception.InvalidPostingException;
 import com.platinumcoin.pix.labs.ledgerpg.exception.PostingConflictException;
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import javax.sql.DataSource;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.PostgreSQLContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -43,7 +35,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * them identically here is the precondition ADR-0009 puts on any number step 51 later measures:
  * benchmarking an implementation whose correctness is unproven compares nothing.
  */
-abstract class PostgresLedgerContractIT {
+abstract class PostgresLedgerContractIT extends PostgresLedgerTestBase {
 
     private static final String PAYER = "acc-payer";
     private static final String PAYEE = "acc-payee";
@@ -56,32 +48,9 @@ abstract class PostgresLedgerContractIT {
     private static final Instant POSTED_AT =
             Instant.parse("2026-08-28T12:00:00Z").truncatedTo(ChronoUnit.MILLIS);
 
-    private static PostgreSQLContainer<?> postgres;
-    private static HikariDataSource dataSource;
-
-    /** The strategy under test. The single variable of the experiment. */
-    protected abstract LedgerPort ledgerUnderTest(DataSource dataSource);
-
-    @BeforeAll
-    static void startPostgres() {
-        // One container for the whole module: both subclasses run in the same forked JVM, and a
-        // second Postgres would buy nothing but startup time.
-        if (postgres == null) {
-            postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-            postgres.start();
-
-            HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(postgres.getJdbcUrl());
-            config.setUsername(postgres.getUsername());
-            config.setPassword(postgres.getPassword());
-            config.setMaximumPoolSize(16);
-            dataSource = new HikariDataSource(config);
-        }
-    }
-
     @BeforeEach
     void freshSchemaAndAccounts() {
-        LedgerSchema.apply(dataSource);
+        LedgerSchema.apply(dataSource());
         openAccount(PAYER, OPENING_BALANCE);
         openAccount(PAYEE, 0L);
     }
@@ -93,7 +62,7 @@ abstract class PostgresLedgerContractIT {
         long supplyBefore = totalBalance();
         var command = new PostingCommand("tx-happy", PAYER, PAYEE, AMOUNT, "PIX_INTERNAL", "rent");
 
-        PostingResult result = ledgerUnderTest(dataSource).post(command, POSTED_AT);
+        PostingResult result = ledger().post(command, POSTED_AT);
 
         assertThat(result.replayed()).as("the first call is the one that committed it").isFalse();
         assertThat(result.postedAt()).isEqualTo(POSTED_AT);
@@ -127,7 +96,7 @@ abstract class PostgresLedgerContractIT {
         long tooMuch = OPENING_BALANCE + 1;
         var command = new PostingCommand("tx-short", PAYER, PAYEE, tooMuch, "PIX_INTERNAL", "");
 
-        assertThatThrownBy(() -> ledgerUnderTest(dataSource).post(command, POSTED_AT))
+        assertThatThrownBy(() -> ledger().post(command, POSTED_AT))
                 .isInstanceOf(InsufficientFundsException.class)
                 .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories
                         .type(InsufficientFundsException.class))
@@ -154,7 +123,7 @@ abstract class PostgresLedgerContractIT {
     void theSameTxIdReplayedMovesTheMoneyOnce() {
         long supplyBefore = totalBalance();
         var command = new PostingCommand("tx-replay", PAYER, PAYEE, AMOUNT, "PIX_INTERNAL", "rent");
-        LedgerPort ledger = ledgerUnderTest(dataSource);
+        LedgerPort ledger = ledger();
 
         PostingResult first = ledger.post(command, POSTED_AT);
         // A retry arriving later, with a label the caller regenerated — still the same money, so
@@ -183,7 +152,7 @@ abstract class PostgresLedgerContractIT {
     @Test
     void theSameTxIdForDifferentMoneyIsRefused() {
         var command = new PostingCommand("tx-reused", PAYER, PAYEE, AMOUNT, "PIX_INTERNAL", "rent");
-        LedgerPort ledger = ledgerUnderTest(dataSource);
+        LedgerPort ledger = ledger();
         ledger.post(command, POSTED_AT);
         long supplyAfterFirst = totalBalance();
 
@@ -203,7 +172,7 @@ abstract class PostgresLedgerContractIT {
     @Test
     void anImpossibleCommandIsRefusedBeforeAnythingIsOpened() {
         long supplyBefore = totalBalance();
-        LedgerPort ledger = ledgerUnderTest(dataSource);
+        LedgerPort ledger = ledger();
 
         // Both legs naming one account: money conserved either way, but it would write two entries
         // against an unchanged balance into an append-only history. DynamoDB refuses this outright
@@ -251,99 +220,5 @@ abstract class PostgresLedgerContractIT {
 
         assertThat(balanceOf(PAYER)).isEqualTo(OPENING_BALANCE);
         assertThat(lowestBalance()).isNotNegative();
-    }
-
-    // ── reading the database back, in SQL, never through the port under test ────────────────────
-    // A helper that asked the port would let a buggy port agree with itself.
-
-    private void openAccount(String accountId, long balanceCents) {
-        update("INSERT INTO accounts (account_id, balance_cents, version) VALUES (?, ?, 0)",
-                statement -> {
-                    statement.setString(1, accountId);
-                    statement.setLong(2, balanceCents);
-                });
-    }
-
-    private long balanceOf(String accountId) {
-        return queryLong("SELECT balance_cents FROM accounts WHERE account_id = ?",
-                statement -> statement.setString(1, accountId));
-    }
-
-    private long versionOf(String accountId) {
-        return queryLong("SELECT version FROM accounts WHERE account_id = ?",
-                statement -> statement.setString(1, accountId));
-    }
-
-    private long totalBalance() {
-        return queryLong("SELECT COALESCE(SUM(balance_cents), 0) FROM accounts", statement -> { });
-    }
-
-    private long lowestBalance() {
-        return queryLong("SELECT COALESCE(MIN(balance_cents), 0) FROM accounts", statement -> { });
-    }
-
-    private long entryCount() {
-        return queryLong("SELECT COUNT(*) FROM entries", statement -> { });
-    }
-
-    private long signedEntrySum() {
-        return queryLong("SELECT COALESCE(SUM(amount_cents), 0) FROM entries", statement -> { });
-    }
-
-    private long signedEntrySumFor(String accountId) {
-        return queryLong("SELECT COALESCE(SUM(amount_cents), 0) FROM entries WHERE account_id = ?",
-                statement -> statement.setString(1, accountId));
-    }
-
-    private long legAmount(String txId, Direction direction) {
-        return queryLong("SELECT amount_cents FROM entries WHERE tx_id = ? AND direction = ?",
-                statement -> {
-                    statement.setString(1, txId);
-                    statement.setString(2, direction.name());
-                });
-    }
-
-    private String legAccount(String txId, Direction direction) {
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement(
-                        "SELECT account_id FROM entries WHERE tx_id = ? AND direction = ?")) {
-            statement.setString(1, txId);
-            statement.setString(2, direction.name());
-            try (ResultSet rows = statement.executeQuery()) {
-                return rows.next() ? rows.getString(1) : null;
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    private long queryLong(String sql, Binder binder) {
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement(sql)) {
-            binder.bind(statement);
-            try (ResultSet rows = statement.executeQuery()) {
-                if (!rows.next()) {
-                    throw new IllegalStateException("No row for: " + sql);
-                }
-                return rows.getLong(1);
-            }
-        } catch (SQLException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    private void update(String sql, Binder binder) {
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement(sql)) {
-            binder.bind(statement);
-            statement.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    @FunctionalInterface
-    private interface Binder {
-        void bind(PreparedStatement statement) throws SQLException;
     }
 }

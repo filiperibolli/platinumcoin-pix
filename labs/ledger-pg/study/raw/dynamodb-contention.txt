@@ -1,0 +1,20 @@
+====================================================================================================
+ledger-service — step 51 contention benchmark on DynamoDB (LocalStack emulator)
+====================================================================================================
+threads         : 32 × 25 postings
+retry budget    : the adapter's own (3 attempts, jittered) — no re-sends by the harness
+cpus            : 12
+generated       : 2026-08-28T17:26:37.958130402Z
+
+READ THIS FIRST: these are LocalStack numbers, not DynamoDB numbers. The comparable
+part is the shape of the distribution as contention rises, never the absolute latency.
+
+shape       strategy      wall ms   posts/s    p50 ms    p95 ms    p99 ms  commit refused   busy
+HOT_CREDIT  DYNAMODB        20748        39    817.11    876.01    910.08     800       0      0
+HOT_DEBIT   DYNAMODB        19120        42    798.41    830.45    867.50     800       0      0
+COLD        DYNAMODB        19889        40    792.79    833.01    847.10     800       0      0
+
+D · the cost of a replay — 16 × 20 replays of one committed txId, then the same count of new postings as the scale
+shape       strategy      wall ms   posts/s    p50 ms    p95 ms    p99 ms  commit refused   busy
+REPLAY      DYNAMODB         1071       299     53.18     70.62     81.57     320       0      0
+NEW         DYNAMODB         7990        40    396.80    424.86    434.45     320       0      0

@@ -265,6 +265,12 @@ mvn -pl services/ledger-service -am verify     # unit (*Test) + integration (*IT
 # NOTE the -am: LocalStackTestBase ships in common-lib's test-jar, and a stale one in ~/.m2 fails as
 # `501 Service 's3' is not enabled` or a hang on the readiness wait (docs/local-dev.md §6).
 
+# The DynamoDB leg of step 51's contention benchmark. OFF by default — it is a measurement, not a
+# test, and timing noise must never redden this build. Its reading is docs/ledger-pg-findings.md §6,
+# which explains why these numbers describe LocalStack rather than DynamoDB.
+mvn -pl services/ledger-service verify -Dit.test=LedgerContentionStudy \
+    -Dstudy.out=../../labs/ledger-pg/study/raw/dynamodb-contention.txt
+
 # happy path (needs a token; mint one from auth-service)
 TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
