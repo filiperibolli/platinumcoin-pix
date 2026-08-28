@@ -14,6 +14,36 @@ Add **`labs/ledger-pg`** — a Maven module that is **not part of the running pl
 2. It must pass the **same invariant suite as step 15** (storm, conservation of money, replay-under-concurrency) for both strategies — parity of guarantees is the point.
 3. Findings are written to **`docs/ledger-pg-findings.md`**: `EXPLAIN (ANALYZE)` of the statement query with and without the covering index, measured insert-throughput cost of extra indexes, a reproduced-then-fixed deadlock (unordered vs ordered `FOR UPDATE`), and a contention benchmark comparing pessimistic vs optimistic vs the DynamoDB conditional-write path.
 
+## Amendment (2026-08-28, step 50) — "the same interface" is a documented mirror, not a reuse
+
+Decision 1 above says the lab implements "the **same** `LedgerPort` interface as ledger-service
+(extracted to a shared test-support artifact if needed)". Building it found that neither half of that
+sentence survives contact with the code, and the record is corrected here rather than in the step file
+alone:
+
+- **There is no `LedgerPort` in the deployable.** The interface is
+  `ledger.domain.port.LedgerRepository`, and it carries three operations; `post` is the one this lab
+  implements.
+- **`ledger-service` cannot be depended on.** It runs `spring-boot-maven-plugin:repackage` with no
+  classifier, so its published artifact is a fat jar whose classes live under `BOOT-INF/classes` —
+  unusable as a Maven dependency. Making it usable means giving the deployable a second artifact
+  purely to serve a lab, which is exactly the coupling this ADR's own decision 1 forbids ("no runtime
+  dependency in either direction"). Extracting a shared `ledger-domain` module would work and is a
+  refactor of the deployable, not a lab.
+
+So the lab declares its own `LedgerPort`, `PostingCommand`, `PostingResult`, `Direction` and the five
+exception types, each javadoc'd as a mirror of its counterpart. **The parity is asserted, not
+compiled** — one shared contract suite (`PostgresLedgerContractIT`) run against both strategies,
+holding the same invariants and the same replay semantics. Decision 2 is unchanged and is what makes
+this sufficient: the point was never that the two sides share a type name, it is that they pass the
+same tests. A benchmark whose sides share an interface name proves nothing; one whose sides pass the
+same invariant suite is comparable.
+
+One consequence worth naming: the lab has **no use case layer** (ADR-0010's scope note makes
+`domain/`/`api/`/`infra/` optional here), so `LedgerPort` is the public surface and command validity —
+which `PostDoubleEntryUseCase` owns in the deployable — is enforced at the port instead. Same rules,
+different home.
+
 ## Consequences
 - Parent POM gains one module and CI gains one Testcontainers suite (Postgres) — acceptable; the lab can be excluded from the default build profile if it slows the loop.
 - ADR-0001's "when to choose which" rule of thumb is upgraded from opinion to measured claim, cross-referenced to the findings doc.
