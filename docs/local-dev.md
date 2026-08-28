@@ -1604,7 +1604,7 @@ mvn verify                        # + integration tests (Testcontainers spins Lo
 mvn -pl services/ledger-service -am verify   # one module only — note the -am
 ```
 
-**Three checks that are not `mvn verify`, and cannot be** (steps 45–46):
+**Four checks that are not `mvn verify`, and cannot be** (steps 45–46, 48):
 
 ```bash
 # The error-contract audit: every documented non-2xx across the RUNNING stack is problem+json with
@@ -1625,6 +1625,27 @@ bash scripts/e2e-journey.sh                     # or: mvn -Pe2e -pl tests/e2e -a
 # or command that proved each one, and the rows it CANNOT prove — the IAM policies under infra/iam/,
 # which LocalStack accepts and never enforces — say so instead of showing a green tick.
 ```
+
+```bash
+# The Postman collection (step 48) is a test suite, not only a workbench: 85 requests and ~220
+# assertions over every public and internal endpoint, runnable headless. (223 on a freshly
+# reseeded stack, 221 after: a few assertions are conditional on what the stack already holds.) It exercises what the other
+# two do not — the RFC 7807 body of every documented refusal, the identity rules on the internal
+# seam, and the two journeys' conservation checks (Σ balances before and after a payment, and again
+# after replaying its Idempotency-Key). Needs the stack up and `newman` (`npm i -g newman`).
+newman run tools/postman/pix-platform.postman_collection.json \
+  -e tools/postman/pix-platform.local.postman_environment.json
+```
+
+> It runs top to bottom, repeatably, on a stack in any state: the **Flows** folder at the top
+> registers what the service folders below assume, every fixture the collection creates it also owns,
+> and each journey mints its own ids. Two exceptions worth knowing. **One request is skipped on
+> purpose** — the SSE stream, because a long-lived stream has no completion for a runner to assert;
+> it logs `SKIPPED ON PURPOSE`, ships a saved example captured with `curl -N`, and is sent anyway if
+> you set `sseInteractive=true`. And the send folder **drains a real fixture**: alice starts with
+> R$ 10,000.00 against a R$ 5,000.00 daily limit and each pass spends ~R$ 240 of both, so about
+> sixteen passes in one day and the happy paths start answering `422 LIMIT_EXCEEDED` — correct
+> behaviour, not a broken harness. `docker compose -f infra/docker-compose.yml down -v` reseeds.
 
 > **Always pass `-am` when running a single module** (or run `mvn install -DskipTests` once first).
 > The Testcontainers harness — `LocalStackTestBase`, which decides *which* LocalStack services are
