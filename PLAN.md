@@ -204,7 +204,21 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > relational answer — has no DynamoDB equivalent at all. Three findings handed to step 51 unfixed: a
   > replay costs a lock under `FOR UPDATE`, the retry budgets differ on purpose (3 vs 8), and the
   > `(account_id, posted_at)` index is deliberately absent so the `EXPLAIN` study can measure it both ways.
-- [ ] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB (findings doc + psql session)
+- [x] [Step 51](docs/steps/step-51.md) — invariant parity on Postgres + `EXPLAIN`/index/deadlock study + contention benchmark vs DynamoDB (findings doc + psql session)
+  > **Done 2026-08-28.** Parity green on both strategies, and its worth shown by mutation: deleting
+  > `FOR UPDATE` leaves the step-50 sequential contract 6/6 green and turns the new storm 3-of-4 red,
+  > with the schema's `CHECK` firing in anger on an eleventh posting. The study then **found a real bug
+  > in the lab**: the replay path opened a second connection while holding the first, deadlocking the
+  > pool at a replay fan-in equal to its size — the same cycle as the row deadlock, one level up, now
+  > fixed and pinned by a storm that replays from `POOL_SIZE + 4` threads.
+  > **Two results worth carrying out of it:** the covering index is *not* worth it here (9 MB for a
+  > difference inside the noise, because `Heap Fetches: 20` means the visibility map never delivered
+  > the index-only scan), and the two strategies differ almost not at all in throughput but enormously
+  > in *who pays* — optimistic p50 25× better, p99 4× worse, and 8 of 800 callers turned away.
+  > **The DynamoDB leg could not be measured** (LocalStack saturates at ~45 write ops/s regardless of
+  > concurrency — `docs/load/BOTTLENECK.md` RUNG 2, measured before this step asked), so ADR-0009 is
+  > amended to say the benchmark has two of its three legs, and ADR-0001 records that nothing here
+  > speaks to its availability/elasticity or retention pillars.
 - [ ] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
 - [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
 

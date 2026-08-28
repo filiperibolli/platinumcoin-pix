@@ -22,10 +22,51 @@ Steps 50, 15 (the invariant suite to reuse).
 ## Tests (TDD)
 - Invariant parity suite green on both strategies (reuses step 15).
 
+> **Three things this spec said that reality corrected, recorded here rather than silently worked
+> around (CLAUDE.md: docs and code must not drift).**
+>
+> **1. Task 2 asks for the plan of a query the lab did not have.** Step 50 implemented only `post`;
+> there was no statement query to `EXPLAIN`. It was written for this step as `STATEMENT_SQL` inside
+> `LedgerPgStudy` — mirrored from `DynamoLedgerRepository#queryStatement` (one account's entries,
+> newest first, one page at a time, plus the keyset variant that mirrors `ExclusiveStartKey`) — and
+> deliberately **not** added to `LedgerPort`: ADR-0009's scope guard says the lab does not grow
+> surface, and the object of study is the *plan*, not a new operation.
+>
+> **2. "`psql ...` — the exploratory session" became a runnable harness, not a transcript.** There is
+> no `psql` on this machine, and a session pasted from a terminal cannot be re-run by a reader. The
+> equivalent — and the stronger form — is `LedgerPgStudy`, a JUnit class deliberately **not** named
+> `*IT`, so failsafe's include never matches it and a normal build neither runs it nor reports it as
+> *skipped* (CLAUDE.md forbids leaving a skip behind — a skip is where a broken test hides). Naming
+> `-Dit.test=LedgerPgStudy` overrides the include; it writes its raw captures to
+> `labs/ledger-pg/study/raw/`. The DynamoDB leg of task 5 is gated
+> identically from ledger-service's test scope (`LedgerContentionStudy`), so both halves of the
+> comparison are driven the same way and neither module depends on the other.
+>
+> **3. Task 5 has only two of its three legs, and the third is a finding rather than a gap.** The
+> DynamoDB side measured ~40 postings/s *flat across contended and uncontended shapes*, p50 ≈ p99 —
+> the signature of a saturated server, not of a concurrency-control design. `docs/load/BOTTLENECK.md`
+> RUNG 2 had already measured LocalStack's DynamoDB at ~45 write ops/s flat from concurrency 1
+> through 32. The numbers are the emulator's; recording that (findings §6) beats inventing a
+> comparison the infrastructure cannot support.
+
+## Notes taken while building (the study found a bug in the lab's own code)
+`LedgerSql.replayOrConflict` took the `DataSource` and opened its **own** connection to read the
+committed legs back — while its caller was still holding the connection whose transaction had just
+aborted. Sixteen threads replaying one committed `txId` against the sixteen-connection pool deadlocked
+it outright (`total=16, active=16, idle=0, waiting=11`), turning an idempotent retry into a 30-second
+stall and a hard failure. Fixed in this step (the method now takes the caller's already rolled-back
+`Connection`; a replay needs a new *transaction*, not a new *connection*). No money was ever at risk —
+nothing is written on that path — but it is the same cycle as task 4's row deadlock, one level up, and
+it was found by the benchmark rather than by any test, because it only appears when the replay fan-in
+reaches the pool size.
+
 ## Verify locally
 ```bash
-mvn -q -pl labs/ledger-pg verify
-psql ...   # the exploratory session behind the findings
+mvn -q -pl labs/ledger-pg verify                                    # parity, on every build
+
+mvn -pl labs/ledger-pg verify -Dit.test=LedgerPgStudy
+mvn -pl services/ledger-service verify -Dit.test=LedgerContentionStudy \
+    -Dstudy.out=../../labs/ledger-pg/study/raw/dynamodb-contention.txt
 ```
 
 ## Definition of Done

@@ -24,6 +24,10 @@ same invariants, two locking strategies, and (in step 51) the numbers.
 | [`OptimisticLedger`](src/main/java/com/platinumcoin/pix/labs/ledgerpg/OptimisticLedger.java) | **decide first, let the write refuse it** — `UPDATE … WHERE version = :v AND balance_cents >= :amt`, bounded retry with jitter |
 | [`LedgerSql`](src/main/java/com/platinumcoin/pix/labs/ledgerpg/LedgerSql.java) | everything that is *not* strategy, so each strategy file contains only its idea |
 | [`PostgresLedgerContractIT`](src/test/java/com/platinumcoin/pix/labs/ledgerpg/PostgresLedgerContractIT.java) | the contract, written once and run twice |
+| [`PostgresLedgerInvariantsIT`](src/test/java/com/platinumcoin/pix/labs/ledgerpg/PostgresLedgerInvariantsIT.java) | **the step-15 invariant storm**, rerun here — the parity claim of ADR-0009 (step 51) |
+| [`LockOrderDeadlockIT`](src/test/java/com/platinumcoin/pix/labs/ledgerpg/LockOrderDeadlockIT.java) | a deadlock built on purpose, then the same traffic through ordered locks (step 51) |
+| [`LedgerPgStudy`](src/test/java/com/platinumcoin/pix/labs/ledgerpg/LedgerPgStudy.java) | the measurements: `EXPLAIN` plans, index write-cost, contention, replay cost — **off by default** (step 51) |
+| [`study/raw/`](study/raw/) | the raw captures those runs produced, committed as evidence |
 
 ## Run it
 
@@ -33,6 +37,24 @@ mvn -q -pl labs/ledger-pg verify     # disposable Postgres via Testcontainers; n
 
 No compose stack, no LocalStack, no seed data. Like every other `*IT` in this repo, the tests bring up
 their own infrastructure.
+
+### Run the measurements (step 51)
+
+The benchmarks are **off by default** — a benchmark on every build slows the loop for everyone and
+turns timing noise into a red build:
+
+```bash
+mvn -pl labs/ledger-pg verify -Dit.test=LedgerPgStudy
+#   → study/raw/study.txt : EXPLAIN plans, index write-cost, contention, replay cost
+
+# the DynamoDB leg of the comparison, gated identically, from the deployable's test scope
+# (no module dependency in either direction — ADR-0009)
+mvn -pl services/ledger-service verify -Dit.test=LedgerContentionStudy \
+    -Dstudy.out=../../labs/ledger-pg/study/raw/dynamodb-contention.txt
+```
+
+The reading of those captures — including what they are **not** allowed to claim — is
+[`docs/ledger-pg-findings.md`](../../docs/ledger-pg-findings.md).
 
 ## The three things worth reading this module for
 
@@ -60,18 +82,32 @@ alternative reports a payment as failed that in fact succeeded. This mirrors a d
 in `DynamoLedgerRepository` ("idempotency outranks everything") and it is the kind of ordering that is
 invisible in a diff and expensive in production.
 
-## Open questions this module hands to [step 51](../../docs/steps/step-51.md)
+## The questions this module handed to step 51, answered
 
-- **A replay costs a lock under the pessimistic strategy.** The visible ordering — lock, then discover
-  the duplicate — means a retried posting blocks other posters on those two accounts for the length of
-  a wasted attempt. Checking `entries` before locking would be a read-then-check race between two
-  *first* attempts, so it is not a fix; the cost is inherent to the strategy and belongs in the
-  contention benchmark rather than in a workaround.
-- **The retry budgets differ on purpose** (pessimistic 3, optimistic 8) because the two strategies pay
-  for contention in different currencies: one in latency inside an attempt, the other in attempts.
-  Step 51 measures what that difference is worth at the hot-clearing-account shape.
-- **No index on `(account_id, posted_at)` yet**, deliberately: the statement query's covering index is
-  step 51's `EXPLAIN` subject and can only be measured with-and-without if it starts absent.
+Full data and reasoning: [`docs/ledger-pg-findings.md`](../../docs/ledger-pg-findings.md).
+
+- **A replay costs a lock under the pessimistic strategy** — measured at **8.14 ms p50 vs 2.48 ms**
+  optimistic (3.3×). The prediction was right and incomplete: a pessimistic replay is *cheaper than a
+  pessimistic commit* (it takes the locks, then does almost nothing), while an optimistic replay is
+  slightly *more* expensive than an optimistic commit at p50 and **125× cheaper at p99** — because a
+  replay never retries, so it is the one operation whose latency does not depend on contention.
+- **The retry budgets differ on purpose (3 vs 8)** — at the hot-account shape the optimistic budget of
+  8 still left **7-11 of 800 callers** (across three runs) with a `LedgerBusyException`, while the pessimistic 3 was never
+  exhausted at all: its callers wait instead of failing. The two numbers bound different things and
+  were never comparable as numbers.
+- **No index on `(account_id, posted_at)`** — worth **~136× fewer buffers** on the statement query
+  (2,858 → 21; a full sequential scan of all 200,000 legs to return 20) for ~4-8% of insert
+  throughput and 11 MB. The covering `INCLUDE` variant costs a further 9 MB and its timing difference
+  from the plain index is inside the run-to-run noise, because its `Index Only Scan` still did 20
+  heap fetches against a cold visibility map. **The index is worth it; the covering variant is not,
+  here.**
+  The schema still ships *without* it, so the experiment stays reproducible from a clean start.
+
+**And one the study found on its own**: `replayOrConflict` used to open its own connection while its
+caller still held one, so sixteen concurrent replays against a sixteen-connection pool deadlocked it
+(`total=16, active=16, idle=0, waiting=11`). It is the deadlock of `LockOrderDeadlockIT` one level up
+the stack — a cycle formed by acquiring a second resource of a kind you already hold. Rows are fixed
+by a global acquisition order; connections are fixed by not needing two.
 
 ## What this module deliberately does not model
 

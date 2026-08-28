@@ -158,19 +158,33 @@ final class LedgerSql {
 
     /**
      * The transaction was refused by the {@code (tx_id, direction)} primary key, so this txId has
-     * posted before. Read the committed legs back — in a <b>new</b> transaction, because the aborted
-     * one can no longer answer a query — and decide which of the two things happened.
+     * posted before. Read the committed legs back — in a <b>new transaction on the caller's already
+     * rolled-back connection</b> — and decide which of the two things happened.
      *
      * <p>The decision is made on <i>what money moved</i>, never on the txId alone. Same money ⇒ an
      * idempotent replay, answered with the stored posting and its original instant. Different money ⇒
      * a {@link PostingConflictException}: the caller reused an identity, and swallowing that would
      * report a payment that never happened as done.
+     *
+     * <h2>Why it must be the caller's connection, and not a fresh one (step 51)</h2>
+     * This method used to take the {@link DataSource} and open its own connection, which reads as the
+     * safe thing to do and is the opposite. The caller is still <i>holding</i> a connection when it
+     * gets here — the one whose transaction just aborted — so every replaying thread would hold one
+     * connection and queue for a second. Sixteen threads replaying one committed txId against a
+     * sixteen-connection pool deadlocked it outright: {@code total=16, active=16, idle=0, waiting=11},
+     * thirty seconds of nothing, then a hard failure on a call whose only correct answer was "yes,
+     * that already committed".
+     *
+     * <p>It is the deadlock of this lab's own {@code LockOrderDeadlockIT}, one level up the stack:
+     * a cycle formed by acquiring a second resource of a kind you are already holding. Rows are
+     * fixed by a global acquisition order; connections are fixed by <b>never needing two</b>. What
+     * the replay actually needs is a new <i>transaction</i>, and a rolled-back connection is already
+     * one — a backend that has issued {@code ROLLBACK} is clean and sees everything committed since.
      */
-    static PostingResult replayOrConflict(DataSource dataSource, PostingCommand command) {
+    static PostingResult replayOrConflict(Connection connection, PostingCommand command) {
         PostingCommand committed;
         Instant committedAt;
-        try (Connection connection = dataSource.getConnection();
-                PreparedStatement statement = connection.prepareStatement("""
+        try (PreparedStatement statement = connection.prepareStatement("""
                         SELECT account_id, counterpart_account_id, amount_cents, entry_type,
                                description, posted_at
                           FROM entries
@@ -200,6 +214,12 @@ final class LedgerSql {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Could not read back the committed posting", e);
+        } finally {
+            // The caller handed over a connection with autoCommit off, so the SELECT above opened a
+            // read transaction. Ending it here — rather than leaving it idle-in-transaction until
+            // the caller's try-with-resources closes the connection — keeps this method's use of a
+            // borrowed resource complete: it read, and it left nothing open behind it.
+            rollbackQuietly(connection, command.txId());
         }
 
         if (!committed.movesTheSameMoneyAs(command)) {

@@ -89,7 +89,7 @@ public class PessimisticLedger implements LedgerPort {
                     LedgerSql.rollbackQuietly(connection, command.txId());
                     if (LedgerSql.UNIQUE_VIOLATION.equals(e.getSQLState())) {
                         // The (tx_id, direction) key refused a leg: this posting already happened.
-                        return LedgerSql.replayOrConflict(dataSource, command);
+                        return LedgerSql.replayOrConflict(connection, command);
                     }
                     if (LedgerSql.isRetryable(e) && attempt < MAX_ATTEMPTS) {
                         LedgerSql.backOff(command.txId(), attempt, e.getSQLState());

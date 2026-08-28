@@ -65,5 +65,11 @@ CREATE TABLE entries (
     PRIMARY KEY (tx_id, direction)
 );
 
--- No index on (account_id, posted_at) yet, on purpose: the statement query's covering index is
--- step 51's subject, and it can only be measured with-and-without if it starts absent.
+-- NO INDEX ON (account_id, posted_at), STILL ON PURPOSE. It was step 51's EXPLAIN subject, and it
+-- stays absent so that study remains reproducible from a clean start. The answer it produced, for
+-- the reader who would otherwise wonder whether this is an oversight (docs/ledger-pg-findings.md §2):
+-- the index turns a sequential scan of all 200,000 legs into a 21-buffer index descent (~136x fewer
+-- pages touched) and costs a few percent of insert throughput; the COVERING variant (the same key
+-- INCLUDE-ing every selected column) costs 9 MB more and its timing difference is inside the
+-- run-to-run noise, because its Index Only Scan still made 20 heap fetches against a cold visibility
+-- map. A covering index is a bet on VACUUM, not a free win.
