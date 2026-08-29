@@ -287,6 +287,38 @@ next to the question; none of these is an unfinished task.
   ones in `PaymentExceptionHandler`) but it changes a public error contract, so it wants its own step and an
   `openapi.yaml` entry rather than a drive-by.
 
+- **P0-by-measurement · the send path and the outbox drain share one AWS SDK connection pool.**
+  Named by [`load/RESULTS.md`](load/RESULTS.md) §5 and §5.1 and promoted here on 2026-08-29, because a
+  defect that lives only inside a results document is not on anybody's roadmap. It is the single
+  measured reason the platform misses its own average-rate budget: **8.4% of sends fail at 58 TPS and
+  39.8% at the Black Friday peak**, not in DynamoDB and not on the host but waiting for one of 50
+  connections held in common with the background publishers — and, an hour after the peak, **84% of
+  sends fail at 5 TPS** while a notification backlog nobody is waiting for drains through the same
+  pool. ADR-0019's lanes partition the drain *from itself*, never *from the request path*; the fix is
+  a second SDK client with its own pool (or a bulkhead) for background work, plus a sized pool for the
+  money path. Deliberately not smuggled into the measurement that found it — it is a capacity change
+  with real trade-offs and wants its own step, a before/after k6 run, and a number.
+
+- **P1-by-measurement · a pool-acquisition timeout answers `500 INTERNAL_ERROR`.** The sibling of the
+  item above, same source (`load/RESULTS.md` §5(b)). `SdkClientException` is mapped nowhere in the
+  repo, so it falls through to `GlobalExceptionHandler`'s catch-all and the client is told "internal
+  error" with no `Retry-After` and no `code` to branch on. But an acquisition timeout is an **unknown
+  result** — exactly what [ADR-0015](docs/adr/0015-ledger-timeout-is-an-unknown-result.md) exists for —
+  and the platform already has the right answer for that shape: `503 … UNAVAILABLE` + `Retry-After`,
+  safe to retry because the operation's identity is durable (ADR-0014). **A client told "500" has no
+  reason to retry; a client told "503, retry after 2s" does, and that retry is what makes the recovery
+  the design already built actually happen.** Small change, public error contract, so it wants a step
+  and an `openapi.yaml` entry — the same shape as the `503 LEDGER_UNAVAILABLE` self-transfer item above.
+
+- **Leader election for the scheduled work, the day a service runs with more than one replica.**
+  ARCHITECTURE §7.4 puts every service behind ≥3 replicas; the request paths are already replica-safe
+  (conditional writes, durable identity, finalization fencing, consumer dedup), but the `@Scheduled`
+  jobs are not coordinated at all — outbox publishers, the stuck-transaction scanner, the statement
+  archiver and the alert evaluator would each run once per replica. Most of that is wasteful rather
+  than wrong, and the alert evaluator would page N times per incident. No step while the platform is
+  single-instance by construction; promote it with the first replica, not before, and the shape is a
+  lease around each tick rather than a new component.
+
 - **P2 · versioned internal contracts (events & DTOs).** Real and open. A versioned schema, backward/forward
   compatibility and consumer-driven contract tests would stop a status enum drifting between two services — the
   live example being the two `TransactionStatus` enums that "agree by contract, not by construction" (their own

@@ -1,5 +1,12 @@
 # SLO load profiles — results (step 47)
 
+> **There are two `RESULTS.md` in this repo and they are different deliverables.** This one is
+> **step 47**: the three named k6 SLO profiles run as a pass/fail gate against the brief's budgets.
+> The other, [`docs/load/RESULTS.md`](../docs/load/RESULTS.md), is the earlier **load-measurement
+> pass** done outside `PLAN.md`, whose question was correctness under concurrency rather than
+> throughput. Where they disagree about a number, they are describing different runs on different
+> stacks and both say so; neither supersedes the other.
+
 Three named k6 profiles whose **thresholds fail the run**, plus a degradation drill. This document
 records what they measured, what passed, what failed, and — where a number is the machine's rather than
 the platform's — says so plainly instead of quoting it as a platform result.

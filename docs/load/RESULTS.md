@@ -1,5 +1,11 @@
 # Load measurement
 
+> **There are two `RESULTS.md` in this repo and they are different deliverables.** This one is the
+> **load-measurement pass** run outside `PLAN.md`, to show that the correctness guarantees survive
+> real concurrent traffic. The other, [`load/RESULTS.md`](../../load/RESULTS.md), is **step 47**: the
+> three named k6 SLO profiles run as a pass/fail gate against the brief's latency budgets. Neither
+> supersedes the other.
+
 A self-contained load-measurement deliverable, scoped smaller than PLAN.md's Step 47 (which
 covers the full k6 low/standard/Black-Friday SLO suite). Its purpose in this pass is **not**
 throughput — it is producing credible, defensible evidence for the ledger's **correctness
