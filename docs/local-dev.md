@@ -70,6 +70,7 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `SETTLEMENT_BASE_URL` | `http://settlement-service:8086` | Where mock-bacen presents an inbound Pix. Resolved per call, never at boot — mock-bacen must not depend on settlement-service to start, or compose would have a dependency cycle (settlement already gates on the stub) |
 | `INBOUND_MAX_ATTEMPTS` / `INBOUND_RETRY_DELAY_MS` | `3` / `500` | How often the rail re-presents a payment whose outcome it does not know (`5xx`/no answer). A `4xx` is **never** retried — it is a decision, and a real rail bounces it back to the payer's PSP |
 | `PIX_CLEARING_ACCOUNT_ID` | `SPI_CLEARING` | Where an external send parks money (step 27) and where an inbound Pix draws it from (step 37). Must be the **same** id in payment-service and settlement-service, or the two directions stop netting against one balance |
+| `CLEARING_SHARDS` | `16` | How many `SPI_CLEARING#00..#NN` write shards that clearing position is spread over (step 52). Read by **four** things — payment-service (assigns on a send), settlement-service (assigns on an arrival), ledger-service (sums them), `05-seed-ledger.sh` (creates them) — so it is one variable in `infra/compose/*.yml`, never four. `CLEARING_SHARDS=1 docker compose ... up -d` reproduces the un-sharded platform, which is how `docs/sharding-findings.md` measures its baseline |
 | `FRAUD_TIMEOUT_MS` | `200` | Fraud budget in payment-service |
 | `SNS_TOPIC_ARN` | `arn:aws:sns:us-east-1:000000000000:pix-events` | Topic the outbox publisher drains into (injected, never looked up by name — ADR-0013) |
 | `OUTBOX_PUBLISHER_DELAY_MS` | `1000` | Outbox poll interval (`fixedDelay`, so ticks never overlap) |
@@ -347,7 +348,7 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **S3** — buckets `pix-audit-log` (versioning + Object Lock COMPLIANCE, 5-year retention) and `pix-statement-archive` (plain, rewritable) (step 42); `pix-statement-exports` (step 53).
 
-**Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` at 0 — so Σ over every account is **zero** (step 12). Pix keys are registered via the API, not seeded.
+**Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` **and its `CLEARING_SHARDS` write shards `SPI_CLEARING#00..#15`** (step 52) all at 0 — so Σ over every account is **zero** (step 12), whatever N is. Pix keys are registered via the API, not seeded.
 
 The LocalStack `SERVICES` env grows across sprints: `dynamodb` (Sprint 2) → `+sns,sqs` (Sprint 6, step 26) → `+s3` (Sprint 10, **already flipped** — step 42). The list is **enforced**: calling a service that is not on it answers `501 Service 'sqs' is not enabled`, so enabling the service and creating its resources always land in the same change (and so does the matching `withServices(...)` in `LocalStackTestBase`).
 
@@ -413,7 +414,7 @@ that must sum to **zero**:
 aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
   --key '{"pk":{"S":"ACCOUNT#acc-001"},"sk":{"S":"BALANCE"}}'   # balanceCents 1000000, version 0
 
-for a in acc-001 acc-002 SPI_CLEARING SEED; do
+for a in acc-001 acc-002 SPI_CLEARING SEED $(seq -f "SPI_CLEARING#%02g" 0 15); do
   aws --endpoint-url=http://localhost:8000 dynamodb get-item --table-name pix_ledger \
     --key "{\"pk\":{\"S\":\"ACCOUNT#$a\"},\"sk\":{\"S\":\"BALANCE\"}}" \
     --query 'Item.balanceCents.N' --output text
@@ -445,7 +446,7 @@ LEDGER_POST=$(scripts/service-token.sh ledger-service ledger:post)
 curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorization: Bearer $LEDGER_READ" | jq
 
 # the same Σ = 0 as the raw get-item loop above, now through the service
-for a in acc-001 acc-002 SPI_CLEARING SEED; do
+for a in acc-001 acc-002 SPI_CLEARING SEED $(seq -f "SPI_CLEARING#%02g" 0 15); do
   curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
     -H "Authorization: Bearer $LEDGER_READ" | jq -r .balanceCents
 done | paste -sd+ | bc                                          # 0 — conservation baseline
@@ -484,7 +485,7 @@ curl -s -X POST localhost:8085/internal/ledger/postings -H "Authorization: Beare
   -H 'Content-Type: application/json' -d "$POSTING" | jq
 
 # alice 10000.00 → 9874.50, bob 10000.00 → 10125.50, and Σ over the four accounts is still 0
-for a in acc-001 acc-002 SPI_CLEARING SEED; do
+for a in acc-001 acc-002 SPI_CLEARING SEED $(seq -f "SPI_CLEARING#%02g" 0 15); do
   curl -s "localhost:8085/internal/ledger/accounts/$a/balance" \
     -H "Authorization: Bearer $LEDGER_READ" | jq -r .balanceCents
 done | paste -sd+ | bc                                          # 0 — money moved, none created
@@ -1038,9 +1039,12 @@ curl -si -X POST localhost:8084/v1/payments/pix \
   -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $(uuidgen)" \
   -H 'Content-Type: application/json' \
   -d '{"pixKey":"bob@otherbank.com","amount":"200.00"}' | head -1     # 202
-curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance \
+# Since step 52 the money is in ONE OF 16 shards, picked by hash of the txId — so ask for the
+# position, not for one item. .balanceCents is credited by exactly the amount in flight, and
+# .shards[] shows which sub-account took it.
+curl -s localhost:8085/internal/ledger/clearing-balance \
   -H "Authorization: Bearer $(scripts/service-token.sh ledger-service ledger:read)" \
-  | jq   # credited by exactly the amount in flight
+  | jq '{balance, balanceCents, nonZero: [.shards[] | select(.balanceCents != 0)]}'
 ```
 
 ### 5.4 Status + settlement observation
@@ -1121,7 +1125,8 @@ TX=$(curl -s -X POST localhost:8084/v1/payments/pix -H "Authorization: Bearer $T
 # 3) settlement gets 422 SETTLEMENT_REJECTED_BY_ADMIN → step 33 reverses ON THAT SAME DELIVERY (seconds,
 #    not minutes): the consumer holds a DEFINITIVE answer, so it does not wait for the 60s scanner and the
 #    message does not redrive to the DLQ — `SettleOutcome.REVERSED` is acked. The payer is refunded and
-#    SPI_CLEARING nets back to 0. (Reconciliation is the *fallback* path for this ending, not the normal
+#    the clearing position nets back to 0 — specifically the SHARD this txId was parked in, which the
+#    reversal read off the transaction rather than re-deriving (step 52). (Reconciliation is the *fallback* path for this ending, not the normal
 #    one; it owns the transactions nobody ever came back with an answer for.)
 watch -n2 "curl -s localhost:8084/v1/payments/$TX -H 'Authorization: Bearer $TOKEN' | jq .status"
 docker compose -f infra/docker-compose.yml logs settlement-service | grep -E 'Reconciliation resolved|ALERT'

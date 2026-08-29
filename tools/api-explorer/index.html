@@ -528,6 +528,7 @@
     const INTERNAL_ROUTES = [
       { match: '/internal/ledger/postings',  aud: 'ledger-service',  scope: 'ledger:post' },
       { match: '/internal/ledger/accounts',  aud: 'ledger-service',  scope: 'ledger:read' },
+      { match: '/internal/ledger/clearing-balance', aud: 'ledger-service', scope: 'ledger:read' },
       { match: '/internal/pix-keys/resolve', aud: 'account-service', scope: 'keys:resolve' },
       { match: '/internal/accounts',         aud: 'account-service', scope: 'accounts:read' },
       { match: '/internal/fraud/score',      aud: 'fraud-service',   scope: 'fraud:score' },
@@ -935,6 +936,11 @@
           {
             method: 'GET', path: '/internal/ledger/accounts/SEED/balance', title: 'Balance (SEED \u2014 the money supply)', auth: true, capturesToken: false,
             desc: 'ACCOUNT#SEED is the double-entry counterpart of every seeded balance, so it is negative by construction (-20000.00). Add it to acc-001 (+10000.00), acc-002 (+10000.00) and SPI_CLEARING (0.00) and you get exactly zero \u2014 money was created the only way this platform allows, as a funding posting, and Σ over all accounts is the conservation invariant step 15 asserts under a concurrent debit storm. Try SPI_CLEARING in the path too: the clearing account at rest.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/ledger/clearing-balance', title: 'Clearing position \u2014 the sum of the 16 write shards', auth: true, capturesToken: false,
+            desc: 'The question you most want answered about an instant-payment platform: <b>is the clearing account empty?</b> Empty means every payment that left a payer has either settled out to the network or come back to them. Until step 52 that was one GetItem on ACCOUNT#SPI_CLEARING \u2014 and at 500 TPS that single item is the platform\'s ceiling, because a DynamoDB partition caps near 1,000 WCU/s and a transactional write costs 2x, so roughly 500 transactional updates/s for the one item EVERY external send credits. Step 52 spreads those writes over SPI_CLEARING#00..#15, picked by hash of the txId \u2014 which buys throughput and takes away the single read. This endpoint gives it back: {balance, balanceCents, shardCount, shards[], missingAccounts[]}. <b>Read the shards array, not just the total</b>: a total of 0.00 made of +5.00 on one shard and -5.00 on another is not health, it is a reversal that compensated the WRONG sub-account \u2014 balanced, invisible in the sum, and exactly the bug the design prevents by persisting the shard on the transaction (clearingAccountId) so the reversal reads it instead of re-deriving it. Send an external Pix from the Journeys tab and watch one shard go up; missingAccounts is empty when the seed and CLEARING_SHARDS agree.',
             headers: {}, body: null,
           },
           {

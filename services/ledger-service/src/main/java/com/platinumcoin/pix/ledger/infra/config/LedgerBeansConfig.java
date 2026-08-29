@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.ledger.infra.config;
 
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.ledger.domain.port.BalanceCacheInvalidator;
 import com.platinumcoin.pix.ledger.domain.port.LedgerArchiveReader;
 import com.platinumcoin.pix.ledger.domain.port.LedgerRepository;
@@ -7,6 +8,7 @@ import com.platinumcoin.pix.ledger.domain.port.StatementArchive;
 import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
 import com.platinumcoin.pix.ledger.domain.usecase.ArchiveOldEntriesUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetBalanceUseCase;
+import com.platinumcoin.pix.ledger.domain.usecase.GetClearingPositionUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.PostDoubleEntryUseCase;
 import java.time.Clock;
@@ -83,6 +85,26 @@ public class LedgerBeansConfig {
     @Bean
     AccountPolicy accountPolicy() {
         return new AccountPolicy();
+    }
+
+    /**
+     * The clearing shard map (step 52). ledger-service does not <i>choose</i> shards — payment-service
+     * and settlement-service do, when they post — but it is the service that must ENUMERATE them, since
+     * it is the only one allowed to read {@code pix_ledger} (ADR-0006). Same two properties everywhere,
+     * one {@code CLEARING_SHARDS} env var in docker-compose, because a stack whose services disagree
+     * about how many shards exist would sum a different set than it writes.
+     */
+    @Bean
+    ClearingAccountResolver clearingAccountResolver(
+            @Value("${pix.clearing-account-id:SPI_CLEARING}") String clearingAccountId,
+            @Value("${pix.clearing-shards:16}") int clearingShards) {
+        return new ClearingAccountResolver(clearingAccountId, clearingShards);
+    }
+
+    @Bean
+    GetClearingPositionUseCase getClearingPositionUseCase(
+            LedgerRepository ledger, ClearingAccountResolver clearing) {
+        return new GetClearingPositionUseCase(ledger, clearing);
     }
 
     @Bean

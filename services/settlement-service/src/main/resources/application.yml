@@ -44,6 +44,10 @@ pix:
   # directions net against one clearing balance, and step 52 shards it into SPI_CLEARING#00..#15, which is
   # exactly why it is configuration in both services rather than a constant in either.
   clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  # Must be the SAME count payment-service uses (step 52). Both services post against the clearing
+  # position — outbound credits a shard, inbound debits one — and a disagreement here would park money
+  # in a sub-account the other side never sums. One env var, set once in docker-compose, is the fix.
+  clearing-shards: ${CLEARING_SHARDS:16}
   inbound:
     # The shared secret BACEN presents on POST /v1/inbound/pix as X-Webhook-Token. The route is JWT-exempt
     # (an external party holds no PlatinumCoin token) but it CREDITS MONEY, so it is never anonymous: an

@@ -4999,6 +4999,90 @@
           ]
         },
         {
+          "name": "Clearing position — the sum of the write shards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "// The logical clearing position is a SUM now, not an item — that is what sharding cost.",
+                  "pm.test('the total is the sum of the shards', () => {",
+                  "    const sum = body.shards.reduce((acc, s) => acc + s.balanceCents, 0);",
+                  "    pm.expect(body.balanceCents).to.eql(sum);",
+                  "});",
+                  "// A shard the services write to but the seed never created would make the total silently short.",
+                  "pm.test('every configured clearing account exists', () => pm.expect(body.missingAccounts).to.eql([]));",
+                  "// Read the breakdown, not just the total: +5.00 and -5.00 also sums to zero.",
+                  "pm.test('no shard is negative at rest', () => {",
+                  "    const negative = body.shards.filter((s) => s.balanceCents < 0).map((s) => s.accountId);",
+                  "    pm.expect(negative, 'a negative shard means a reversal hit the wrong sub-account').to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{serviceToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/clearing-balance",
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "clearing-balance"
+              ]
+            },
+            "description": "**\"Is the clearing account empty?\"** — the one sentence that says whether every payment which left a payer has either settled out or come back. Step 52 shards `ACCOUNT#SPI_CLEARING` into `SPI_CLEARING#00..#15` (hash of `txId`), because one item taking every external send's credit ceilings near ~500 transactional updates/s: a partition caps at 1,000 WCU/s and a transactional write costs 2x. That buys throughput and **takes away the single read** — this endpoint gives it back as a sum.\n\nRead `shards[]`, not only the total. A total of `0.00` composed of `+5.00` and `-5.00` is not health: it is a reversal that compensated the **wrong** sub-account — balanced, invisible in the sum, and precisely what the design prevents by persisting `clearingAccountId` on the transaction so the reversal reads the shard instead of re-deriving it (`ReversalShardIT` fails if that is changed). `missingAccounts` is empty when the seed script and `CLEARING_SHARDS` agree."
+          },
+          "response": [
+            {
+              "name": "200 OK",
+              "originalRequest": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{serviceToken}}"
+                  }
+                ],
+                "url": {
+                  "raw": "http://localhost:8085/internal/ledger/clearing-balance",
+                  "host": [
+                    "http://localhost:8085"
+                  ],
+                  "path": [
+                    "internal",
+                    "ledger",
+                    "clearing-balance"
+                  ]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "cookie": [],
+              "body": "{\n  \"balance\": \"0.00\",\n  \"balanceCents\": 0,\n  \"shardCount\": 16,\n  \"shards\": [\n    { \"accountId\": \"SPI_CLEARING\", \"balance\": \"0.00\", \"balanceCents\": 0, \"version\": 0 },\n    { \"accountId\": \"SPI_CLEARING#00\", \"balance\": \"0.00\", \"balanceCents\": 0, \"version\": 0 },\n    { \"accountId\": \"SPI_CLEARING#01\", \"balance\": \"0.00\", \"balanceCents\": 0, \"version\": 0 }\n  ],\n  \"missingAccounts\": []\n}"
+            }
+          ]
+        },
+        {
           "name": "Balance — unknown account (404)",
           "event": [
             {
@@ -7584,6 +7668,7 @@
           "    const ROUTES = [",
           "        { match: '/internal/ledger/postings',  aud: 'ledger-service',  scope: 'ledger:post' },",
           "        { match: '/internal/ledger/accounts',  aud: 'ledger-service',  scope: 'ledger:read' },",
+          "        { match: '/internal/ledger/clearing-balance', aud: 'ledger-service', scope: 'ledger:read' },",
           "        { match: '/internal/pix-keys/resolve', aud: 'account-service', scope: 'keys:resolve' },",
           "        { match: '/internal/accounts',         aud: 'account-service', scope: 'accounts:read' },",
           "        { match: '/internal/fraud/score',      aud: 'fraud-service',   scope: 'fraud:score' }",

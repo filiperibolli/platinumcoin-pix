@@ -273,6 +273,25 @@ balance_of() {   # balance_of <accountId>
   | jq -r '.Item.balanceCents.N // "absent"'
 }
 
+# Σ balanceCents over the WHOLE clearing position — the bare SPI_CLEARING plus every SPI_CLEARING#NN
+# write shard (step 52). Read straight off the table for the same reason sigma_balances is: this script
+# asserts against the book of record, never against a service's view of it.
+#
+# WHY THIS REPLACED `balance_of SPI_CLEARING`. Since step 52 an external send credits ONE OF 16
+# sub-accounts, chosen by hash of its txId — so "the money is parked in clearing" is a statement about a
+# sum, and reading the bare item would answer 0 for a payment that is very much in flight. Note the
+# assertion is deliberately made on the TOTAL and not on "the shard this txId should have used":
+# recomputing the shard here would re-implement ClearingAccountResolver in bash, and a verification
+# script that re-derives what it is verifying can only ever agree with itself.
+clearing_position() {
+  aws --endpoint-url="$DDB_ENDPOINT" dynamodb scan \
+    --table-name pix_ledger \
+    --filter-expression 'sk = :b AND begins_with(pk, :c)' \
+    --expression-attribute-values '{":b":{"S":"BALANCE"},":c":{"S":"ACCOUNT#SPI_CLEARING"}}' \
+    --output json \
+  | jq '[.Items[].balanceCents.N | tonumber] | add // 0'
+}
+
 # How many ledger ENTRY items carry this txId — read off gsi1, the index that exists precisely because
 # the two legs of one transaction live in two different account partitions and the base table cannot
 # answer "show me both legs". A settled internal send has exactly 2; an idempotent replay still has 2,
@@ -441,9 +460,10 @@ note "Σ balanceCents over every account, before anything: $SIGMA_BEFORE"
 # remember. If this is not 0, the ledger was hand-edited or a previous run created money.
 assert_eq 'the seeded supply is 0 — money was never minted, only moved' '0' "$SIGMA_BEFORE"
 
-# SPI_CLEARING is NOT a "returns to zero" account, and getting that wrong is the easiest way to write a
-# false assertion about this platform. It is an inter-bank POSITION, and the two directions are not
-# symmetric:
+# The CLEARING POSITION is NOT a "returns to zero" account, and getting that wrong is the easiest way to
+# write a false assertion about this platform. Since step 52 it is not even one account — it is the sum
+# over SPI_CLEARING and its 16 write shards (clearing_position above). It is an inter-bank POSITION, and
+# the two directions are not symmetric:
 #   · an OUTBOUND send parks money in it and then takes it back out — released to SPI_SETTLED on a
 #     settlement, or returned to the payer on a reversal. Net effect on clearing: zero. Every act and
 #     drill below asserts exactly that, per flow.
@@ -453,7 +473,7 @@ assert_eq 'the seeded supply is 0 — money was never minted, only moved' '0' "$
 #     account is exempt from the non-negative guard.
 # So the run tracks what the inbound flows drew, and ACT 9 asserts clearing against that rather than
 # against zero. Σ is untouched either way: the payee's credit IS the counterpart of the clearing debit.
-CLEARING_BASELINE="$(balance_of SPI_CLEARING)"
+CLEARING_BASELINE="$(clearing_position)"
 CLEARING_INBOUND_DRAWN=0
 
 # ── ACT 1 — who is asking ────────────────────────────────────────────────────────────────────────
@@ -543,7 +563,7 @@ act 'ACT 5 — external Pix: alice → a key at another PSP, settled through BAC
 # decided before it was made. common-lib's CorrelationIdFilter honours an inbound X-Correlation-Id and
 # only generates one when the client did not bring its own.
 CID="e2e-$(uuidgen)"
-CLEARING_BEFORE="$(balance_of SPI_CLEARING)"
+CLEARING_BEFORE="$(clearing_position)"
 SETTLED_BEFORE="$(balance_of SPI_SETTLED)"
 
 BODY="$(api POST "$PAYMENT_URL/v1/payments/pix" \
@@ -559,8 +579,8 @@ note "external transactionId=$TX_EXTERNAL correlationId=$CID"
 
 # The money is NOT in limbo while BACEN thinks: it was debited from alice and parked in the clearing
 # account inside the same atomic transaction. "Asynchronous" describes the rail, never the ledger.
-assert_eq 'the money is parked in SPI_CLEARING while the rail works' \
-          "$((CLEARING_BEFORE + 20000))" "$(balance_of SPI_CLEARING)"
+assert_eq 'the money is parked in the clearing position while the rail works' \
+          "$((CLEARING_BEFORE + 20000))" "$(clearing_position)"
 
 is_settled() { [[ "$(payment_status "$ALICE" "$TX_EXTERNAL")" == "SETTLED" ]]; }
 if wait_until 120 'the external send to reach SETTLED' is_settled; then
@@ -572,7 +592,7 @@ fi
 
 # The clearing release (step 33): the money leaves clearing for SPI_SETTLED — "gone to the network".
 # Asserting BOTH ends is what makes this a double-entry check rather than a status check.
-assert_eq 'clearing was released back to where it started' "$CLEARING_BEFORE" "$(balance_of SPI_CLEARING)"
+assert_eq 'clearing was released back to where it started' "$CLEARING_BEFORE" "$(clearing_position)"
 assert_eq 'and SPI_SETTLED holds the money that left the bank' \
           "$((SETTLED_BEFORE + 20000))" "$(balance_of SPI_SETTLED)"
 assert_pushed alice PixSettled "$TX_EXTERNAL"
@@ -669,7 +689,7 @@ api POST "$BACEN_URL/admin/config" -H 'Content-Type: application/json' -d '{"fai
 note 'mock-bacen is now failing 100% of settlements'
 
 DRILL_STARTED="$(date +%s)"
-CLEARING_BEFORE_DRILL="$(balance_of SPI_CLEARING)"
+CLEARING_BEFORE_DRILL="$(clearing_position)"
 BODY="$(send_pix "$ALICE" 'bob@otherbank.com' '80.00' 'e2e drill A — transient outage' "$(uuidgen)")"
 assert_eq 'the send is still accepted while the rail is down' '202' "$(last_status)"
 TX_DRILL_A="$(jq -r '.transactionId' <<<"$BODY")"
@@ -677,7 +697,7 @@ note "drill-A transactionId=$TX_DRILL_A"
 # The point of ADR-0004's 202: acceptance never depends on the rail. A platform that 503s its own
 # customers because a third party is down has coupled its availability to somebody else's.
 assert_eq 'and the money is parked in clearing, not lost' \
-          "$((CLEARING_BEFORE_DRILL + 8000))" "$(balance_of SPI_CLEARING)"
+          "$((CLEARING_BEFORE_DRILL + 8000))" "$(clearing_position)"
 
 dlq_has_something() { [[ "$(dlq_depth)" != "0" ]]; }
 if wait_until "$DLQ_WAIT_SECONDS" 'the message to ride its five deliveries into the DLQ' dlq_has_something; then
@@ -761,7 +781,7 @@ fi
 # SPI_SETTLED, a reversal returns it to alice. This is the check Σ alone cannot make — two individually
 # balanced postings can leave Σ untouched while money is stranded (see MoneyConservation's javadoc).
 assert_eq 'clearing is back where it started — no money stranded in flight' \
-          "$CLEARING_BEFORE_DRILL" "$(balance_of SPI_CLEARING)"
+          "$CLEARING_BEFORE_DRILL" "$(clearing_position)"
 
 if wait_until "$ALERT_WAIT_SECONDS" 'the alert to resolve' alert_resolved; then
   ok 'and the platform announced the incident was over (ALERT RESOLVED)'
@@ -778,7 +798,7 @@ api POST "$BACEN_URL/admin/config" -H 'Content-Type: application/json' \
 note 'mock-bacen will now refuse bob@otherbank.com at settlement time'
 
 ALICE_BEFORE_B="$(balance_of acc-001)"
-CLEARING_BEFORE_B="$(balance_of SPI_CLEARING)"
+CLEARING_BEFORE_B="$(clearing_position)"
 BODY="$(send_pix "$ALICE" 'bob@otherbank.com' '55.10' 'e2e drill B — permanent refusal' "$(uuidgen)")"
 assert_eq 'the send is accepted — the refusal is not knowable yet' '202' "$(last_status)"
 TX_DRILL_B="$(jq -r '.transactionId' <<<"$BODY")"
@@ -796,7 +816,7 @@ else
       "status is $(payment_status "$ALICE" "$TX_DRILL_B") after 90s"
 fi
 assert_eq 'the payer got every cent back' "$ALICE_BEFORE_B" "$(balance_of acc-001)"
-assert_eq 'and clearing was emptied of it'  "$CLEARING_BEFORE_B" "$(balance_of SPI_CLEARING)"
+assert_eq 'and clearing was emptied of it'  "$CLEARING_BEFORE_B" "$(clearing_position)"
 # The refund is a COMPENSATING posting, never an edit: the ledger is append-only (Domain safety rule
 # #5). So the reversal has its own txId and its own pair of entries, and the original debit is still
 # there — which is what a customer's statement and an auditor both need to see.
@@ -826,7 +846,7 @@ assert_eq 'and still equals the seeded supply'               '0'             "$S
 # whatever the INBOUND flows legitimately drew from it — see the note in ACT 0. Anything else means an
 # outbound payment is still parked there: debited from a customer, delivered to nobody.
 assert_eq 'no outbound payment is left parked in clearing' \
-          "$((CLEARING_BASELINE - CLEARING_INBOUND_DRAWN))" "$(balance_of SPI_CLEARING)"
+          "$((CLEARING_BASELINE - CLEARING_INBOUND_DRAWN))" "$(clearing_position)"
 
 # ── verdict ──────────────────────────────────────────────────────────────────────────────────────
 

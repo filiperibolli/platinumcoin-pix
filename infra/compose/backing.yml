@@ -106,6 +106,10 @@ services:
       # LocalStack container (no dynamodb-local sibling there), where they must fall back to
       # LocalStack's own DynamoDB at 4566 instead (docs/load/BOTTLENECK.md).
       DYNAMODB_ENDPOINT: http://dynamodb-local:8000
+      # Read by 05-seed-ledger.sh: how many SPI_CLEARING#NN balance items to create (step 52). The
+      # ledger refuses a credit into a BALANCE item that does not exist, so the seed and the services
+      # must agree on N — hence the same variable, defaulted the same way, in both compose files.
+      CLEARING_SHARDS: ${CLEARING_SHARDS:-16}
     volumes:
       # ready.d scripts run once the emulator is ready. Empty in step 06 (no tables yet);
       # step 07 drops the pix_accounts / pix_keys creation scripts here.

@@ -30,6 +30,7 @@ table proves the model against real items while nothing is at stake, so step 14'
 | `GET` | `/internal/ledger/accounts/{accountId}/balance` | Service `ledger:read` | Balance of one ledger account → `{accountId, balance, balanceCents, version}`. Strongly consistent read. |
 | `POST` | `/internal/ledger/postings` | Service `ledger:post` | Atomic double-entry posting → `{txId, debitAccount, creditAccount, amount, amountCents, entryType, description, postedAt, replayed}`. Idempotent by `txId`. |
 | `GET` | `/internal/ledger/accounts/{accountId}/entries?cursor=&limit=` | Service `ledger:read` | Statement page, newest first → `{entries:[...], nextCursor}`. Opaque base64 `LastEvaluatedKey` cursor; `limit` clamped (default 20, max 100). |
+| `GET` | `/internal/ledger/clearing-balance` | Service `ledger:read` | **The clearing position** (step 52) → `{balance, balanceCents, shardCount, shards:[{accountId, balance, balanceCents, version}], missingAccounts:[]}`. Σ over `SPI_CLEARING` + every `SPI_CLEARING#NN`. Sharding took away the one-item read of "is clearing empty?"; this gives it back, with the per-shard breakdown — a total of `0.00` made of `+5.00` and `-5.00` is a reversal that hit the wrong shard. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
@@ -220,7 +221,9 @@ mechanical rather than a review habit.
 | `JWT_SECRET` / `jwt.secret` | dev-only 32-byte key | HS256 shared secret; must equal auth-service's. This service only **validates** tokens. |
 | `jwt.public-paths` | `/actuator/**` | Paths the shared `JwtAuthFilter` skips. `/internal/**` is **not** here — and since step 68 it requires a **service** token, not just any token (see below). |
 | `jwt.service-name` | `ledger-service` | **This service's workload identity (step 68, ADR-0017)** — the `aud` an inbound service token must be addressed to. |
-| `jwt.internal-routes` | see `application.yml` | The per-route scope map: `POST /internal/ledger/postings` → `ledger:post`, `GET /internal/ledger/accounts/**` → `ledger:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
+| `jwt.internal-routes` | see `application.yml` | The per-route scope map: `POST /internal/ledger/postings` → `ledger:post`, `GET /internal/ledger/accounts/**` and `GET /internal/ledger/clearing-balance` → `ledger:read`. First match wins; a route matching **nothing** is refused (an unscoped internal port is a configuration mistake, and the safe reading of a mistake on a money path is "no"). |
+| `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | Base id of the clearing position. This service never **chooses** a shard (the posting callers do); it enumerates them to sum. |
+| `CLEARING_SHARDS` / `pix.clearing-shards` | `16` | How many `SPI_CLEARING#NN` sub-accounts to sum (step 52). **Must match** the count payment-service and settlement-service assign to and `05-seed-ledger.sh` creates — a disagreement means summing a different set than the platform writes, and `missingAccounts` in the response is what surfaces it. **Raising** the count is safe with payments in flight (the old accounts, including the bare `SPI_CLEARING`, are still summed and still reverse correctly). **Lowering** it is not: money in a shard that stopped being configured keeps reversing correctly but disappears from this sum, and does *not* show up in `missingAccounts` — so drain the clearing position to zero before lowering N. |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge (**S3**, for the cold archive — DynamoDB has its own endpoint below); compose overrides to `http://localstack:4566`. |
 | `AWS_REGION` / `aws.region` | `us-east-1` | SDK region. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | Placeholder credentials, read **only under the `local` profile** (ADR-0013). LocalStack validates no signature and reads the key only to derive the account id — a signing formality, not authentication. |
@@ -281,6 +284,11 @@ curl -s localhost:8085/internal/ledger/accounts/acc-001/balance -H "Authorizatio
 # the system accounts — SEED is negative by construction, and the four balances sum to zero
 curl -s localhost:8085/internal/ledger/accounts/SEED/balance -H "Authorization: Bearer $TOKEN" | jq
 curl -s localhost:8085/internal/ledger/accounts/SPI_CLEARING/balance -H "Authorization: Bearer $TOKEN" | jq
+
+# the LOGICAL clearing position — the sum over every write shard (step 52), with the breakdown.
+# `.balanceCents == 0` with an empty `.missingAccounts` is the healthy platform: nothing in flight,
+# and every configured shard actually exists.
+curl -s localhost:8085/internal/ledger/clearing-balance -H "Authorization: Bearer $TOKEN" | jq
 
 # unknown account ⇒ 404 LEDGER_ACCOUNT_NOT_FOUND (not a zero balance)
 curl -s localhost:8085/internal/ledger/accounts/acc-999/balance -H "Authorization: Bearer $TOKEN" | jq

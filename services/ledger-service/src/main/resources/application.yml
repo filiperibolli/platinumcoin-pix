@@ -53,11 +53,22 @@ jwt:
     - method: GET
       pattern: /internal/ledger/accounts/**
       scope: ledger:read
+    # The clearing position (step 52). Same scope as a balance read, because that is what it is — a
+    # sum of balances. It reads the platform's own money-in-flight figure and moves nothing, so
+    # ledger:post would be over-granting.
+    - method: GET
+      pattern: /internal/ledger/clearing-balance
+      scope: ledger:read
 
 # The statement cold archive (step 43, ARCHITECTURE §6.10). ledger-service owns pix_ledger, so it is the
 # service that archives it: no other service may read the table (ADR-0006), and archiving needs no
 # atomicity that would justify one of that ADR's two documented exceptions.
 pix:
+  # The clearing sub-accounts this service sums for GET /internal/ledger/clearing-balance (step 52).
+  # It never chooses one — payment-service and settlement-service do that when they post — but it must
+  # know the same map they use, or it would sum a different set of accounts than the platform writes.
+  clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  clearing-shards: ${CLEARING_SHARDS:16}
   archive:
     # Derived, rebuildable data — the ledger stays the source of truth — so this bucket is a PLAIN one:
     # no versioning, no Object Lock (step 42, infra/localstack/init/09-audit.sh). Each run rewrites a

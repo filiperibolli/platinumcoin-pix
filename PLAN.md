@@ -219,7 +219,21 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > concurrency — `docs/load/BOTTLENECK.md` RUNG 2, measured before this step asked), so ADR-0009 is
   > amended to say the benchmark has two of its three legs, and ADR-0001 records that nothing here
   > speaks to its availability/elasticity or retention pillars.
-- [ ] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
+- [x] [Step 52](docs/steps/step-52.md) — clearing-account write sharding (N=16) proven with the Black Friday k6 profile (before/after)
+  > **Done 2026-08-28.** **55,729 writes on one item at N=1; 3,770 on the busiest of sixteen at N=16**
+  > (6.4% spread, bare account untouched at `version=0`) — a 14.8x cut in per-item write pressure with
+  > every latency/throughput/error metric inside noise, and Σ = 0 across 224 accounts after 54,573
+  > concurrent external sends. Three corrections the step file did not anticipate, all recorded in it:
+  > the resolver belongs in **common-lib** because ARCHITECTURE §6.3 puts the choice in the *caller*,
+  > not the ledger; **no `clearingShard` index** was added because the full `clearingAccountId` already
+  > persisted survives a change of N while an index does not; and `black-friday.js` ships
+  > `EXTERNAL_SHARE=0`, so run verbatim it never touches clearing and the comparison would have been
+  > vacuous.
+  > **The result worth carrying out of it:** the throughput win is not the point and this host cannot
+  > even show it (DynamoDB Local emulates no partition throttling, and both runs sat on the same ~166
+  > req/s ceiling). The point is a correctness property no benchmark would have caught — a reversal
+  > that re-derives its shard is perfectly balanced, leaves Σ untouched, and still drains the wrong
+  > sub-account. Pinned by `ReversalShardIT`, proven non-vacuous by mutation.
 - [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
 
 ---

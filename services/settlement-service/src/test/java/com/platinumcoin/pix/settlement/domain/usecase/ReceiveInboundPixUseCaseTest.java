@@ -3,6 +3,7 @@ package com.platinumcoin.pix.settlement.domain.usecase;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.settlement.domain.exception.DirectoryUnavailableException;
 import com.platinumcoin.pix.settlement.domain.exception.InboundKeyNotFoundException;
 import com.platinumcoin.pix.settlement.domain.exception.InvalidWebhookTokenException;
@@ -34,6 +35,9 @@ class ReceiveInboundPixUseCaseTest {
     private static final String PAYEE_KEY = "bob@platinum.com";
     private static final String PAYEE_ACCOUNT = "acc-002";
     private static final String CLEARING = "SPI_CLEARING";
+
+    /** One shard ⇒ the bare id, i.e. the pre-step-52 world every other test in this class assumes. */
+    private static final ClearingAccountResolver UNSHARDED = new ClearingAccountResolver(CLEARING, 1);
     private static final long AMOUNT = 30_000L;
     private static final Instant NOW = Instant.parse("2026-08-20T10:30:00Z");
 
@@ -50,8 +54,29 @@ class ReceiveInboundPixUseCaseTest {
         ledger = new FakeLedgerClient(trace);
         transactions = new FakeInboundTransactionStore(trace);
         keys.register(PAYEE_KEY, PAYEE_ACCOUNT);
-        useCase = new ReceiveInboundPixUseCase(keys, ledger, transactions, TOKEN, CLEARING,
+        useCase = new ReceiveInboundPixUseCase(keys, ledger, transactions, TOKEN, UNSHARDED,
                 Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void anInboundCreditIsDebitedFromTheShardItsOwnTxIdResolvesTo() {
+        // Step 52: arrivals hit the SAME hot item outbound sends do, from the other side — every inbound
+        // Pix debits clearing. Sharding only half the traffic would leave the item hot, so the receiving
+        // path resolves a shard too, keyed by its own durable identity (in-<endToEndId>).
+        var sharded = new ReceiveInboundPixUseCase(keys, ledger, transactions, TOKEN,
+                new ClearingAccountResolver(CLEARING, 16), Clock.fixed(NOW, ZoneOffset.UTC));
+        String expected = new ClearingAccountResolver(CLEARING, 16)
+                .shardFor(InboundTransaction.txIdFor(E2E_ID));
+
+        assertThat(sharded.execute(command(), TOKEN)).isEqualTo(ReceiveInboundOutcome.CREDITED);
+
+        assertThat(expected).isNotEqualTo(CLEARING).startsWith(CLEARING + "#");
+        assertThat(ledger.inboundCredits()).singleElement()
+                .satisfies(posting -> assertThat(posting.debitAccount()).isEqualTo(expected));
+        // Recorded on the arrival too, for the same reason the outbound path records it: any later
+        // correction must debit the account that was actually credited, never a re-derived one.
+        assertThat(transactions.recorded()).singleElement()
+                .satisfies(tx -> assertThat(tx.clearingAccountId()).isEqualTo(expected));
     }
 
     @Test
@@ -137,7 +162,7 @@ class ReceiveInboundPixUseCaseTest {
     void refusesEveryCallWhenNoTokenIsConfigured() {
         for (String unconfiguredToken : new String[] {null, "", "   "}) {
             var unconfigured = new ReceiveInboundPixUseCase(keys, ledger, transactions, unconfiguredToken,
-                    CLEARING, Clock.fixed(NOW, ZoneOffset.UTC));
+                    UNSHARDED, Clock.fixed(NOW, ZoneOffset.UTC));
 
             // Including presenting exactly what is configured — a blank secret is not a secret, and
             // "" == "" must not be a way in.

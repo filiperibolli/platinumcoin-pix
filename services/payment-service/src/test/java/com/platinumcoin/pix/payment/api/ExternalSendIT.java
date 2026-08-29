@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.payment.support.PaymentTestSupport;
 import com.platinumcoin.pix.payment.support.StubAccountLimitClient;
@@ -12,7 +13,6 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -71,9 +71,15 @@ class ExternalSendIT extends LocalStackTestBase {
     @Autowired
     StubAccountLimitClient accountLimits;
 
-    /** The configured clearing account (pix.clearing-account-id) — the id the app itself will pass. */
-    @Value("${pix.clearing-account-id}")
-    String clearingAccountId;
+    /**
+     * The clearing shard map the application itself is wired with (step 52). The test never names a
+     * clearing account: which sub-account a send lands in is a property of its {@code txId}, so the
+     * assertions below snapshot ALL of them and prove that exactly one moved — a stronger statement
+     * than the pre-sharding "the clearing balance went up", and one that would fail if the credit and
+     * the persisted {@code clearingAccountId} ever disagreed.
+     */
+    @Autowired
+    ClearingAccountResolver clearing;
 
     @Test
     void externalSendDebitsThePayerCreditsClearingPersistsDebitedAndReplaysIdempotently()
@@ -82,8 +88,8 @@ class ExternalSendIT extends LocalStackTestBase {
         pixKeys.mapExternal(EXTERNAL_KEY, "OTHER_BANK");
         ledger.setBalance(debtor, 1_000_00L);
 
-        long clearingBefore = ledger.balance(clearingAccountId);
-        long systemBefore = ledger.balance(debtor) + clearingBefore;
+        Map<String, Long> clearingBefore = clearingSnapshot();
+        long systemBefore = ledger.balance(debtor) + sum(clearingBefore);
 
         String key = UUID.randomUUID().toString();
         var first = send(debtor, key, EXTERNAL_KEY, "200.00")
@@ -92,12 +98,17 @@ class ExternalSendIT extends LocalStackTestBase {
                 .andReturn();
         String txId = JSON.readTree(first.getResponse().getContentAsString()).get("transactionId").asText();
 
-        // Both legs moved: the payer is down exactly the amount and the clearing account is up exactly
+        // Both legs moved: the payer is down exactly the amount and the clearing POSITION is up exactly
         // the amount — one balanced posting, no money created or destroyed.
         assertThat(ledger.balance(debtor)).isEqualTo(1_000_00L - 20_000L);
-        assertThat(ledger.balance(clearingAccountId)).isEqualTo(clearingBefore + 20_000L);
+        Map<String, Long> clearingAfter = clearingSnapshot();
+        assertThat(sum(clearingAfter) - sum(clearingBefore)).isEqualTo(20_000L);
+        // …and it is up on exactly ONE shard, which is the one the txId resolves to. Money spread over
+        // two sub-accounts would sum identically and be a bug (step 52).
+        assertThat(movedShards(clearingBefore, clearingAfter))
+                .containsExactly(clearing.shardFor(txId));
         // Conservation: Σ over the accounts this send touched is exactly what it was before.
-        assertThat(ledger.balance(debtor) + ledger.balance(clearingAccountId)).isEqualTo(systemBefore);
+        assertThat(ledger.balance(debtor) + sum(clearingAfter)).isEqualTo(systemBefore);
 
         // Persisted mid-flight: DEBITED, no settledAt, no internal creditor, flagged not-internal.
         Map<String, AttributeValue> item = getMeta(txId);
@@ -105,9 +116,13 @@ class ExternalSendIT extends LocalStackTestBase {
         assertThat(item).doesNotContainKey("settledAt");
         assertThat(item).doesNotContainKey("creditorAccountId");
         assertThat(item.get("creditorInternal").bool()).isFalse();
-        // Step 33, task 4: the exact clearing account the debit credited is persisted, so a later
-        // reversal debits the same account (the same shard, once step 52 shards it).
-        assertThat(item.get("clearingAccountId").s()).isEqualTo(clearingAccountId);
+        // Step 33, task 4 + step 52: the exact clearing SHARD the debit credited is persisted, so a
+        // later reversal debits the same sub-account instead of re-deriving one. This is the assertion
+        // that ties the recorded id to the money that actually moved above.
+        assertThat(item.get("clearingAccountId").s()).isEqualTo(clearing.shardFor(txId));
+        assertThat(item.get("clearingAccountId").s())
+                .as("the platform is genuinely sharded here, not falling back to the base account")
+                .isNotEqualTo("SPI_CLEARING");
         assertThat(item.get("creditorKey").s()).isEqualTo(EXTERNAL_KEY);
         assertThat(item.get("direction").s()).isEqualTo("OUTBOUND");
         assertThat(item.get("debtorAccountId").s()).isEqualTo(debtor);
@@ -125,7 +140,7 @@ class ExternalSendIT extends LocalStackTestBase {
         assertThat(JSON.readTree(retry.getResponse().getContentAsString()).get("transactionId").asText())
                 .isEqualTo(txId);
         assertThat(ledger.balance(debtor)).isEqualTo(1_000_00L - 20_000L);
-        assertThat(ledger.balance(clearingAccountId)).isEqualTo(clearingBefore + 20_000L);
+        assertThat(sum(clearingSnapshot()) - sum(clearingBefore)).isEqualTo(20_000L);
         assertThat(countTransactions(debtor)).isEqualTo(1);
     }
 
@@ -157,14 +172,14 @@ class ExternalSendIT extends LocalStackTestBase {
         accountLimits.setLimit(debtor, 1_000_00L);
         ledger.setBalance(debtor, 100_00L);
 
-        long clearingBefore = ledger.balance(clearingAccountId);
+        Map<String, Long> clearingBefore = clearingSnapshot();
 
         send(debtor, UUID.randomUUID().toString(), EXTERNAL_KEY, "200.00")
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.code").value("INSUFFICIENT_FUNDS"));
 
         // No money parked in clearing, no transaction, and the day's counter is back where it started.
-        assertThat(ledger.balance(clearingAccountId)).isEqualTo(clearingBefore);
+        assertThat(sum(clearingSnapshot())).isEqualTo(sum(clearingBefore));
         assertThat(ledger.balance(debtor)).isEqualTo(100_00L);
         assertThat(countTransactions(debtor)).isZero();
         assertThat(usedCents(debtor)).isZero();
@@ -211,5 +226,28 @@ class ExternalSendIT extends LocalStackTestBase {
                                 ":d", AttributeValue.fromS(account),
                                 ":m", AttributeValue.fromS("META"))))
                 .items().size();
+    }
+
+    // ── clearing-shard helpers (step 52) ─────────────────────────────────────────────────────────
+
+    /** Every clearing account's balance right now, keyed by account id. */
+    private Map<String, Long> clearingSnapshot() {
+        Map<String, Long> snapshot = new java.util.LinkedHashMap<>();
+        for (String accountId : clearing.clearingAccounts()) {
+            snapshot.put(accountId, ledger.balance(accountId));
+        }
+        return snapshot;
+    }
+
+    private static long sum(Map<String, Long> snapshot) {
+        return snapshot.values().stream().mapToLong(Long::longValue).sum();
+    }
+
+    /** The clearing accounts whose balance changed between two snapshots. */
+    private static java.util.List<String> movedShards(Map<String, Long> before, Map<String, Long> after) {
+        return after.entrySet().stream()
+                .filter(entry -> !entry.getValue().equals(before.get(entry.getKey())))
+                .map(Map.Entry::getKey)
+                .toList();
     }
 }

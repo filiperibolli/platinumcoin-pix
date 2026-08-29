@@ -11,6 +11,66 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Clearing-account write sharding (N configurable) with reversal-shard pinning, proven under the Black Friday k6 profile (step 52) · 2026-08-28
+  - **The hot item, measured before it was fixed.** Every external send credits `ACCOUNT#SPI_CLEARING`
+    and every arrival debits it, so at peak one DynamoDB item takes every write — and a partition caps
+    at 1,000 WCU/s while a transactional write costs 2x, ceilinging that item near ~500 transactional
+    updates/s. A Black Friday run drove **55,729 writes onto that single item**. The same run with
+    `CLEARING_SHARDS=16` put **3,770 on the busiest of sixteen** (total 57,974, 6.4% spread) and left
+    the bare account at `version=0`: a **14.8x** reduction in per-item write pressure, with every
+    latency, throughput and error metric inside run-to-run noise. `docs/sharding-findings.md`.
+  - **`ClearingAccountResolver` lives in common-lib, not in the ledger** — the step file said
+    ledger-service and ARCHITECTURE §6.3 said the opposite, and §6.3 won: *"introducing shards changes
+    only which clearing id the **caller** passes"*. So payment-service resolves on an outbound debit,
+    settlement-service on an inbound credit (arrivals hit the same item from the other side — sharding
+    half the traffic would have left it hot), and ledger-service uses the same class only to
+    *enumerate* what it sums. One definition of `CRC32(txId) % N`; two would be how money lands in a
+    sub-account nobody compensates. The posting contract, its guards and every Sprint 4 code path are
+    untouched — the isolation step 14 designed for, cashed in.
+  - **The sharp edge, and why no benchmark would have caught it.** A reversal that re-derived the shard
+    instead of reading the one recorded at debit time is *perfectly balanced*: the payer gets their
+    money, Σ over all accounts is unchanged, nothing goes negative, no alert fires. It just drains a
+    sub-account that never held this payment and leaves the one that did carrying it forever.
+    `ReversalShardIT` pins a transaction to `#03` while its txId hashes to `#08`, so a re-deriving
+    implementation cannot pass by coincidence — and the test is proven non-vacuous by mutation: making
+    the finalizer re-derive turns it red with *"the shard the debit credited is emptied by its own
+    reversal — expected 0, but was 20000"*. **No `clearingShard` index field was added** (the step asked
+    for one): `clearingAccountId` already holds the full id, and a full id survives a change of N while
+    an index of `7` does not. That is what makes `CLEARING_SHARDS` a capacity knob and not a
+    correctness-critical constant.
+  - **Global conservation stopped being sufficient, so the suite got stronger.**
+    `ClearingShardInvariantsIT` storms sends with reversals mixed in and asserts each shard holds
+    *exactly* the money posted into it, its own entry history agreeing, before falling back on Σ as the
+    weaker cross-check. The live run backs it: **Σ balanceCents = 0 across 224 accounts** after 54,573
+    concurrent external sends.
+  - **What the local emulator cannot show, said out loud.** DynamoDB Local implements no partition
+    throttling at all — both runs recorded zero throttle events, and reporting that as a win would be
+    reporting the emulator's silence as the platform's health. It also cannot reach 500 TPS: both runs
+    sat exactly on this host's ~166 req/s ceiling (dynamodb-local's own write serialization,
+    `docs/load/BOTTLENECK.md`), which means the clearing item was never the constraint here and no
+    amount of load would have made it one. The AWS-side claim is argued from the documented limit and
+    evidenced by the write-concentration number; it is explicitly **not** measured.
+  - **The profile had to be corrected to measure anything.** `black-friday.js` ships with
+    `EXTERNAL_SHARE=0` (deliberately — step 47 measures the synchronous acknowledgement), so run
+    verbatim it never touches the clearing account and the N=1 vs N=16 comparison would have compared
+    two runs writing zero clearing postings. Both runs use `EXTERNAL_SHARE=1.0`; the numbers are
+    comparable to each other, not to `load/RESULTS.md`.
+  - **`GET /internal/ledger/clearing-balance`** (scoped `ledger:read`) gives back the one-item read that
+    sharding took away — total, per-shard breakdown and `missingAccounts`. The breakdown is the point:
+    a total of `0.00` made of `+5.00` and `-5.00` is a reversal that hit the wrong shard, invisible in
+    the sum. **Known limitation, documented rather than hidden:** the sum enumerates the *configured*
+    accounts, so raising N is safe with payments in flight but lowering it hides money in shards that
+    stopped being configured (it still reverses correctly) — drain first. The offline verifiers
+    (`scripts/e2e-journey.sh`, `tools/k6/run-s5.sh`) use a prefix scan instead, so a verification script
+    does not share a blind spot with what it verifies.
+  - **Two things broke honestly and were fixed in the same change**, both for the same reason — money
+    stopped being where the old code looked for it: `scripts/e2e-journey.sh` and `tools/k6/run-s5.sh`
+    read the bare `SPI_CLEARING`, and `ExternalSendIT`/`InboundPixIT` asserted against it. The ITs now
+    assert the *position* moved and that exactly ONE shard took it, which is strictly stronger than
+    what they asserted before. `05-seed-ledger.sh` creates the shards at 0 (the credit leg is
+    conditioned on `attribute_exists(pk)`, so a missing shard is a refused payment, not a silent zero)
+    and Σ stays 0 for any N.
+  AI: est 5h / actual 3h36m / ~90% generated / 0 issues caught in human review
 - Postgres ledger invariant parity + EXPLAIN/index/deadlock study + contention benchmark vs DynamoDB (step 51) · 2026-08-28
   - **Parity first, because a benchmark of an incorrect implementation compares nothing.** The step-15
     invariant storm now runs against both Postgres strategies (`PostgresLedgerInvariantsIT`, one suite

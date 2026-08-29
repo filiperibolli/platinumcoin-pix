@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.settlement.infra.config;
 
 import com.platinumcoin.pix.common.metrics.PixMetrics;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.settlement.domain.model.AlertRule;
 import com.platinumcoin.pix.settlement.domain.model.AlertRule.Comparison;
 import com.platinumcoin.pix.settlement.domain.port.AuditTrail;
@@ -94,21 +95,33 @@ public class SettlementBeansConfig {
      *
      * <p>Two values are injected rather than hard-coded, for different reasons. The <b>webhook token</b>
      * is a secret shared with mock-bacen and must be settable per environment — and it is handed in as a
-     * plain {@code String} so the domain never learns where it came from. The <b>clearing account</b> is
-     * the same {@code SPI_CLEARING} payment-service parks outbound money in ({@code pix.clearing-account-id},
-     * step 27): both directions must name the identical account or the clearing balance stops netting,
-     * and step 52 shards that id, which is precisely why it is configuration in both services.
+     * plain {@code String} so the domain never learns where it came from. The <b>clearing resolver</b>
+     * must be built from the same base id and the same shard count payment-service uses
+     * ({@code pix.clearing-account-id} + {@code pix.clearing-shards}, step 52): both directions post
+     * against the clearing position, and two services disagreeing about how many shards exist would
+     * park money in an account the other never sums.
      */
+    /**
+     * The clearing sub-account map (step 52). Built from the same two values payment-service builds its
+     * own from; {@code CLEARING_SHARDS} is set once in docker-compose so the whole stack agrees.
+     */
+    @Bean
+    ClearingAccountResolver clearingAccountResolver(
+            @Value("${pix.clearing-account-id}") String clearingAccountId,
+            @Value("${pix.clearing-shards:16}") int clearingShards) {
+        return new ClearingAccountResolver(clearingAccountId, clearingShards);
+    }
+
     @Bean
     ReceiveInboundPixUseCase receiveInboundPixUseCase(
             PixKeyResolver keys,
             LedgerClient ledger,
             InboundTransactionStore inboundTransactions,
             @Value("${pix.inbound.webhook-token:}") String webhookToken,
-            @Value("${pix.clearing-account-id}") String clearingAccountId,
+            ClearingAccountResolver clearing,
             Clock clock) {
         return new ReceiveInboundPixUseCase(
-                keys, ledger, inboundTransactions, webhookToken, clearingAccountId, clock);
+                keys, ledger, inboundTransactions, webhookToken, clearing, clock);
     }
 
     /**
