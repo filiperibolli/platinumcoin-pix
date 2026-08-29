@@ -300,6 +300,14 @@ services:
       # service to ledger-speed balance reads (every read is a miss), never to errors.
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # ── Cold statement export (step 53) ──────────────────────────────────────────────────────
+      # The archive bucket is ledger-service's OUTPUT and payment-service's INPUT, so the two blocks
+      # must name the same bucket; it is written here explicitly rather than left to the default for
+      # exactly that reason — a mismatch would produce empty exports and no error anywhere.
+      STATEMENT_ARCHIVE_BUCKET: pix-statement-archive
+      STATEMENT_EXPORT_BUCKET: pix-statement-exports
+      STATEMENT_EXPORT_QUEUE: statement-export-queue
+      STATEMENT_EXPORT_DLQ: statement-export-queue-dlq
     depends_on:
       localstack:
         condition: service_healthy

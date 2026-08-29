@@ -39,6 +39,53 @@
       "Resource": [
         "arn:aws:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:pix-events"
       ]
+    },
+    {
+      "Sid": "ConsumeItsOwnStatementExportQueue",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": [
+        "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:statement-export-queue",
+        "arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:statement-export-queue-dlq"
+      ]
+    },
+    {
+      "Sid": "ReadTheColdArchiveAndWriteItsOwnExports",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pix-statement-archive/*"
+      ]
+    },
+    {
+      "Sid": "OwnTheExportArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pix-statement-exports/*"
+      ]
+    },
+    {
+      "Sid": "DedupeItsOwnQueueConsumption",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/pix_processed_events"
+      ]
     }
   ]
 }

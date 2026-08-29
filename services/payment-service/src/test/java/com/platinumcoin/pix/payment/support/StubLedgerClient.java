@@ -40,6 +40,9 @@ public class StubLedgerClient implements LedgerClient {
     /** Opening balance of an unseeded account — large enough that ordinary sends never overdraw. */
     public static final long DEFAULT_BALANCE_CENTS = 1_000_000_000L;
 
+    /** The platform's configured default (ledger-service {@code pix.archive.hot-window-days}). */
+    private volatile long hotWindowDays = 90L;
+
     private final Map<String, Long> balances = new ConcurrentHashMap<>();
     private final Set<String> postedTxIds = ConcurrentHashMap.newKeySet();
     private final Set<String> unknownAccounts = ConcurrentHashMap.newKeySet();
@@ -217,5 +220,22 @@ public class StubLedgerClient implements LedgerClient {
     /** The account's current balance in the in-memory ledger (cents). */
     public long balance(String accountId) {
         return balances.getOrDefault(accountId, 0L);
+    }
+
+    /**
+     * The hot/cold boundary (step 53), standing in for ledger-service's
+     * {@code GET /internal/ledger/statement-window}. Defaults to the platform's configured 90-day
+     * window, so an IT that computes month ranges relative to today gets the same answer the deployed
+     * stack would give it.
+     */
+    @Override
+    public com.platinumcoin.pix.payment.domain.model.StatementWindow statementWindow() {
+        return new com.platinumcoin.pix.payment.domain.model.StatementWindow(
+                hotWindowDays, java.time.Instant.now().minus(java.time.Duration.ofDays(hotWindowDays)));
+    }
+
+    /** Move the boundary, for a test that drills the hot/cold edge. */
+    public void setHotWindowDays(long days) {
+        this.hotWindowDays = days;
     }
 }

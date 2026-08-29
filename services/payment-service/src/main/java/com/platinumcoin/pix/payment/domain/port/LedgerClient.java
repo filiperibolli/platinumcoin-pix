@@ -6,6 +6,7 @@ import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorExcep
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
+import com.platinumcoin.pix.payment.domain.model.StatementWindow;
 
 /**
  * Outbound port for the ledger seam — ledger-service is the platform's only writer <i>and</i> the only
@@ -120,4 +121,19 @@ public interface LedgerClient {
      *                                          unexpectedly
      */
     StatementPage readStatement(String accountId, String cursor, int limit);
+
+    /**
+     * Where the online statement ends and the cold archive begins (step 53).
+     *
+     * <p><b>Asked, not configured.</b> The hot window is ledger-service's property — it owns the table,
+     * it runs the archiving job, and it is the only place the dial can be turned honestly. Giving
+     * payment-service the same environment variable would put one policy constant in two services, and
+     * the two would drift apart the day someone changed it on one side; see {@link StatementWindow} for
+     * the full argument and what it costs.
+     *
+     * @throws LedgerUnavailableException the ledger was unreachable, timed out, or answered
+     *                                    unexpectedly — an export cannot be judged hot or cold without
+     *                                    this answer, so the request is refused rather than guessed
+     */
+    StatementWindow statementWindow();
 }

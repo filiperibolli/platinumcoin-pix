@@ -234,7 +234,28 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > req/s ceiling). The point is a correctness property no benchmark would have caught — a reversal
   > that re-derives its shard is perfectly balanced, leaves Σ untouched, and still drains the wrong
   > sub-account. Pinned by `ReversalShardIT`, proven non-vacuous by mutation.
-- [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
+- [x] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
+  > **Done 2026-08-29.** Three spec corrections are recorded rather than worked around: the download URL
+  > is signed **per read** instead of at completion (a link minted when the worker finishes starts
+  > expiring while the customer is still being told the file is ready, and an export whose only handle
+  > expired is permanently undownloadable); the hot-window boundary is **asked of ledger-service** over a
+  > new `GET /internal/ledger/statement-window` instead of being configured twice; and the step's own
+  > verify block names months this sandbox has never archived, so `docs/local-dev.md` §5.8.1 computes
+  > them instead.
+  > **What the build caught that no isolated test could — the result worth carrying out of this step.**
+  > Four defects survived a green module and a green test class and died only to the *full reactor*
+  > `mvn verify`. (1) The outbox publisher rebuilt an item's key as `"TX#" + <stripped id>`, an unstated
+  > assumption that every outbox item belongs to a transaction; `EXPORT#` items broke it silently, so
+  > the mark-published update hit a key nothing lives under and **the event never left the sparse index
+  > — republished on every tick, for ever**. The writer had been duplicated and the reader shared, and
+  > the duplication even carried a javadoc defending itself. (2) Resolving the SQS queue URL in a bean
+  > constructor made an unreachable *reporting* queue a startup failure for the service that runs
+  > `POST /v1/payments/pix` — and destroyed a property `ApplicationContextIT`'s own javadoc had written
+  > down. (3) `/money-safety-review` found the worker buffering an unbounded range in the JVM that
+  > serves the money path. (4) The worker IT assumed a shared outbox lane was its own; 2024 `PixSettled`
+  > items left by sibling ITs meant its event was never reached.
+  > **The lesson, stated plainly:** a green module proves less than it looks like it does. Every one of
+  > these needed the whole suite, sharing one LocalStack and one set of tables, to become visible.
 
 ---
 

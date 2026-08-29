@@ -7,6 +7,14 @@ import java.util.Objects;
 /**
  * An outbox event as it sits in the store, waiting to be published (step 29, ADR-0004).
  *
+ * <p><b>Why it carries the whole partition key and not just an id.</b> It used to carry a bare
+ * {@code txId}, and the adapter recovered the item's key by stripping {@code "TX#"} on the way out and
+ * putting it back on the way in. That was an unstated assumption — <i>every outbox item lives under a
+ * transaction</i> — and step 53 broke it by adding {@code EXPORT#} items: the reconstruction produced a
+ * key nothing lives under, the "mark published" update hit its {@code attribute_exists} guard, and the
+ * event stayed in the sparse index for ever, republished on every tick. Carrying the key verbatim
+ * removes the assumption rather than adding a second prefix to remember.
+ *
  * <p><b>Why this is not {@code common.event.OutboxEvent}.</b> That record is the <i>producer's</i>
  * shape: business facts as a live {@code Map}, about to be written. This one is the <i>publisher's</i>
  * shape: the same event read back, with its payload already serialized and stored as an opaque JSON
@@ -14,8 +22,10 @@ import java.util.Objects;
  * copies the stored bytes into the envelope verbatim. A new event type therefore needs no change here,
  * and no round-trip through a parser can alter what a consumer sees.
  *
- * @param txId          the transaction this event belongs to; with {@code eventId} it forms the item's
- *                      key ({@code TX#<txId>} / {@code OUTBOX#<eventId>}), which is how the publisher
+ * @param partitionKey  the <b>whole</b> partition key of the item this event lives in — {@code
+ *                      TX#<txId>} for a payment, {@code EXPORT#<exportId>} for a statement export
+ *                      (step 53). With {@code eventId} it forms the item's key, which is how the
+ *                      publisher
  *                      marks it published without a second lookup
  * @param eventId       the de-duplication key every consumer keys on (Domain Safety Rule #2)
  * @param eventType     the routing key SNS filter policies match on ({@code PixDebited}, …)
@@ -39,7 +49,7 @@ import java.util.Objects;
  *                      nobody polls.
  */
 public record PendingOutboxEvent(
-        String txId,
+        String partitionKey,
         String eventId,
         String eventType,
         String payloadJson,
@@ -49,7 +59,7 @@ public record PendingOutboxEvent(
         OutboxLane lane) {
 
     public PendingOutboxEvent {
-        requireText(txId, "txId");
+        requireText(partitionKey, "partitionKey");
         requireText(eventId, "eventId");
         requireText(eventType, "eventType");
         requireText(payloadJson, "payloadJson");

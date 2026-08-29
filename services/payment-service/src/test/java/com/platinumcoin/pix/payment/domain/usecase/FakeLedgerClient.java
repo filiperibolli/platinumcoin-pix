@@ -41,6 +41,10 @@ final class FakeLedgerClient implements LedgerClient {
     private boolean timeoutAfterRecording;
     private int balanceReads;
 
+    private com.platinumcoin.pix.payment.domain.model.StatementWindow statementWindow =
+            new com.platinumcoin.pix.payment.domain.model.StatementWindow(
+                    90L, java.time.Instant.now().minus(java.time.Duration.ofDays(90)));
+
     private String lastStatementAccountId;
     private String lastStatementCursor;
     private int lastStatementLimit;
@@ -195,5 +199,18 @@ final class FakeLedgerClient implements LedgerClient {
             throw new AssertionError("expected exactly one posting, got " + postings.size());
         }
         return postings.get(0);
+    }
+
+    /**
+     * The hot/cold boundary (step 53). Defaults to the platform's configured 90-day window so a test
+     * that does not care reads like production; a test about the boundary pins it.
+     */
+    @Override
+    public com.platinumcoin.pix.payment.domain.model.StatementWindow statementWindow() {
+        return statementWindow;
+    }
+
+    void setStatementWindow(com.platinumcoin.pix.payment.domain.model.StatementWindow window) {
+        this.statementWindow = window;
     }
 }

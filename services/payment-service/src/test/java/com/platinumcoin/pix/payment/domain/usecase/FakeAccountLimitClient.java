@@ -11,6 +11,8 @@ final class FakeAccountLimitClient implements AccountLimitClient {
 
     private long dailyLimitCents = 1_000_000_000L;
 
+    private java.time.Instant openedAt = java.time.Instant.parse("2000-01-01T00:00:00Z");
+
     @Override
     public long dailyLimitCents(String accountId) {
         return dailyLimitCents;
@@ -18,5 +20,15 @@ final class FakeAccountLimitClient implements AccountLimitClient {
 
     void setDailyLimitCents(long dailyLimitCents) {
         this.dailyLimitCents = dailyLimitCents;
+    }
+
+    /** When the account was opened (step 53). Long ago by default, so no range is refused by accident. */
+    @Override
+    public java.time.Instant openedAt(String accountId) {
+        return openedAt;
+    }
+
+    void setOpenedAt(java.time.Instant openedAt) {
+        this.openedAt = openedAt;
     }
 }

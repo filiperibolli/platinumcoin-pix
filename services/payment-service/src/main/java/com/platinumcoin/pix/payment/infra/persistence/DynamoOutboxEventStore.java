@@ -49,7 +49,6 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
 
     private static final String TABLE = "pix_transactions";
     private static final String INDEX = "gsi3";
-    private static final String TX_PREFIX = "TX#";
     private static final String OUTBOX_SK_PREFIX = "OUTBOX#";
 
     private final DynamoDbClient dynamo;
@@ -88,8 +87,12 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
 
     @Override
     public void markPublished(PendingOutboxEvent event) {
+        // The key VERBATIM as the index gave it to us. It used to be rebuilt as TX# + a stripped id,
+        // which quietly assumed every outbox item belongs to a transaction — false since step 53's
+        // EXPORT# items, and the failure was silent: a key nothing lives under, a guard that refuses,
+        // and an event that never leaves the sparse index.
         Map<String, AttributeValue> key = Map.of(
-                "pk", AttributeValue.fromS(TX_PREFIX + event.txId()),
+                "pk", AttributeValue.fromS(event.partitionKey()),
                 "sk", AttributeValue.fromS(OUTBOX_SK_PREFIX + event.eventId()));
 
         log.debug("DynamoDB UpdateItem removing the sparse-index key to mark an event published | "
@@ -115,8 +118,8 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
         }
 
         log.info("Outbox item marked published, it left the sparse index and stays in its "
-                        + "transaction's partition for audit | lane={} eventId={} eventType={} txId={}",
-                event.lane(), event.eventId(), event.eventType(), event.txId());
+                        + "resource's partition for audit | lane={} eventId={} eventType={} pk={}",
+                event.lane(), event.eventId(), event.eventType(), event.partitionKey());
     }
 
     /**
@@ -125,11 +128,11 @@ public class DynamoOutboxEventStore implements OutboxEventStore {
      * event type needs no change here.
      */
     private static PendingOutboxEvent toPendingEvent(Map<String, AttributeValue> item) {
-        // The item has no txId attribute of its own: it is the partition it lives in, which is exactly
-        // what makes it a sibling of the transaction it announces.
-        String txId = item.get("pk").s().substring(TX_PREFIX.length());
+        // The partition key is read whole and never parsed: the item is a sibling of whatever resource
+        // it announces (a transaction, or a statement export since step 53), and the publisher has no
+        // business knowing which.
         return new PendingOutboxEvent(
-                txId,
+                item.get("pk").s(),
                 item.get("eventId").s(),
                 item.get("eventType").s(),
                 item.get("payload").s(),

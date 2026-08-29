@@ -5,6 +5,8 @@ import com.platinumcoin.pix.common.security.OnBehalfOf;
 import com.platinumcoin.pix.common.security.ServiceTokenIssuer;
 import com.platinumcoin.pix.payment.domain.exception.AccountLookupException;
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,8 +39,13 @@ public class HttpAccountLimitClient implements AccountLimitClient {
     private final RestClient restClient;
     private final ServiceTokenIssuer serviceTokens;
 
-    /** Service-to-service view of an account; only {@code dailyLimitCents} is needed here. */
-    record AccountView(long dailyLimitCents) {
+    /**
+     * Service-to-service view of an account: the two facts payment-service reads server-side — the
+     * daily limit that sizes a reservation, and (step 53) the opening date that bounds an export range.
+     * Everything else account-service returns is deliberately left unbound, so this adapter cannot grow
+     * a dependency on a field it does not use.
+     */
+    record AccountView(long dailyLimitCents, String createdAt) {
     }
 
     public HttpAccountLimitClient(
@@ -70,6 +77,49 @@ public class HttpAccountLimitClient implements AccountLimitClient {
             // Not found, unauthorized, or unreachable — a send cannot proceed without a known limit.
             throw new AccountLookupException(
                     "failed to read dailyLimitCents from account-service for account " + accountId, e);
+        }
+    }
+
+    @Override
+    public Instant openedAt(String accountId) {
+        log.debug("Reading createdAt from account-service | accountId={}", accountId);
+        AccountView view = fetch(accountId);
+        if (view.createdAt() == null) {
+            // A missing opening date is not something to guess around: guessing "long ago" would let an
+            // export reach back into months the account cannot have, and guessing "today" would refuse
+            // every export. Either way the platform would be inventing a fact about a customer.
+            throw new AccountLookupException(
+                    "account-service returned no createdAt for account " + accountId, null);
+        }
+        try {
+            Instant openedAt = Instant.parse(view.createdAt());
+            log.info("Read the account's opening date from account-service, it bounds how far back an "
+                    + "export may reach | accountId={} openedAt={}", accountId, openedAt);
+            return openedAt;
+        } catch (DateTimeParseException e) {
+            throw new AccountLookupException(
+                    "account-service returned an unparseable createdAt for account " + accountId
+                            + ": " + view.createdAt(), e);
+        }
+    }
+
+    /** The one GET both reads share — same endpoint, same scope, same failure translation. */
+    private AccountView fetch(String accountId) {
+        try {
+            AccountView view = restClient.get()
+                    .uri("/internal/accounts/{id}", accountId)
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_ACCOUNT,
+                            InternalApi.SCOPE_ACCOUNTS_READ))
+                    .retrieve()
+                    .body(AccountView.class);
+            if (view == null) {
+                throw new AccountLookupException(
+                        "account-service returned an empty body for account " + accountId, null);
+            }
+            return view;
+        } catch (RestClientException e) {
+            throw new AccountLookupException(
+                    "failed to read account " + accountId + " from account-service", e);
         }
     }
 }

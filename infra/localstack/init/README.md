@@ -76,11 +76,9 @@ executable `*.sh` in this directory in lexical order, so numeric prefixes
   `s3:BypassGovernanceRetention`, i.e. the privileged operator an audit trail exists
   to keep honest; and **`pix-statement-archive`**, a deliberately *plain* bucket (no
   versioning, no lock) because it holds derived, rebuildable data that step 43
-  rewrites monthly. Its final log line (`[init] audit storage ready: …`) is the
-  readiness marker the Testcontainers harness (`LocalStackTestBase`) waits on, and
-  the compose healthcheck probe asserts the last resource it creates
-  (`s3api head-bucket --bucket pix-statement-archive`) — **it is the last script, so
-  if you append one that sorts after it, move both markers.** Asserted by
+  rewrites monthly. It **used** to be the last script, and therefore carried the
+  readiness marker; step 53 appended `10-statement-exports.sh` and moved both markers
+  there. Asserted by
   `MessagingInitIT` (the unfiltered third branch) and `S3InitIT` (both buckets,
   versioning, lock configuration, and the refused delete).
   **LocalStack vs AWS:** LocalStack 3 does more than accept the Object Lock
@@ -115,3 +113,25 @@ at a time). The exact `create-table` commands are mirrored in `docs/local-dev.md
   entry that enables it — and as the matching `withServices(...)` in
   `LocalStackTestBase`, or every integration test in the repo hangs on the readiness
   wait while the script dies under `set -e`.
+
+
+- **`10-statement-exports.sh`** (step 53) — the **fourth** consumer off `pix-events`,
+  and the first one that is payment-service consuming its own publication.
+  `statement-export-queue` + `statement-export-queue-dlq`, filtered to the single
+  event type `StatementExportRequested` so a payment event never wakes the export
+  worker, plus the plain bucket **`pix-statement-exports`**. Two numbers in it are
+  deliberate and related: the queue's `VisibilityTimeout` is **120s**, four times the
+  other queues', because assembling an export is the one legitimately slow piece of
+  work in the platform (up to 24 archive objects read, merged and uploaded) and a 30s
+  timeout would hand the same message to a second worker mid-run — safe, but wasteful
+  and it would burn the attempt budget on deliveries that never failed. And
+  `maxReceiveCount` is **5** while the worker gives up at **3**, so an ordinary
+  failing export becomes a `FAILED` export the customer can read and *never* reaches
+  the DLQ; what lands there is only what the worker could not parse or resolve, which
+  is what makes `pix_statement_export_dlq_depth_messages > 0` a defect signal worth
+  alerting on. **This is now the last script**, so its final log line
+  (`[init] statement export ready: …`) is the readiness marker `LocalStackTestBase`
+  waits on and the compose healthcheck probes its bucket
+  (`s3api head-bucket --bucket pix-statement-exports`) — **append one that sorts after
+  it and you must move both, or every integration test in the repo hangs for two
+  minutes and fails with a startup timeout that says nothing about why.**

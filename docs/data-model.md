@@ -509,19 +509,26 @@ Publishing = `UpdateItem REMOVE gsi3pk` after the SNS publish (publish-then-mark
 
 ```json
 {
-  "pk": "EXPORT#exp-4c2a",
+  "pk": "EXPORT#exp-4c2a9f61b0d84e7a9c13f8ab27d5e604",
   "sk": "META",
   "gsi1pk": "ACCOUNT#acc-001",
-  "exportId": "exp-4c2a",
+  "exportId": "exp-4c2a9f61b0d84e7a9c13f8ab27d5e604",
   "accountId": "acc-001",
   "status": "PENDING",
   "fromMonth": "2025-01", "toMonth": "2025-03",
-  "downloadKey": null,
+  "requestHash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "requestedAt": "2026-07-07T12:00:00Z"
 }
 ```
 
-Lifecycle `PENDING → READY | FAILED` via guarded transitions (a redelivered queue message cannot double-produce artifacts); see step 53.
+- **`pk` is derived, and that is the idempotency mechanism.** `exportId = "exp-" + SHA-256(accountId + " " + idempotencyKey)` truncated to 32 hex chars, so a retry computes the same id and the item's `attribute_not_exists(pk)` guard **is** the claim. There is no companion record in `pix_idempotency`: that store is shaped around money operations (ADR-0014 writes `txId`/`endToEndId` on the claim and forbids a re-claim from touching them), and an export has neither — borrowing it would mean writing a placeholder into the one field the ADR exists to protect. Hashing the account in is what keeps two customers' identical keys two different exports (ADR-0002: a key is unique only *within* an account).
+- **`requestHash`** fingerprints the requested range, and is what separates the two things a collision can mean: same key + same range is a retry and replays the original `202`; same key + a *different* range is a client bug and gets `409 IDEMPOTENCY_KEY_REUSED`. The id alone cannot tell them apart, because it does not remember what was asked for.
+- **`downloadKey`** (absent until `READY`) is the artifact's S3 **object key**, never a URL. A stored presigned URL would expire and leave an export permanently undownloadable; the link is signed per read instead.
+- **`completedAt`** and **`failureReason`** are written by the terminal transition only.
+- **`gsi1pk` is written but nothing queries it yet.** Step 53 ships a create and a read-by-id; a "list my exports" endpoint would use it. It is written *now* because a GSI only holds items that carry its key attributes at write time — adding it later would leave every export created before that day invisible to the index, and backfilling a GSI key means rewriting history.
+- **No TTL.** Only `LIMIT#` items carry `expiresAt`, so export items are never reaped. A real deployment expires the S3 *artifacts* on a ~30-day lifecycle rule (an export is a convenience copy, not audit-grade storage) while keeping the request items, so a customer polling an old id learns their file has aged out rather than that their request never existed. LocalStack accepts the lifecycle API but never runs the expiration, so it is documented rather than configured (`infra/localstack/init/10-statement-exports.sh`).
+
+Lifecycle `PENDING → READY | FAILED` via guarded transitions (`ConditionExpression: #status = PENDING`), which is what makes a redelivered queue message unable to double-produce artifacts or record a second completion; see step 53.
 
 Status transitions are guarded updates (`ConditionExpression: #status = :expectedFrom`) so out-of-order consumers cannot regress a `SETTLED` transaction back to `SENT_TO_SPI`.
 

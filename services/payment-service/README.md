@@ -46,6 +46,8 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | `POST` | `/v1/payments/pix` | Bearer | Accept a send-Pix → `202` + `Location: /v1/payments/{txId}` + `{transactionId, endToEndId, status:"PROCESSING"}`. An internal send resolves the key, moves money atomically and persists `SETTLED` (step 21); an external one debits the payer into `SPI_CLEARING` and persists `DEBITED`, awaiting settlement (step 27). The wire `status` is `PROCESSING` either way — the honest state is served by `GET /payments/{id}` (step 22). |
 | `GET` | `/v1/payments/{transactionId}` | Bearer | Owner-only status query (step 22). Returns the `Payment` schema, mapping the internal state onto the external vocabulary (`PROCESSING/SETTLED/FAILED/REVERSED/REJECTED`) — an internal send reads back `SETTLED` with `settledAt`, an external one keeps reading `PROCESSING` (internally `DEBITED`/`SENT_TO_SPI`) until settlement resolves it to `SETTLED` or, on a permanent BACEN refusal, to `REVERSED` with its `failureReason`. The two step-67 fencing states (`FINALIZING_SETTLEMENT`/`FINALIZING_REVERSAL`) also read back as `PROCESSING` — a fence is a mechanism, not an outcome. An unknown id **or** another account's transaction both return `404 PAYMENT_NOT_FOUND` (never `403` — existence must not leak). |
 | `GET` | `/v1/accounts/me/balance` | Bearer | The caller's balance (step 40), **cache-aside on Redis** with a 5s TTL and a ledger fallback: `{accountId, balance:"874.50", currency:"BRL", asOf}`. The account comes from the JWT — no path or query parameter can name another one. `asOf` is *when the ledger was read*, so a client can tell how old the number is; a cached answer keeps the original instant. |
+| `POST` | `/v1/accounts/me/statement/exports` | Bearer | Request an asynchronous export of the **cold** statement (step 53) → `202` + `Location: /v1/statement-exports/{exportId}` + `{exportId, status, statusUrl}`. `Idempotency-Key` required; the id is *derived* from `(accountId, key)`, so a retry replays the same export and a different range under the same key is `409`. Ranges are refused for being inverted, longer than 24 months, older than the account, or entirely inside the hot window (`422 USE_HOT_STATEMENT` — the data is already served synchronously by the row above). |
+| `GET` | `/v1/statement-exports/{exportId}` | Bearer | Poll an export (step 53). `PENDING` carries `Retry-After: 5`; `READY` carries a `downloadUrl` **signed for this response** and its `expiresAt`; `FAILED` carries a `failureReason`. Another account's export is `404`, never `403`. |
 | `GET` | `/actuator/health` | public | Liveness/readiness for compose healthchecks |
 | `GET`  | `/actuator/prometheus` | public | Micrometer scrape surface — what Prometheus polls every 10s (step 44). Metric catalog: `docs/observability.md` |
 
@@ -65,6 +67,14 @@ is stable for the whole life of the transaction and later becomes the idempotenc
 | the ledger refused the posting, or its outcome could not be resolved (step 21; step 66 — carries `Retry-After: 5`) | `503` | `LEDGER_UNAVAILABLE` |
 | account-service could not supply the debtor's limit (not found / unreachable) | `502` | `ACCOUNT_LOOKUP_FAILED` |
 | no / invalid token | `401` | `UNAUTHORIZED` |
+
+**Export-specific outcomes (step 53):**
+
+| Outcome | Status | `code` |
+| ------- | ------ | ------ |
+| range inverted, longer than 24 months, badly shaped, or starting before the account existed | `422` | `INVALID_EXPORT_RANGE` |
+| the whole range is still inside the hot window — read `GET /v1/accounts/me/statement` instead | `422` | `USE_HOT_STATEMENT` |
+| unknown `exportId`, **or** one belonging to another account | `404` | `EXPORT_NOT_FOUND` |
 
 **Idempotency (step 19, ADR-0002 layer 1).** The `Idempotency-Key` header is **required** and the send
 is de-duplicated per `(accountId, key)` in `pix_idempotency` (24h TTL). The lifecycle is claim →
@@ -391,12 +401,18 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | `OUTBOX_AUDIT_MAX_IN_FLIGHT` / `…lanes.audit.max-in-flight` | `1` | A ceiling of 1 means no thread pool at all — the step-29 sequential publisher, on its own schedule. |
 | `REDIS_HOST` / `REDIS_PORT` (`spring.data.redis.*`) | `localhost` / `6379` | Redis for the balance cache (step 40); compose overrides the host to `redis`. A Redis outage degrades balance reads to ledger speed — every read becomes a miss — and never to errors. |
 | `BALANCE_CACHE_TTL` / `pix.balance-cache.ttl` | `5s` | How long a cached balance may be served. It does two jobs: caps ordinary staleness, and — when ledger-service's post-commit eviction is lost (it is best-effort) — is the backstop that bounds how long a wrong number can be displayed. |
+| `STATEMENT_ARCHIVE_BUCKET` / `pix.export.archive-bucket` | `pix-statement-archive` | The cold archive this service **reads** (ledger-service writes it, step 43). It is one service's output and another's input, so both compose blocks name it explicitly — a mismatch produces empty exports with no error anywhere. Reading it is not an ADR-0006 violation: an object-storage artifact with a published layout is a file format, not a shared table. |
+| `STATEMENT_EXPORT_BUCKET` / `pix.export.bucket` | `pix-statement-exports` | Where the CSV artifacts are **streamed**, at `exports/<accountId>/<exportId>.csv`. The key is a pure function of the export, which is what makes a retry overwrite rather than duplicate. Small exports are one `PutObject`; past 5 MiB (S3's minimum non-final part size) the sink switches to a multipart upload, so **worker memory is bounded by the part size, not by the export** — this worker shares a JVM with the send path. |
+| `EXPORT_LINK_TTL_MINUTES` / `pix.export.download-link-ttl-minutes` | `60` | Lifetime of a presigned download link. Signed per read and never stored — a link minted when the worker finished would start expiring while the customer was still being told the file was ready. |
+| `EXPORT_MAX_ATTEMPTS` / `pix.export.max-attempts` | `3` | Deliveries the worker spends on one export before turning it into a visible `FAILED`. **Must stay below the queue's `maxReceiveCount` (5)**: the customer should get an answer before the operator gets a DLQ message. |
+| `STATEMENT_EXPORT_QUEUE` / `pix.export.queue-name` | `statement-export-queue` | The queue this service consumes — its **first**. Visibility timeout 120s (assembling an export is legitimately slow), long-poll 20s. |
+| `STATEMENT_EXPORT_DLQ` / `pix.export.dlq.queue-name` | `statement-export-queue-dlq` | Probed every 15s into `pix.statement.export.dlq.depth`; alerted at `> 0` as a **defect** signal, since an ordinary failing export never reaches it. |
 | `PIX_SCHEDULERS_ENABLED` / `pix.schedulers.enabled` | `true` | Master switch for background jobs. Integration tests set it `false` and drive the tick explicitly (Spring caches contexts; a live poller would drain the shared table mid-assertion). |
 
 ### AWS credentials & IAM (ADR-0013)
 
 This service's deployed role is [`infra/iam/payment-service-policy.json`](../../infra/iam/payment-service-policy.json) —
-least-privilege over pix_transactions, pix_idempotency + the pix-events topic, with concrete ARNs and no `"Resource": "*"`. **LocalStack enforces
+least-privilege over pix_transactions, pix_idempotency, pix_processed_events, the pix-events topic, the statement-export queue pair and the two S3 buckets, with concrete ARNs and no `"Resource": "*"`. **Step 53 widened it**: until then this service published to SNS and consumed nothing, so its policy carried no SQS permission at all; the export worker adds receive/delete/change-visibility on exactly one queue and its DLQ, `s3:GetObject` on the archive and `s3:PutObject/GetObject` on the export bucket. **LocalStack enforces
 none of it** (`ENFORCE_IAM` is off by default and gated as a paid feature), so the policy is reviewed as
 a document, not proven by any test; `docs/security-checklist.md` §7 says exactly which rows that leaves
 unprovable. What *is* tested here is the credential posture: `AwsCredentialPostureTest` asserts that

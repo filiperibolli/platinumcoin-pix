@@ -303,6 +303,114 @@ paths:
                     type: string
                     nullable: true
 
+  /accounts/me/statement/exports:
+    post:
+      tags: [accounts]
+      summary: Request an asynchronous export of the COLD statement
+      description: |
+        The hot statement (`GET /accounts/me/statement`) serves the recent window straight out of
+        the ledger. Everything older lives in the cold archive as monthly objects in object storage,
+        and assembling a range of them is a slow read — seconds to minutes, not milliseconds. So it
+        is modelled as a **request resource** rather than a blocking query: this call returns
+        `202 Accepted` with an `exportId` and a `statusUrl`, a worker assembles the CSV, and the
+        status endpoint flips from `PENDING` to `READY` with a time-limited `downloadUrl`
+        (ARCHITECTURE §6.14).
+
+        **Idempotency:** the `Idempotency-Key` header is REQUIRED, exactly as on `POST /payments/pix`
+        and for the same reason — a client that retries a timed-out request must not start a second
+        job. The same key with the same month range replays the original `202` and the original
+        `exportId`. The same key with a **different** range returns `409 IDEMPOTENCY_KEY_REUSED`.
+        Keys are scoped to the authenticated account.
+
+        **Range rules**, all answered with `422`:
+        - `fromMonth` must not be after `toMonth` (`INVALID_EXPORT_RANGE`)
+        - at most 24 months (`INVALID_EXPORT_RANGE`)
+        - no month before the account was opened (`INVALID_EXPORT_RANGE`)
+        - a range lying **entirely inside the hot window** is refused with `USE_HOT_STATEMENT`
+          rather than served: the data is already available synchronously, and building a second,
+          slower copy of it would be duplicating the platform's own answer. A range that straddles
+          the boundary is accepted and exports the cold part.
+
+        Months in range for which the archive holds no object are **skipped, not failed** — an
+        account simply had no movement that month. An export whose whole range is empty therefore
+        succeeds with a header-only CSV.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromMonth, toMonth]
+              properties:
+                fromMonth:
+                  type: string
+                  pattern: '^\d{4}-\d{2}$'
+                  description: First month of the range, inclusive (`yyyy-MM`, UTC calendar months)
+                  example: "2025-01"
+                toMonth:
+                  type: string
+                  pattern: '^\d{4}-\d{2}$'
+                  description: Last month of the range, inclusive
+                  example: "2025-06"
+      responses:
+        '202':
+          description: |
+            Accepted for processing. Returned both on the first request and on every replay of the
+            same key + range, with the same `exportId` — a replay is not distinguishable from the
+            original by design.
+          headers:
+            Location:
+              schema: { type: string }
+              description: Same value as `statusUrl` in the body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatementExportAccepted' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: IDEMPOTENCY_KEY_REUSED — the same key was replayed with a different month range
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            INVALID_EXPORT_RANGE — inverted, longer than 24 months, or starting before the account existed;
+            USE_HOT_STATEMENT — the whole range is still inside the hot window, use `GET /accounts/me/statement`
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /statement-exports/{exportId}:
+    get:
+      tags: [accounts]
+      summary: Poll an export, and download it once it is READY
+      description: |
+        The polling half of the `202` contract. Ownership is enforced from the JWT: an export that
+        belongs to another account answers `404`, never `403` — the existence of another customer's
+        export is not a fact this API discloses.
+
+        While `PENDING` the response carries `Retry-After: 5`, which is the platform telling a
+        front-end how to poll politely rather than leaving it to guess.
+      parameters:
+        - name: exportId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Current state of the export
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 5 }
+              description: Present on `PENDING` only
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatementExport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /notifications/stream:
     servers:
       - url: http://localhost:8087/v1
@@ -583,6 +691,67 @@ components:
             account-service this endpoint does not make.
           example: "acc***01"
         timestamp: { type: string, format: date-time }
+    StatementExportAccepted:
+      type: object
+      properties:
+        exportId:
+          type: string
+          description: >-
+            Server-minted id of the export request. Derived deterministically from the account and
+            the `Idempotency-Key`, which is what makes a replay return the same id without a second
+            store to consult; treat it as opaque.
+          example: exp-4c2a9f61b0d84e7a9c13f8ab27d5e604
+        status:
+          type: string
+          enum: [PENDING, READY, FAILED]
+          example: PENDING
+          description: >-
+            `PENDING` on a first request. On a replay this reports the export's **current** state, which
+            may already be `READY` — telling a client `PENDING` about a downloadable export would be a
+            lie it would then poll to discover.
+        statusUrl:
+          type: string
+          description: >-
+            Path of `GET /statement-exports/{exportId}`, relative to this service — the same value as
+            the `Location` header. A path and not an absolute URL because the service knows its own
+            routes but not the public base URL it is reached on (the same choice `POST /payments/pix`
+            makes for its `Location`).
+          example: /v1/statement-exports/exp-4c2a9f61b0d84e7a9c13f8ab27d5e604
+    StatementExport:
+      type: object
+      properties:
+        exportId: { type: string }
+        status:
+          type: string
+          enum: [PENDING, READY, FAILED]
+          description: >-
+            `PENDING` while the worker assembles the artifact, then exactly one of `READY` or
+            `FAILED`. Both are terminal — the transition is guarded, so a redelivered queue message
+            cannot move a finished export or produce a second artifact.
+        requestedRange:
+          type: object
+          properties:
+            fromMonth: { type: string, example: "2025-01" }
+            toMonth: { type: string, example: "2025-06" }
+        requestedAt: { type: string, format: date-time }
+        downloadUrl:
+          type: string
+          nullable: true
+          description: >-
+            Presigned URL of the CSV artifact. Present on `READY` only, and **minted fresh for each
+            response** with a 1h lifetime from *this read*. The platform stores the object key, never a
+            URL: a link signed when the worker finished would start expiring while the customer was
+            still being told the file was ready, and an export whose only handle had expired would be
+            permanently undownloadable. A client that finds a link stale simply polls again.
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When `downloadUrl` stops working. Present on `READY` only.
+        failureReason:
+          type: string
+          nullable: true
+          description: Present on `FAILED` only — why the assembly could not be completed.
     PixKey:
       type: object
       properties:

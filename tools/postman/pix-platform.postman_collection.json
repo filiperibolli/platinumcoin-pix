@@ -4082,6 +4082,252 @@
           ]
         },
         {
+          "name": "Statement export — request it (202 + statusUrl)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Two months that are COLD in this sandbox. Compose sets the archiver's hot window to 0 days",
+                  "// (docs/local-dev.md §5.8), so every past month is cold and the archive holds whatever the ledger",
+                  "// has. Computed rather than hard-coded: a literal '2025-01' would drift out of the seeded range.",
+                  "const now = new Date();",
+                  "const ym = (d) => d.toISOString().slice(0, 7);",
+                  "const prev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));",
+                  "pm.collectionVariables.set('exportFromMonth', ym(prev));",
+                  "pm.collectionVariables.set('exportToMonth', ym(now));",
+                  "// A money-moving POST would auto-generate a key here; an export is not money, but it takes the",
+                  "// same header for the same reason — a retried request must not start a second job.",
+                  "pm.collectionVariables.set('exportIdempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.test('the export id is derived, not random', () => pm.expect(body.exportId).to.match(/^exp-[0-9a-f]{32}$/));",
+                  "pm.test('it starts PENDING', () => pm.expect(body.status).to.eql('PENDING'));",
+                  "pm.test('Location and statusUrl are the same value', () =>",
+                  "  pm.expect(pm.response.headers.get('Location')).to.eql(body.statusUrl));",
+                  "pm.collectionVariables.set('exportId', body.exportId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{exportIdempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement/exports",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement",
+                "exports"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromMonth\": \"{{exportFromMonth}}\",\n  \"toMonth\": \"{{exportToMonth}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "**The async request contract** (step 53). A cold statement is a slow read — many monthly objects merged out of object storage — so it is modelled as a *request resource* rather than a blocking query: `202` now, a `statusUrl` to poll, a CSV later.\n\n**The `exportId` is not random.** It is `SHA-256(accountId + ' ' + Idempotency-Key)`, which is what makes the conditional put of the request item *be* the idempotency claim — there is no second store to keep in step. Run this card twice without changing anything and you get the same id back (the next card proves it).\n\nThe months are computed in the pre-request script: compose sets the archiver's hot window to **0 days** so the archive is demonstrable at all, which means every past month is cold. Run the cold-archive step of `docs/local-dev.md` §5.8 first, or the CSV will be a header and nothing else — which is correct behaviour (a month with no movement is skipped, not failed) and a confusing first demo."
+          },
+          "response": []
+        },
+        {
+          "name": "Statement export — replay the same key (same exportId, no second job)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 again — a replay is indistinguishable from the original', () => pm.response.to.have.status(202));",
+                  "pm.test('the SAME exportId comes back', () =>",
+                  "  pm.expect(pm.response.json().exportId).to.eql(pm.collectionVariables.get('exportId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{exportIdempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement/exports",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement",
+                "exports"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromMonth\": \"{{exportFromMonth}}\",\n  \"toMonth\": \"{{exportToMonth}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Run the card above first. Same key, same range — so this is a **retry**, and it replays the original answer: same status, same `Location`, same id. A client that lost the first response cannot tell the two apart, which is exactly what makes retrying safe to do blindly.\n\nNo second job is queued: the conditional put lost, so nothing was written and nothing was published."
+          },
+          "response": []
+        },
+        {
+          "name": "Statement export — same key, different range (409 IDEMPOTENCY_KEY_REUSED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code is IDEMPOTENCY_KEY_REUSED', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_KEY_REUSED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{exportIdempotencyKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/accounts/me/statement/exports",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "accounts",
+                "me",
+                "statement",
+                "exports"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromMonth\": \"{{exportToMonth}}\",\n  \"toMonth\": \"{{exportToMonth}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The other thing a collision can mean. One key must identify exactly one business operation, so reusing it for a **different** range is a client bug rather than a retry — and the platform can tell, because the request item stores a `requestHash` of the range it was created for. Without that hash the derived id alone could not distinguish the two cases."
+          },
+          "response": []
+        },
+        {
+          "name": "Statement export — poll it (PENDING → READY)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('status is a known lifecycle value', () =>",
+                  "  pm.expect(['PENDING', 'READY', 'FAILED']).to.include(body.status));",
+                  "if (body.status === 'PENDING') {",
+                  "  pm.test('PENDING tells the client how long to wait', () =>",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('5'));",
+                  "  pm.test('no download link before it is ready', () => pm.expect(body.downloadUrl).to.be.null);",
+                  "}",
+                  "if (body.status === 'READY') {",
+                  "  pm.test('READY carries a signed link and its expiry', () => {",
+                  "    pm.expect(body.downloadUrl).to.be.a('string');",
+                  "    pm.expect(body.expiresAt).to.be.a('string');",
+                  "  });",
+                  "  pm.collectionVariables.set('exportDownloadUrl', body.downloadUrl);",
+                  "}",
+                  "pm.test('the range is echoed back', () =>",
+                  "  pm.expect(body.requestedRange.fromMonth).to.eql(pm.collectionVariables.get('exportFromMonth')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{paymentBaseUrl}}/v1/statement-exports/{{exportId}}",
+              "host": [
+                "{{paymentBaseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "statement-exports",
+                "{{exportId}}"
+              ]
+            },
+            "description": "**The polling half.** Run it once immediately (you should see `PENDING` with `Retry-After: 5`, the platform telling a front-end how to poll politely) and again a couple of seconds later, once the worker has assembled the artifact.\n\n**The link is signed for *this* response and never stored.** Poll after it is `READY`, wait a second or two, poll again: the `downloadUrl` and its `expiresAt` have both moved. (Inside the *same* second the two are byte-identical — a SigV4 signature is a pure function of the key, credentials, expiry and a second-granularity timestamp — which is not a bug and is exactly what caught out an integration test in this step.) Regenerating is deliberate: a link minted when the worker finished would start expiring while the customer was still being told the file was ready, and an export whose only handle had expired would be permanently undownloadable.\n\nOwnership comes from the JWT. Another account's export answers **404, never 403** — a 403 would confirm that a guessed id is real."
+          },
+          "response": []
+        },
+        {
           "name": "Health",
           "request": {
             "method": "GET",
@@ -5763,6 +6009,52 @@
               "body": "{\n  \"type\": \"about:blank\",\n  \"title\": \"Bad Request\",\n  \"status\": 400,\n  \"detail\": \"The pagination cursor could not be decoded.\",\n  \"instance\": \"/internal/ledger/accounts/acc-001/entries\",\n  \"code\": \"INVALID_CURSOR\",\n  \"correlationId\": \"a702f47a-f71f-4fd9-8c34-dfef643161f9\"\n}"
             }
           ]
+        },
+        {
+          "name": "Statement window — where hot ends and the archive begins",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('both representations ship', () => {",
+                  "    pm.expect(body.hotWindowDays).to.be.a('number');",
+                  "    pm.expect(body.coldBefore).to.be.a('string');",
+                  "});",
+                  "// coldBefore is what a caller computes with; hotWindowDays is what a human reads. They must agree.",
+                  "pm.test('coldBefore is hotWindowDays in the past', () => {",
+                  "    const days = (Date.now() - Date.parse(body.coldBefore)) / 86400000;",
+                  "    pm.expect(Math.abs(days - body.hotWindowDays)).to.be.below(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{serviceToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{ledgerBaseUrl}}/internal/ledger/statement-window",
+              "host": [
+                "{{ledgerBaseUrl}}"
+              ],
+              "path": [
+                "internal",
+                "ledger",
+                "statement-window"
+              ]
+            },
+            "description": "**One fact, published so it is not configured twice** (step 53). ledger-service owns the hot/cold boundary — it owns `pix_ledger` and it runs the archiving job — and payment-service needs the same number to answer `422 USE_HOT_STATEMENT` on an export whose whole range is still online.\n\nThe shortcut would be to give payment-service the same environment variable. That is one policy constant with two definitions, and it drifts the day somebody changes it on one side — the shape of bug step 52 refused when it declined to let two services each compute a clearing shard. So the boundary is *asked for*, over this route, and memoized ~30s by the caller.\n\n`coldBefore` is the answer to **compute with** (an absolute instant, immune to any disagreement about what a day is across a DST change or a clock skew); `hotWindowDays` is the answer to **read** (the number an operator recognises from the config). It is the same arithmetic the archiving job does — the same property and the same injected `Clock` — so the boundary reported here is the one the job actually applies, not a second opinion about it.\n\n**Note the sandbox value:** compose sets the window to `0` days so the archive is demonstrable at all, which is also why `422 USE_HOT_STATEMENT` is unreachable locally without changing that dial (`docs/local-dev.md` §5.8.1).\n\nScoped `ledger:read`, like every other read on this port."
+          },
+          "response": []
         },
         {
           "name": "Health",
@@ -7583,6 +7875,26 @@
       "value": "in-E99999999202608241946KMG5L83ZuoZ",
       "type": "string",
       "description": "in-<endToEndId> of a received Pix — paste one from a PixReceived notification or from mock-bacen-spi's simulate response."
+    },
+    {
+      "key": "exportId",
+      "value": ""
+    },
+    {
+      "key": "exportFromMonth",
+      "value": ""
+    },
+    {
+      "key": "exportToMonth",
+      "value": ""
+    },
+    {
+      "key": "exportIdempotencyKey",
+      "value": ""
+    },
+    {
+      "key": "exportDownloadUrl",
+      "value": ""
     }
   ],
   "event": [

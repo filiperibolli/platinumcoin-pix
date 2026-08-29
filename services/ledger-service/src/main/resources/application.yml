@@ -59,6 +59,13 @@ jwt:
     - method: GET
       pattern: /internal/ledger/clearing-balance
       scope: ledger:read
+    # Where the online statement ends and the cold archive begins (step 53). payment-service reads it
+    # to answer 422 USE_HOT_STATEMENT on an export whose whole range is still online. Same scope as any
+    # other read; it exposes no customer data at all, but there is no weaker scope and inventing one for
+    # a single route would be more surface than it saves.
+    - method: GET
+      pattern: /internal/ledger/statement-window
+      scope: ledger:read
 
 # The statement cold archive (step 43, ARCHITECTURE §6.10). ledger-service owns pix_ledger, so it is the
 # service that archives it: no other service may read the table (ADR-0006), and archiving needs no

@@ -128,10 +128,39 @@ pix:
         fixed-delay-ms: ${OUTBOX_AUDIT_DELAY_MS:5000}
         batch-size: ${OUTBOX_AUDIT_BATCH_SIZE:50}
         max-in-flight: ${OUTBOX_AUDIT_MAX_IN_FLIGHT:1}
-  # Master switch for every background job in this service (today: the three outbox lane publishers).
-  # True in every
-  # real run; integration tests set it false and drive the tick explicitly, because Spring caches
-  # contexts across test classes and a live poller would drain the shared tables mid-assertion.
+  # Cold statement export (step 53, ARCHITECTURE §6.14) — the async request/polling flow.
+  export:
+    # INPUT: ledger-service's cold archive (step 43). Read-only; payment-service never writes here. The
+    # layout (account=<id>/yyyy-MM.jsonl) is a published artifact contract, not a shared table, so
+    # ADR-0006 is untouched.
+    archive-bucket: ${STATEMENT_ARCHIVE_BUCKET:pix-statement-archive}
+    # OUTPUT: this service's own bucket for the assembled CSV artifacts.
+    bucket: ${STATEMENT_EXPORT_BUCKET:pix-statement-exports}
+    # How long a presigned download link lives. Signed per read, never stored — so this is "how long one
+    # answer's link stays usable", not "how long the export lasts". Short because the URL IS the
+    # credential while it lives; a client that finds it stale simply polls again.
+    download-link-ttl-minutes: ${EXPORT_LINK_TTL_MINUTES:60}
+    # How many deliveries the worker may spend on one export before turning it into a visible FAILED.
+    # MUST STAY BELOW the queue's maxReceiveCount (5, infra/localstack/init/10-statement-exports.sh):
+    # the platform should give the customer an answer before SQS gives the message to the DLQ, so the
+    # DLQ is left holding only what the worker cannot even parse.
+    max-attempts: ${EXPORT_MAX_ATTEMPTS:3}
+    queue-name: ${STATEMENT_EXPORT_QUEUE:statement-export-queue}
+    consumer:
+      # Long polling: the receive blocks up to 20s waiting for work, so an idle system costs one request
+      # every 20s instead of a stream of empty ones. fixedDelay, so a slow assembly never has the next
+      # tick queued behind it.
+      fixed-delay-ms: ${EXPORT_CONSUMER_DELAY_MS:1000}
+      batch-size: ${EXPORT_CONSUMER_BATCH_SIZE:5}
+      wait-time-seconds: ${EXPORT_CONSUMER_WAIT_SECONDS:20}
+    dlq:
+      queue-name: ${STATEMENT_EXPORT_DLQ:statement-export-queue-dlq}
+      # A depth probe, not a scrape-time SQS call: the gauge reads an AtomicLong this tick refreshes.
+      metric-refresh-ms: ${EXPORT_DLQ_METRIC_REFRESH_MS:15000}
+  # Master switch for every background job in this service (the three outbox lane publishers, the
+  # statement-export consumer and its DLQ probe). True in every real run; integration tests set it false
+  # and drive each tick explicitly, because Spring caches contexts across test classes and a live poller
+  # would drain the shared tables and queues mid-assertion.
   schedulers:
     enabled: ${PIX_SCHEDULERS_ENABLED:true}
 

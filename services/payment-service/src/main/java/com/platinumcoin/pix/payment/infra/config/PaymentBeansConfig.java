@@ -12,12 +12,19 @@ import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import com.platinumcoin.pix.payment.domain.port.OutboxEventStore;
 import com.platinumcoin.pix.payment.domain.port.PaymentFunnelMetrics;
 import com.platinumcoin.pix.payment.domain.port.PixKeyResolver;
+import com.platinumcoin.pix.payment.domain.port.ProcessedEvents;
+import com.platinumcoin.pix.payment.domain.port.StatementArchiveReader;
+import com.platinumcoin.pix.payment.domain.port.StatementExportArtifactStore;
+import com.platinumcoin.pix.payment.domain.port.StatementExportRepository;
 import com.platinumcoin.pix.payment.domain.port.TransactionRepository;
 import com.platinumcoin.pix.payment.domain.service.EndToEndIdGenerator;
+import com.platinumcoin.pix.payment.domain.usecase.BuildStatementExportUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.GetBalanceUseCase;
-import com.platinumcoin.pix.payment.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.GetPaymentStatusUseCase;
+import com.platinumcoin.pix.payment.domain.usecase.GetStatementExportUseCase;
+import com.platinumcoin.pix.payment.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.PublishOutboxEventsUseCase;
+import com.platinumcoin.pix.payment.domain.usecase.RequestStatementExportUseCase;
 import com.platinumcoin.pix.payment.domain.usecase.SendPixUseCase;
 import java.time.Clock;
 import java.time.Duration;
@@ -123,6 +130,49 @@ public class PaymentBeansConfig {
     @Bean
     GetStatementUseCase getStatementUseCase(LedgerClient ledger) {
         return new GetStatementUseCase(ledger);
+    }
+
+    /**
+     * The cold statement export (step 53). Three use cases, one flow: request it, poll it, assemble it.
+     *
+     * <p>Note what {@code requestStatementExportUseCase} is wired to and what it is not. It reads the
+     * account's opening date and the ledger's statement window — two facts it must not invent — and it
+     * touches no idempotency store, because the export item's own conditional put is the claim
+     * ({@code StatementExportId}). The money path's {@code IdempotencyRepository} is deliberately absent
+     * from this constructor.
+     */
+    @Bean
+    RequestStatementExportUseCase requestStatementExportUseCase(
+            StatementExportRepository exports,
+            AccountLimitClient accounts,
+            LedgerClient ledger,
+            Clock clock) {
+        return new RequestStatementExportUseCase(exports, accounts, ledger, clock);
+    }
+
+    @Bean
+    GetStatementExportUseCase getStatementExportUseCase(
+            StatementExportRepository exports, StatementExportArtifactStore artifacts) {
+        return new GetStatementExportUseCase(exports, artifacts);
+    }
+
+    /**
+     * The worker. {@code maxAttempts} is a property rather than a constant because it is the dial that
+     * decides how long a customer waits before a stuck export becomes a visible {@code FAILED} instead
+     * of an endless {@code PENDING} — an operational choice, not a design one. It must stay <b>below</b>
+     * the queue's {@code maxReceiveCount} (5, {@code 10-statement-exports.sh}), so the platform gives a
+     * customer an answer before SQS gives the message to the DLQ.
+     */
+    @Bean
+    BuildStatementExportUseCase buildStatementExportUseCase(
+            StatementExportRepository exports,
+            StatementArchiveReader archive,
+            StatementExportArtifactStore artifacts,
+            ProcessedEvents processedEvents,
+            @Value("${pix.export.max-attempts}") int maxAttempts,
+            Clock clock) {
+        return new BuildStatementExportUseCase(
+                exports, archive, artifacts, processedEvents, maxAttempts, clock);
     }
 
     /**
