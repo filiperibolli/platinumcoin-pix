@@ -78,6 +78,11 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs; integration tests set it `false` and drive each tick explicitly |
 | `NOTIFICATION_QUEUE_NAME` | `notification-queue` | The queue notification-service consumes (step 38). Resolved to its URL at **startup**, like settlement's — a push service that boots healthy while consuming nothing is the worst failure mode it has |
 | `NOTIFICATION_STREAM_TIMEOUT_MS` | `1800000` (30 min) | How long one SSE connection may live before the server closes it. A closing stream is a non-event: `EventSource` reconnects on its own, which is much of why SSE was chosen over WebSocket |
+| `STATEMENT_ARCHIVE_BUCKET` | `pix-statement-archive` | The cold archive. It is **ledger-service's output and payment-service's input**, so both service blocks in compose name it explicitly — a mismatch would produce empty exports with no error anywhere (step 53) |
+| `STATEMENT_EXPORT_BUCKET` | `pix-statement-exports` | Where the assembled CSV artifacts land |
+| `EXPORT_LINK_TTL_MINUTES` | `60` | Lifetime of a presigned download link. Signed per read and never stored, so this is "how long one answer's link lasts", not "how long the export lasts" |
+| `EXPORT_MAX_ATTEMPTS` | `3` | How many deliveries the worker spends on one export before turning it into a visible `FAILED`. **Must stay below the queue's `maxReceiveCount` (5)** so the customer gets an answer before the message reaches the DLQ |
+| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` | `0` in compose, `90` in the jar | Where the online statement ends. Set to 0 locally so the archive (and therefore the export) is demonstrable in a fresh sandbox; it is also why `422 USE_HOT_STATEMENT` is unreachable by default — see §5.8.1 |
 | `NOTIFICATION_HEARTBEAT_DELAY_MS` | `25000` | Heartbeat sweep interval. Under the ~30s idle timeout common in proxies/load balancers, so a silent stream is never reclaimed underneath us — and it doubles as the registry's garbage collector, since a vanished client is only discovered by a failed write |
 | `NOTIFICATION_TOKEN_PARAM` | `access_token` | Query parameter the SSE handshake accepts a token in, because a browser's `EventSource` cannot set headers. **Blank it to accept only the `Authorization` header.** The route is *not* on the JWT allow-list: the parameter is rewritten into a header before common-lib's filter runs, so there is still exactly one JWT verifier in the platform |
 | `AUDIT_QUEUE_NAME` | `audit-queue` | The **unfiltered** queue settlement-service's audit writer consumes (step 43). Resolved to its URL at startup — an audit writer that boots healthy while consuming nothing leaves a five-year compliance obligation silently unmet |
@@ -346,7 +351,7 @@ LocalStack executes scripts in `/etc/localstack/init/ready.d/` once the emulator
 
 **Messaging** — SNS topic `pix-events` + `settlement-queue`(+DLQ) with a filtered subscription (step 26); `notification-queue`(+DLQ, filtered) (step 36); `audit-queue`(+DLQ, unfiltered — all events) (step 42); `statement-export-queue`(+DLQ) (step 53). Filter policies route by `eventType`.
 
-**S3** — buckets `pix-audit-log` (versioning + Object Lock COMPLIANCE, 5-year retention) and `pix-statement-archive` (plain, rewritable) (step 42); `pix-statement-exports` (step 53).
+**S3** — buckets `pix-audit-log` (versioning + Object Lock COMPLIANCE, 5-year retention) and `pix-statement-archive` (plain, rewritable) (step 42); `pix-statement-exports` (plain — an export artifact is derived data twice over, and a retry rewrites the same key whole) (step 53). **`10-statement-exports.sh` is the LAST init script, so its final log line is the readiness marker** both `LocalStackTestBase` and the compose healthcheck wait on; a script sorting after it must move both.
 
 **Seed data** — demo accounts alice/bob with daily limits (step 07) and initial ledger balances R$ 10,000.00 each funded from `ACCOUNT#SEED` (with the matching `SEED_FUNDING` entries on both sides), plus system account `SPI_CLEARING` **and its `CLEARING_SHARDS` write shards `SPI_CLEARING#00..#15`** (step 52) all at 0 — so Σ over every account is **zero** (step 12), whatever N is. Pix keys are registered via the API, not seeded.
 
@@ -1369,6 +1374,93 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 > **Deleting hot data after archiving is deliberately not implemented** — see `docs/data-model.md` §8.2
 > for what production does instead and why the local platform stops one step short.
+
+### 5.8.1 Cold statement export — the async request/polling flow (step 53)
+
+The other half of the cold tier: `202` + a status URL + a presigned CSV, assembled from the archive
+objects §5.8(b) just produced. Do §5.8(b) first — an export of months the archive does not hold succeeds
+with a header-only CSV, which is correct behaviour and a confusing first demo.
+
+```bash
+# The months compose actually archives. NOTE: the step file's example says 2025-01..2025-03; that range
+# is perfectly valid and would export an EMPTY csv here, because this sandbox's ledger seed starts in
+# 2026-07 (infra/localstack/init/05-seed-ledger.sh) and the archiver only ever writes months that have
+# entries. Use the months you can see in `s3 ls s3://pix-statement-archive/`.
+THIS=$(date -u +%Y-%m); PREV=$(date -u -d '1 month ago' +%Y-%m)
+
+IDEM=$(uuidgen)
+EXP=$(curl -s -X POST localhost:8084/v1/accounts/me/statement/exports \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' \
+  -d "{\"fromMonth\":\"$PREV\",\"toMonth\":\"$THIS\"}" | jq -r .exportId)
+echo "$EXP"   # exp-<32 hex> — derived from your account + that Idempotency-Key, not random
+
+# PENDING carries Retry-After: 5 — the platform telling a front-end how to poll politely.
+curl -si "localhost:8084/v1/statement-exports/$EXP" -H "Authorization: Bearer $TOKEN" | head -12
+
+# The worker ticks once a second; it is READY within a couple of seconds.
+watch -n 2 "curl -s localhost:8084/v1/statement-exports/$EXP -H 'Authorization: Bearer $TOKEN' | jq .status"
+
+# Download it the way a browser would: straight at S3, no JWT, on a link that expires in an hour.
+curl -s "localhost:8084/v1/statement-exports/$EXP" -H "Authorization: Bearer $TOKEN" \
+  | jq -r .downloadUrl | xargs curl -s | head
+# txId,timestamp,direction,amountCents,amount,counterpartAccountId,entryType,description
+# tx-…,2026-08-03T09:00:00Z,DEBIT,-1000,-10.00,acc-002,PIX_INTERNAL,…
+```
+
+**The four things worth checking by hand, because each is a decision rather than plumbing:**
+
+```bash
+# 1. Same key + same range replays the SAME exportId, and queues no second job.
+curl -s -X POST localhost:8084/v1/accounts/me/statement/exports \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' \
+  -d "{\"fromMonth\":\"$PREV\",\"toMonth\":\"$THIS\"}" | jq -r .exportId    # == $EXP
+
+# 2. Same key + a DIFFERENT range is a client bug: 409 IDEMPOTENCY_KEY_REUSED.
+curl -s -X POST localhost:8084/v1/accounts/me/statement/exports \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: $IDEM" -H 'Content-Type: application/json' \
+  -d "{\"fromMonth\":\"$THIS\",\"toMonth\":\"$THIS\"}" | jq -r .code
+
+# 3. Someone else's export is 404, never 403 — the id is not confirmed to exist.
+BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"bob@platinum.com","password":"senha123"}' | jq -r .accessToken)
+curl -s -o /dev/null -w '%{http_code}\n' "localhost:8084/v1/statement-exports/$EXP" \
+  -H "Authorization: Bearer $BOB"    # 404
+
+# 4. The link is signed per READ, not stored: two polls give two different URLs for one object.
+for i in 1 2; do curl -s "localhost:8084/v1/statement-exports/$EXP" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.downloadUrl | .[0:80]'; done
+
+# The artifact itself, and the fact that a retry rewrites the SAME key rather than adding a file:
+awsl s3 ls s3://pix-statement-exports/exports/ --recursive
+```
+
+> **`422 USE_HOT_STATEMENT` is not reachable in the default sandbox, and that is a consequence of §5.8(b).**
+> Compose sets `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS=0` so the archive is demonstrable at all, which makes
+> the hot/cold boundary "now" — so no past month is ever *entirely* hot. To see the refusal, restore the
+> production default on **ledger-service** (payment-service reads the boundary from it over
+> `GET /internal/ledger/statement-window`, so there is only one place to change):
+> ```bash
+> docker compose -f infra/docker-compose.yml stop ledger-service
+> STATEMENT_ARCHIVE_HOT_WINDOW_DAYS=90 docker compose -f infra/docker-compose.yml up -d ledger-service
+> # now the current month is inside the window:
+> curl -s -X POST localhost:8084/v1/accounts/me/statement/exports -H "Authorization: Bearer $TOKEN" \
+>   -H "Idempotency-Key: $(uuidgen)" -H 'Content-Type: application/json' \
+>   -d "{\"fromMonth\":\"$THIS\",\"toMonth\":\"$THIS\"}" | jq -r .code    # USE_HOT_STATEMENT
+> ```
+> payment-service memoizes the window for ~30s, so give it half a minute (or restart it) after changing
+> the dial.
+
+> **The DLQ drill.** A failing export does *not* reach the DLQ — the worker turns three failed deliveries
+> into a `FAILED` export with a reason the customer can read, and that budget (3) is below the queue's
+> `maxReceiveCount` (5) on purpose. What reaches `statement-export-queue-dlq` is a message the worker
+> cannot parse or resolve, which is why `pix_statement_export_dlq_depth_messages > 0` is alerted on as a
+> **defect** rather than an outage (`docs/observability.md` §4). To see it, put a nonsense body on the
+> queue by hand and tick the consumer:
+> ```bash
+> awsl sqs send-message --queue-url "$(awsl sqs get-queue-url --queue-name statement-export-queue \
+>   --query QueueUrl --output text)" --message-body '{"eventId":"evt-x","eventType":"StatementExportRequested","payload":{}}'
+> docker compose -f infra/docker-compose.yml logs -f payment-service | grep -i "dead-letter\|missing its eventId"
+> ```
 
 ### 5.9 Observability — dashboards, alerts & path tracing (step 44)
 

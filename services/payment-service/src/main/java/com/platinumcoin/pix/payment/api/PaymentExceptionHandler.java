@@ -4,16 +4,19 @@ import com.platinumcoin.pix.common.error.ProblemDetailFactory;
 import com.platinumcoin.pix.payment.domain.exception.AccountLookupException;
 import com.platinumcoin.pix.payment.domain.exception.BalanceNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
+import com.platinumcoin.pix.payment.domain.exception.HotWindowExportException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidAmountException;
+import com.platinumcoin.pix.payment.domain.exception.InvalidExportRangeException;
 import com.platinumcoin.pix.payment.domain.exception.InvalidStatementCursorException;
 import com.platinumcoin.pix.payment.domain.exception.KeyNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.LedgerUnavailableException;
 import com.platinumcoin.pix.payment.domain.exception.LimitExceededException;
 import com.platinumcoin.pix.payment.domain.exception.PaymentNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.RequestInProgressException;
+import com.platinumcoin.pix.payment.domain.exception.StatementExportNotFoundException;
 import com.platinumcoin.pix.payment.domain.exception.UnresolvedOperationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,6 +154,29 @@ public class PaymentExceptionHandler {
         // zero: "no such account" and "no money" are different facts and a customer must never be shown
         // the second when the first is true.
         return problem(HttpStatus.NOT_FOUND, "BALANCE_NOT_FOUND", ex.getMessage());
+    }
+
+    @ExceptionHandler(InvalidExportRangeException.class)
+    public ResponseEntity<ProblemDetail> handleInvalidExportRange(InvalidExportRangeException ex) {
+        // 422 and not 400: the body parsed and its fields are well-formed strings — what is wrong is
+        // the range they describe, which is a business rule (order, length, the account's own age) and
+        // not a binding failure. Same reasoning that puts LIMIT_EXCEEDED on 422.
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_EXPORT_RANGE", ex.getMessage());
+    }
+
+    @ExceptionHandler(HotWindowExportException.class)
+    public ResponseEntity<ProblemDetail> handleHotWindowExport(HotWindowExportException ex) {
+        // Its own code, deliberately not folded into INVALID_EXPORT_RANGE: this one does not ask the
+        // client to send a different range, it asks it to call a different endpoint. A single code for
+        // both would leave a client unable to tell "fix your input" from "you already have this".
+        return problem(HttpStatus.UNPROCESSABLE_ENTITY, "USE_HOT_STATEMENT", ex.getMessage());
+    }
+
+    @ExceptionHandler(StatementExportNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleExportNotFound(StatementExportNotFoundException ex) {
+        // 404 for both "no such export" and "that one is someone else's" — see the exception's javadoc:
+        // a 403 would confirm that a guessed id is real.
+        return problem(HttpStatus.NOT_FOUND, "EXPORT_NOT_FOUND", ex.getMessage());
     }
 
     @ExceptionHandler(InvalidStatementCursorException.class)

@@ -118,7 +118,9 @@ class SettlementRetryIT extends LocalStackTestBase {
         assertThat(outboxEvents(txId)).as("one settlement, one announcement").hasSize(1);
         assertThat(spi.attempts())
                 .as("three POSTs: two transient failures then the settling retry").hasSize(3);
-        assertThat(receivable(queueUrl())).as("the settled message was acked, not left to loop").isEmpty();
+        assertThat(receivableBodies(queueUrl()))
+                .as("the settled message was acked, not left to loop")
+                .noneMatch(body -> body.contains(txId));
     }
 
     /**
@@ -253,6 +255,29 @@ class SettlementRetryIT extends LocalStackTestBase {
     private List<Message> receivable(String url) {
         return SQS.receiveMessage(request -> request
                 .queueUrl(url).maxNumberOfMessages(10).waitTimeSeconds(1)).messages();
+    }
+
+    /**
+     * The bodies currently receivable on a queue — <b>this test asserts about its own message, never
+     * about the queue being globally empty.</b> A {@code txId} is a UUID, so a substring match over the
+     * body is exact enough and needs no JSON parser here.
+     *
+     * <p>It used to assert {@code receivable(queueUrl())).isEmpty()}, and that is a statement about a
+     * <i>shared</i> queue which this test has no business making.
+     * {@code SettlementHappyIT#anUnreachableRailLeavesTheMessageAndReleasesTheClaimSoTheRetryIsRealWork}
+     * <b>deliberately parks a message</b> — its own comment says so — and that message is merely
+     * <i>invisible</i> for the 30s visibility window, not gone. {@code drain()} in {@code @BeforeEach}
+     * can only delete what it can receive, so the parked message survives it; when the window expires
+     * mid-test the message becomes receivable again and an "empty queue" assertion fails on traffic that
+     * was never this test's.
+     *
+     * <p>It is a latent race on {@code main}, not something step 53 introduced — nothing in that step
+     * writes to {@code settlement-queue}. It surfaced on CI, where the suite runs slowly enough for the
+     * two ITs to land inside one visibility window; locally they do not. Matching on the test's own id
+     * is the same rule {@code OutboxPublisherIT} already documents for the shared outbox table.
+     */
+    private List<String> receivableBodies(String url) {
+        return receivable(url).stream().map(Message::body).toList();
     }
 
     private long dlqDepth() {

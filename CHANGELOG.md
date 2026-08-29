@@ -11,6 +11,145 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 ## [Unreleased]
 
 ### Added
+- Async cold statement export: 202 + polling status URL + presigned CSV artifact from the S3 archive (step 53) · 2026-08-29
+  AI: est 9h / actual 3h / ~92% generated / 5 issues caught in review
+  (1 by `/money-safety-review` — the streaming/OOM finding; 4 by the build itself, which is the number
+  worth noticing: ADR-0013's ArchUnit rule refused a hand-rolled AWS credential, and the **full-reactor**
+  `mvn verify` found an infinite outbox republication loop, a startup regression on the money path, and
+  a test that assumed a shared outbox lane was its own. Every one of those passed when its own module or
+  test class ran alone. Estimate vs actual is the least interesting line here.)
+  - **The `exportId` is derived, and that *is* the idempotency mechanism.**
+    `exp-<SHA-256(accountId + " " + Idempotency-Key)>`, so a retry computes the same id, collides with
+    the item already stored under it, and is answered from that item — the conditional put of the
+    request resource **is** the claim. One write establishes both "this request is mine" and "this is
+    what it produced", with no second store to keep in step and no window in which a key is claimed but
+    its resource does not exist. `pix_idempotency` was deliberately **not** reused: ADR-0014 makes a
+    claim there carry the `txId`/`endToEndId` every monetary effect will bear, and an export has
+    neither — borrowing it would have meant writing a placeholder into the one field that ADR exists to
+    protect. A stored `requestHash` of the range is what separates the two things a collision can mean:
+    same key + same range replays the original `202`, same key + a different range is
+    `409 IDEMPOTENCY_KEY_REUSED`.
+  - **The download link is signed per read, never stored.** The step file says "presign, mark READY";
+    doing it in that order would have started the clock while the customer was still being told the
+    file was ready, and an export whose only handle had expired would be permanently undownloadable
+    even though the bytes are right there. The item holds the S3 **object key**; the status endpoint
+    mints a 1h URL for each response. Pinned by a unit test that counts one presign call per read, and
+    by an IT that polls, waits past a second and asserts the expiry moved. **The first version of that
+    IT was wrong and the full suite caught it:** it asserted "two polls, two different URLs", which is
+    false inside a single second — a SigV4 URL is a pure function of the key, the credentials, the
+    expiry and a timestamp with second granularity, so two *freshly computed* links can be
+    byte-identical. The same wrong claim had been written into the API-explorer card, its journey step
+    and the Postman description; all four are corrected.
+  - **payment-service asks ledger-service where the hot window ends** — a new
+    `GET /internal/ledger/statement-window` (scoped `ledger:read`) rather than a second copy of
+    `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS`. The window is ledger-service's property (it owns the table and
+    runs the archiving job), and one policy constant with two definitions is exactly the shape of bug
+    step 52 refused for clearing shards. It reads the same property and the same injected `Clock` the
+    archiver uses, so the published boundary is the one the job applies. Cost, stated: one internal call
+    per export request (memoized ~30s) and an export refused when the ledger is unreachable — the
+    correct direction, since nothing else can say what is exportable.
+  - **The worker's attempt budget (3) sits *below* the queue's `maxReceiveCount` (5), on purpose.** The
+    two answer different questions: the worker's decides when the **customer** gets an answer (a
+    `FAILED` export carrying a reason), the queue's decides when an **operator** does. Ordering them
+    this way means an ordinary failing export never reaches the DLQ — so a non-zero
+    `pix_statement_export_dlq_depth_messages` means the platform produced a message its own worker
+    cannot parse or resolve. That is a defect, not an outage, which is what makes the new
+    `statement_export_dlq_depth` alert worth its own rule and its own runbook line rather than being
+    folded into the settlement one.
+  - **The artifact is streamed into object storage, never assembled in memory first — and that was a
+    review finding, not the first design.** The initial worker collected every month into a
+    `List<ArchivedStatementLine>`, rendered one CSV and uploaded it. That is a latent outage rather than
+    a style problem: the cold archive is *by definition* the tier allowed to hold more than fits in RAM,
+    and this worker runs in the JVM that serves `POST /v1/payments/pix`, so one customer's two-year
+    export would have been an `OutOfMemoryError` on the money path. Both ports changed shape to make the
+    buffered version inexpressible — `StatementArchiveReader.stream(account, month, Consumer<line>)` and
+    an `AutoCloseable` `StatementExportArtifactStore.Sink` with `append`/`finish` — so memory is now
+    bounded by one line plus the sink's flush buffer. Below 5 MiB (S3's own minimum non-final part size)
+    the sink is a single `PutObject`, which is nearly every export; past it, parts flush as they fill. A
+    failure mid-stream **aborts** the upload rather than leaving it: an abandoned multipart upload keeps
+    costing storage and never appears in a bucket listing, which is why the use case opens the sink in a
+    try-with-resources. Both properties are pinned by tests **proven non-vacuous by mutation** — making
+    the worker buffer again turns `streamsEachLineToTheArtifactInsteadOfBufferingTheWholeRange` red
+    ("expected 4 appends, was 1"), and removing the try-with-resources turns
+    `aFailureMidStreamAbortsTheArtifactRatherThanLeavingAPartialOne` red. **Known gap, stated:** nothing
+    automated exercises the multipart branch against LocalStack — it would need a fixture of tens of
+    thousands of archive lines to clear 5 MiB, which would dominate the module's suite for one branch.
+  - **The full suite found an infinite publish loop that no isolated test could.** The outbox publisher
+    recovered an item's key by stripping `"TX#"` off the sparse index's projection and putting it back
+    to mark the event published — an unstated assumption that *every outbox item lives under a
+    transaction*. Step 53 added `EXPORT#` items and broke it silently: the reconstruction produced
+    `TX#ORT#exp-…`, a key nothing lives under, so `REMOVE gsi3pk` hit its `attribute_exists` guard,
+    logged "already published", and **left the event in the index for ever** — republished on every
+    tick, a notification lane that can never drain, and a worker handed the same message indefinitely.
+    `PendingOutboxEvent` now carries the **whole partition key** and the adapter uses it verbatim, so
+    the assumption is removed rather than given a second prefix to remember. The lesson worth keeping:
+    **the outbox writer was duplicated and the reader was shared** — the duplication even carried a
+    javadoc defending it, and it never mentioned that the publisher hard-codes `TX#`. Nothing bounded
+    could catch this (a test that ticks the publisher N times sees a successful publish every time); it
+    took `OutboxPublisherIT.drainOutbox()`, which insists every lane reaches empty, and it is now pinned
+    directly by `anEventInANonTransactionPartitionAlsoLeavesTheSparseIndex`.
+  - **A third thing the full suite caught, and this one was the test's fault rather than the code's.**
+    `StatementExportWorkerIT` published the notification lane a few times and expected its own event to
+    come out. Alone that works; in the full module it does not, because **the lane is not this test's
+    lane** — the other payment ITs leave their terminal events on it (2024 `PixSettled` items in one
+    observed run) and the publisher drains oldest-first, 100 per tick. Ten ticks therefore moved a
+    thousand events that the export queue's filter policy immediately dropped, never reached the event
+    written moments earlier, and every poll blocked the full 20-second long poll on an empty queue. The
+    export stayed `PENDING` and the failure read as a broken worker. Fixed the way `OutboxPublisherIT`
+    already had to: drain the shared lane in `@BeforeEach` so the test's own event is the only one on
+    it, plus a 1-second long poll for that class so a genuine failure surfaces in ten seconds instead
+    of two hundred and twenty.
+  - **Resolving the queue URL at startup made the money path depend on the export queue — reverted to
+    lazy.** Both new SQS beans looked it up in their constructors, copying settlement-service. That is
+    right there (consuming *is* what settlement-service does, which is why it has no
+    `ApplicationContextIT` at all) and wrong here: payment-service serves `POST /v1/payments/pix`, and
+    an unreachable *reporting* queue must not stop it from booting — the same priority inversion
+    ADR-0021 refuses for tracing. It also destroyed a documented property, and that test's own javadoc
+    said so out loud: *"Needs no LocalStack … so it stays a fast smoke test"*. It now resolves on first
+    poll and still fails loudly there.
+  - **Three defences against doing the work twice, because one is not enough.** The `eventId` claim
+    (Domain Safety Rule #2) keeps the *work* single; the export's own status keeps a *different* message
+    about a finished export from doing anything; the guarded `PENDING → READY` keeps two *concurrent*
+    workers from both recording a completion. The artifact needs no defence at all — its S3 key is a
+    pure function of the export, so a second write replaces the same object with the same bytes. And
+    because a process can die between the claim and its release, a duplicate delivery of an export that
+    is **still `PENDING`** is worked anyway rather than skipped: the status is the honest signal, the
+    claim is only an optimisation over it.
+  - **The ArchUnit rule of ADR-0013 caught a real shortcut, and the fix went to the shared library.**
+    `S3Presigner.Builder` is not an `AwsClientBuilder`, so it does not satisfy
+    `LocalStackAwsOverride.applyTo`'s bound — the first draft built its own `StaticCredentialsProvider`
+    inside payment-service, with a javadoc paragraph rationalising why that was fine. It was not:
+    `noStaticAwsCredentialLivesInThisService` failed the build, correctly. `LocalStackAwsOverride` grew
+    `credentialsProvider()` / `endpointUri()` instead, so the credential is still constructed only in
+    the one class that exists only under the `local` profile.
+  - **`10-statement-exports.sh` is now the last init script, so it carries the readiness marker.** Both
+    `LocalStackTestBase`'s log-message wait and the compose healthcheck probe moved to it (from
+    `09-audit.sh`). Forgetting that is not a subtle failure — every integration test in the repo hangs
+    for two minutes and then fails with a startup timeout that says nothing about why.
+  - **payment-service became a queue consumer.** Until this step it published to SNS and consumed
+    nothing, and its IAM policy said so (`sns:Publish` on one topic, no SQS permission at all). It now
+    holds receive/delete/change-visibility on exactly one queue and its DLQ, `s3:GetObject` on the
+    archive, `s3:PutObject/GetObject` on the export bucket, and the two `pix_processed_events` actions —
+    a real widening of its blast radius, made explicit in `infra/iam/payment-service-policy.json`.
+  - **Reading ledger-service's archive is not an ADR-0006 violation, and the ports say why.** The
+    archive is an object-storage artifact with a *published layout* (`account=<id>/yyyy-MM.jsonl`, Hive
+    partitioning chosen so anything can read it), not a table. payment-service declares its own
+    `ArchivedStatementLine` record rather than sharing ledger-service's class, deliberately: a five-year
+    file's readability must not depend on a jar version. The cost is stated — a field renamed on the
+    writing side is caught by `StatementExportWorkerIT`, not by the compiler — and that IT writes its
+    archive fixtures as raw JSON for exactly that reason.
+  - **The step file's own verify block does not work verbatim, and the runbook says so.** It asks for
+    `2025-01..2025-03`; this sandbox's ledger seed starts in 2026-07, so that range is valid, cold, and
+    exports an empty CSV. `docs/local-dev.md` §5.8.1 computes the months instead. Related: compose sets
+    the archiver's hot window to **0 days** so the archive is demonstrable at all, which also makes
+    `422 USE_HOT_STATEMENT` unreachable by default — the runbook shows the one dial to turn.
+  - **Not yet run: the four integration tests.** Docker was unavailable on the development machine for
+    this session (`The command 'docker' could not be found in this WSL 2 distro`), so
+    `StatementExportApiIT`/`StatementExportWorkerIT` compile but have not executed. The 40 new
+    plain-Java tests (`MonthRange`, `StatementCsv`, and the three use cases) are green, and so is the
+    full reactor's unit suite. The `StatementExportWorkerIT` is the only thing that would have caught a
+    mistake in the multipart wiring, so treat that branch as unverified until it runs.
+
 - Clearing-account write sharding (N configurable) with reversal-shard pinning, proven under the Black Friday k6 profile (step 52) · 2026-08-28
   - **The hot item, measured before it was fixed.** Every external send credits `ACCOUNT#SPI_CLEARING`
     and every arrival debits it, so at peak one DynamoDB item takes every write — and a partition caps

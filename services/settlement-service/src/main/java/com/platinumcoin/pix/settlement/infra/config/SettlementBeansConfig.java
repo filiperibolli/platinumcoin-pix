@@ -260,6 +260,22 @@ public class SettlementBeansConfig {
                         "sum(pix_settlement_dlq_depth_messages)",
                         alerts.dlqDepthBound(), Comparison.ABOVE, "messages"),
 
+                // The export DLQ (step 53). Same shape and the same zero bound as the settlement DLQ,
+                // but it is saying something different, which is why it is its own rule with its own
+                // runbook line. A failing export never reaches this queue — the worker turns a
+                // repeatedly failing job into a FAILED export the customer can read, and its attempt
+                // budget (3) is deliberately below the queue's maxReceiveCount (5). So a message here
+                // is one the worker could not parse or resolve at all: a DEFECT, not an outage, and
+                // the only symptom it would otherwise have is a handful of customers whose exports
+                // never completed.
+                new AlertRule.Threshold(
+                        "statement_export_dlq_depth",
+                        "statement export requests have landed in the dead-letter queue — the platform "
+                                + "is producing export messages its own worker cannot process",
+                        "docs/local-dev.md §5.8 (cold statement export drill)",
+                        "sum(pix_statement_export_dlq_depth_messages)",
+                        alerts.dlqDepthBound(), Comparison.ABOVE, "messages"),
+
                 new AlertRule.Threshold(
                         "reconciliation_backlog_age",
                         "a transaction has been unresolved past the <5-min reconciliation SLO — "

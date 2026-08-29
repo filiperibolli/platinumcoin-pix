@@ -20,4 +20,22 @@ public interface AccountLimitClient {
      *                                unreachable) — a send cannot proceed without a known limit
      */
     long dailyLimitCents(String accountId);
+
+    /**
+     * When the account was opened (step 53).
+     *
+     * <p>Used by the cold-statement export to refuse a range reaching back before the account existed —
+     * months that can only ever be empty, so exporting them would hand a customer a file with a
+     * misleading gap in it instead of an answer.
+     *
+     * <p><b>On the name of this port.</b> It reads more than a limit now, and it is deliberately not
+     * renamed: it is referenced from thirty-odd places across production code, fakes and stubs, and a
+     * rename touching all of them inside a step about exports would bury the change that matters. Read
+     * it as "the account facts payment-service reads server-side" — both of them share one adapter and
+     * one endpoint ({@code GET /internal/accounts/{id}}), and neither is ever accepted from the client.
+     *
+     * @throws AccountLookupException the account could not be read (not found, or account-service is
+     *                                unreachable)
+     */
+    java.time.Instant openedAt(String accountId);
 }

@@ -57,7 +57,12 @@ public enum OutboxLane {
             "PixSettled", NOTIFICATION,
             "PixReceived", NOTIFICATION,
             "PixReversed", NOTIFICATION,
-            "FraudCheckSkipped", AUDIT);
+            "FraudCheckSkipped", AUDIT,
+            // A person IS waiting on this one: the customer who asked for the export is polling for it
+            // (step 53). It moves no money, so it is not SETTLEMENT; but it is the trigger of work
+            // somebody is watching a spinner for, which is exactly what separates NOTIFICATION from
+            // AUDIT — "late is a bad experience, late is not a wrong balance".
+            "StatementExportRequested", NOTIFICATION);
 
     /**
      * The partition key this lane's events carry on the sparse publisher index.

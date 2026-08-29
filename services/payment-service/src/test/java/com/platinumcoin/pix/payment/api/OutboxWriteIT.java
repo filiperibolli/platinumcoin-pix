@@ -146,6 +146,7 @@ class OutboxWriteIT extends LocalStackTestBase {
             "PixReceived,       NOTIFICATION",
             "PixReversed,       NOTIFICATION",
             "FraudCheckSkipped, AUDIT",
+            "StatementExportRequested, NOTIFICATION",
     })
     void everyEventTypeIsAssignedItsLane(String eventType, OutboxLane expectedLane) {
         String txId = "tx-lane-" + UUID.randomUUID();

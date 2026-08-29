@@ -15,8 +15,10 @@ import com.platinumcoin.pix.payment.domain.model.Direction;
 import com.platinumcoin.pix.payment.domain.model.LedgerOutcome;
 import com.platinumcoin.pix.payment.domain.model.StatementLine;
 import com.platinumcoin.pix.payment.domain.model.StatementPage;
+import com.platinumcoin.pix.payment.domain.model.StatementWindow;
 import com.platinumcoin.pix.payment.domain.port.LedgerClient;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -110,6 +112,19 @@ public class HttpLedgerClient implements LedgerClient {
     private final RestClient restClient;
     private final ServiceTokenIssuer serviceTokens;
 
+    /**
+     * How long the statement window (step 53) may be served from memory. Short enough that the derived
+     * month boundary cannot be wrong at the turn of a month, long enough that a burst of export
+     * requests costs one call.
+     */
+    private static final Duration WINDOW_CACHE_TTL = Duration.ofSeconds(30);
+
+    /** Last statement window read from the ledger; {@code null} until the first successful read. */
+    private volatile StatementWindow cachedWindow;
+
+    /** {@link System#nanoTime()} at which {@link #cachedWindow} was fetched — monotonic, not wall time. */
+    private volatile long cachedWindowAtNanos;
+
     /** For the one manual span this adapter draws (step 72). Nullable — money never waits on tracing. */
     private final Tracer tracer;
 
@@ -124,6 +139,10 @@ public class HttpLedgerClient implements LedgerClient {
             long amountCents,
             String entryType,
             String description) {
+    }
+
+    /** Wire shape of ledger-service's {@code StatementWindowResponse} (step 53). */
+    record StatementWindowView(long hotWindowDays, String coldBefore) {
     }
 
     /** Just enough of the problem+json body to read the {@code code} that discriminates a 422. */
@@ -329,6 +348,70 @@ public class HttpLedgerClient implements LedgerClient {
         } catch (ResourceAccessException e) {
             log.warn("Ledger unreachable or timed out on a statement read | accountId={} error={}",
                     accountId, e.getMessage());
+            throw new LedgerUnavailableException("ledger unreachable or timed out", e);
+        }
+    }
+
+    /**
+     * The hot/cold boundary (step 53), memoized for a few seconds.
+     *
+     * <h2>Why a cache at all, and why such a short one</h2>
+     * Every export request needs this answer, and it changes only when someone redeploys ledger-service
+     * with a different window — so re-asking per request would be an HTTP hop per request for a value
+     * that is effectively constant. But the value is <i>relative to now</i>, so it must not be held
+     * forever either: {@code coldBefore} drifts a second per second, and the derived month boundary
+     * would go stale at the turn of a month. A few seconds is comfortably shorter than the smallest
+     * unit anyone reasons in here (a month) and comfortably longer than a burst of requests.
+     *
+     * <p>Deliberately not a {@code @Cacheable}: two volatile fields, written without a lock because the
+     * worst race is two threads fetching the same value at the same moment and one of them winning.
+     * Adding Redis, a cache manager or a lock to protect that would be more machinery than the thing it
+     * protects. The age is measured with {@link System#nanoTime()} rather than a {@link java.time.Clock}
+     * on purpose: this is an elapsed-time question, not a business-time one, and a monotonic source
+     * cannot be surprised by the wall clock moving.
+     */
+    @Override
+    public StatementWindow statementWindow() {
+        StatementWindow cached = cachedWindow;
+        if (cached != null && System.nanoTime() - cachedWindowAtNanos < WINDOW_CACHE_TTL.toNanos()) {
+            log.debug("Serving the statement window from the in-process memo | hotWindowDays={} "
+                    + "coldBefore={}", cached.hotWindowDays(), cached.coldBefore());
+            return cached;
+        }
+
+        log.debug("GET /internal/ledger/statement-window");
+        try {
+            StatementWindowView view = restClient.get()
+                    .uri("/internal/ledger/statement-window")
+                    .headers(h -> serviceTokens.authorize(h, InternalApi.AUD_LEDGER,
+                            InternalApi.SCOPE_LEDGER_READ))
+                    .retrieve()
+                    .body(StatementWindowView.class);
+            if (view == null || view.coldBefore() == null) {
+                log.warn("Ledger answered the statement-window read with an empty body, treating as "
+                        + "unavailable");
+                throw new LedgerUnavailableException("ledger returned an empty statement-window body");
+            }
+            StatementWindow window =
+                    new StatementWindow(view.hotWindowDays(), Instant.parse(view.coldBefore()));
+            cachedWindowAtNanos = System.nanoTime();
+            cachedWindow = window;
+            log.info("Ledger answered the statement-window read, this is the hot/cold boundary every "
+                            + "export range is judged against | hotWindowDays={} coldBefore={}",
+                    window.hotWindowDays(), window.coldBefore());
+            return window;
+        } catch (java.time.format.DateTimeParseException e) {
+            log.warn("Ledger answered the statement-window read with an unparseable instant, treating "
+                    + "as unavailable | error={}", e.getMessage());
+            throw new LedgerUnavailableException("ledger returned an unparseable coldBefore", e);
+        } catch (RestClientResponseException e) {
+            log.warn("Ledger statement-window read failed with an unexpected status, treating as "
+                    + "unavailable | status={} code={}", e.getStatusCode().value(), problemCode(e));
+            throw new LedgerUnavailableException(
+                    "ledger statement-window read failed with status " + e.getStatusCode().value(), e);
+        } catch (ResourceAccessException e) {
+            log.warn("Ledger unreachable or timed out on a statement-window read | error={}",
+                    e.getMessage());
             throw new LedgerUnavailableException("ledger unreachable or timed out", e);
         }
     }

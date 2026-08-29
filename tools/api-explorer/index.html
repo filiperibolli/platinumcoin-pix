@@ -446,6 +446,18 @@
       });
     }
 
+    // Same idea for the cold statement export (step 53): the 202 hands back an exportId, and the poll
+    // card follows it with no copy-paste. Kept separate from the payment id on purpose — an export is
+    // a different resource with a different lifecycle, and one shared "last id" would silently point
+    // the wrong card at the wrong thing.
+    let lastExportId = null;
+    function captureExportId(id) {
+      lastExportId = id;
+      document.querySelectorAll('.card[data-sync-export-id="1"] input.reqpath').forEach((inp) => {
+        inp.value = '/v1/statement-exports/' + id;
+      });
+    }
+
     const authBase = () => $('authBaseUrl').value.replace(/\/+$/, '');
 
     function renderSession() {
@@ -529,6 +541,7 @@
       { match: '/internal/ledger/postings',  aud: 'ledger-service',  scope: 'ledger:post' },
       { match: '/internal/ledger/accounts',  aud: 'ledger-service',  scope: 'ledger:read' },
       { match: '/internal/ledger/clearing-balance', aud: 'ledger-service', scope: 'ledger:read' },
+      { match: '/internal/ledger/statement-window', aud: 'ledger-service', scope: 'ledger:read' },
       { match: '/internal/pix-keys/resolve', aud: 'account-service', scope: 'keys:resolve' },
       { match: '/internal/accounts',         aud: 'account-service', scope: 'accounts:read' },
       { match: '/internal/fraud/score',      aud: 'fraud-service',   scope: 'fraud:score' },
@@ -703,6 +716,16 @@
       $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') loginFromForm(); }));
 
     // ---- Service catalogue (data-driven tabs; mirrors tools/postman) ---------------------------
+    // The two months a cold-statement export card asks for. Computed, never hard-coded: compose sets
+    // the archiver's hot window to 0 days (docs/local-dev.md §5.8) so every PAST month is cold, and a
+    // literal "2025-01" would drift out of whatever the sandbox has actually archived — producing an
+    // empty CSV that looks like a bug and is not one.
+    const EXPORT_MONTHS = (() => {
+      const now = new Date();
+      const ym = (d) => d.toISOString().slice(0, 7);
+      return { from: ym(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))), to: ym(now) };
+    })();
+
     const SERVICES = [
       {
         id: 'auth', name: 'auth-service', port: 8081, baseUrl: 'http://localhost:8081',
@@ -869,6 +892,23 @@
             headers: {}, body: null,
           },
           {
+            method: 'POST', path: '/v1/accounts/me/statement/exports', title: 'Cold statement export — request it (202 + statusUrl)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'THE ASYNC-REQUEST CONTRACT (step 53). The statement card above serves the HOT window straight out of the ledger; everything older lives in object storage as one JSONL object per account and month (step 43), and merging a range of them is a SLOW read. So it is modelled as a REQUEST RESOURCE rather than a blocking query: 202 now, a statusUrl to poll, a CSV later — the standard fintech "building your statement…" pattern. THE exportId IS NOT RANDOM: it is SHA-256(accountId + " " + Idempotency-Key), which is what makes the conditional put of the request item BE the idempotency claim — one write establishes both "this request is mine" and "this is the resource it produced", with no second store to keep in step and no window where a key is claimed but its resource does not exist yet. The money path\'s pix_idempotency table is deliberately NOT reused: ADR-0014 makes a claim there carry the txId and endToEndId every monetary effect will bear, and an export has neither — borrowing it would mean writing a placeholder into the one field that ADR exists to protect. PROVE IT: press Send, note the id, then press Send AGAIN WITHOUT touching the ↻ button — the same id comes back, 202, and no second job is queued. Now press ↻ (new ids) and Send: a different key, a different export. Keep the key and change a month instead ⇒ 409 IDEMPOTENCY_KEY_REUSED, because the item stores a hash of the range it was created for. THE MONTHS ARE PRE-FILLED WITH REAL COLD ONES: compose sets ledger-service\'s hot window to 0 days so the archive is demonstrable at all, which also means 422 USE_HOT_STATEMENT is unreachable here without changing that dial (docs/local-dev.md §5.8.1). RUN THE COLD-ARCHIVE STEP FIRST or the CSV will be a header and nothing else — which is correct (a month with no movement is skipped, not failed) and a confusing first demo.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fromMonth: EXPORT_MONTHS.from, toMonth: EXPORT_MONTHS.to }, null, 2),
+          },
+          {
+            method: 'POST', path: '/v1/accounts/me/statement/exports', title: 'Cold statement export — inverted range (422 INVALID_EXPORT_RANGE)', auth: true, capturesToken: false, idempotent: true,
+            desc: 'Four things can make a range unservable and they all answer 422 INVALID_EXPORT_RANGE: inverted (this card), longer than 24 months, not a yyyy-MM month at all, or reaching back before the account existed. 422 AND NOT 400 ON PURPOSE: the body parsed and both fields are well-formed strings — what is wrong is the RANGE they describe, which is a business rule, not a binding failure (the same reasoning that puts LIMIT_EXCEEDED on 422). AND NOTHING WAS CLAIMED: validation runs BEFORE the conditional put, so you can fix the months and retry with the SAME Idempotency-Key. Try it — swap the two months and press Send again without pressing ↻: you get a 202, not a 409. Had the claim come first, a typo would have burned a key the client must now replace, for a mistake the platform had already caught.',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fromMonth: EXPORT_MONTHS.to, toMonth: EXPORT_MONTHS.from }, null, 2),
+          },
+          {
+            method: 'GET', path: '/v1/statement-exports/{exportId}', title: 'Cold statement export — poll it (PENDING → READY)', auth: true, capturesToken: false, syncFromExportId: true,
+            desc: 'THE POLLING HALF. The card above captures its exportId and drops it into the editable path here, so this is already pointed at the export you just requested. Press Send immediately: PENDING, with Retry-After: 5 — the platform telling a front-end how to poll politely instead of leaving it to invent an interval. Hit "Auto-poll" and watch it flip to READY within a couple of seconds. THE DOWNLOAD LINK IS SIGNED FOR THIS RESPONSE AND NEVER STORED: press Send after it is READY, wait a couple of seconds, press Send again \u2014 the downloadUrl and its expiresAt have BOTH moved. (Within the SAME second they are byte-identical, and that is not a bug: a SigV4 signature is a pure function of the key, the credentials, the expiry and a timestamp with second granularity, so two freshly-computed links inside one second are equal. It caught out an integration test in this very step.) That is deliberate — the item holds the S3 object KEY, because a URL minted when the worker finished would start expiring while the customer was still being told the file was ready, and an export whose only handle had expired would be permanently undownloadable even though the bytes are right there. OPEN THE downloadUrl IN A NEW TAB to get the CSV: it goes straight at object storage with no token, which is the point — a two-year export never streams through the platform\'s JVM. The trade is stated plainly: while it lives, that URL IS the credential, which is why it is short-lived. OWNERSHIP COMES FROM YOUR TOKEN: paste another account\'s export id and you get 404, never 403 — a 403 would confirm that a guessed id is real.',
+            headers: {}, body: null,
+          },
+          {
             method: 'GET', path: '/actuator/health', title: 'Health', auth: false, capturesToken: false,
             desc: 'Actuator health the compose healthcheck relies on. Expect {"status":"UP"}.',
             headers: {}, body: null,
@@ -941,6 +981,11 @@
           {
             method: 'GET', path: '/internal/ledger/clearing-balance', title: 'Clearing position \u2014 the sum of the 16 write shards', auth: true, capturesToken: false,
             desc: 'The question you most want answered about an instant-payment platform: <b>is the clearing account empty?</b> Empty means every payment that left a payer has either settled out to the network or come back to them. Until step 52 that was one GetItem on ACCOUNT#SPI_CLEARING \u2014 and at 500 TPS that single item is the platform\'s ceiling, because a DynamoDB partition caps near 1,000 WCU/s and a transactional write costs 2x, so roughly 500 transactional updates/s for the one item EVERY external send credits. Step 52 spreads those writes over SPI_CLEARING#00..#15, picked by hash of the txId \u2014 which buys throughput and takes away the single read. This endpoint gives it back: {balance, balanceCents, shardCount, shards[], missingAccounts[]}. <b>Read the shards array, not just the total</b>: a total of 0.00 made of +5.00 on one shard and -5.00 on another is not health, it is a reversal that compensated the WRONG sub-account \u2014 balanced, invisible in the sum, and exactly the bug the design prevents by persisting the shard on the transaction (clearingAccountId) so the reversal reads it instead of re-deriving it. Send an external Pix from the Journeys tab and watch one shard go up; missingAccounts is empty when the seed and CLEARING_SHARDS agree.',
+            headers: {}, body: null,
+          },
+          {
+            method: 'GET', path: '/internal/ledger/statement-window', title: 'Statement window \u2014 where hot ends and the archive begins', auth: true, capturesToken: false,
+            desc: 'ONE FACT, PUBLISHED SO IT IS NOT CONFIGURED TWICE (step 53). ledger-service owns the hot/cold boundary \u2014 it owns pix_ledger and it runs the archiving job \u2014 and payment-service needs the same number to answer 422 USE_HOT_STATEMENT on an export whose whole range is still online. The tempting shortcut is to give payment-service the same environment variable; that is one policy constant with two definitions, and it drifts the day somebody changes it on one side. So it is asked for instead, over this route, memoized ~30 seconds by the caller. coldBefore IS THE ANSWER TO COMPUTE WITH (an absolute instant, immune to any disagreement about what a day is across a DST change); hotWindowDays IS THE ANSWER TO READ (the number an operator recognises from the config). IT IS THE SAME ARITHMETIC THE ARCHIVER DOES \u2014 same property, same injected Clock \u2014 so the boundary reported here is the one the job actually applies, not a second opinion about it. NOTE THE SANDBOX VALUE: compose sets the window to 0 days so the archive is demonstrable at all, which is also why USE_HOT_STATEMENT is unreachable here without changing that dial (docs/local-dev.md \u00a75.8.1). Scoped ledger:read \u2014 it exposes no customer data at all, but there is no weaker scope and inventing one for a single route would be more surface than it saves.',
             headers: {}, body: null,
           },
           {
@@ -2930,7 +2975,9 @@ data:{"transactionId":"tx-5ef0aa55-59c9-4dc6-85a3-1d2860b46fcb","type":"PixSettl
       const editablePath = !ep.capturesToken;
       const canPoll = ep.method === 'GET' && !ep.capturesToken && !ep.stream;
       // A card that follows a payment starts pointed at the last one you created, if any.
-      const initialPath = ep.syncFromTxId && lastPaymentTxId ? '/v1/payments/' + lastPaymentTxId : ep.path;
+      const initialPath = ep.syncFromTxId && lastPaymentTxId ? '/v1/payments/' + lastPaymentTxId
+        : ep.syncFromExportId && lastExportId ? '/v1/statement-exports/' + lastExportId
+        : ep.path;
 
       // Pre-fill the editable headers box with exactly what the card sends (minus Authorization, which the
       // session attaches). Two ids are seeded as real, visible, editable values:
@@ -2983,6 +3030,7 @@ data:{"transactionId":"tx-5ef0aa55-59c9-4dc6-85a3-1d2860b46fcb","type":"PixSettl
         </div>`;
       card.querySelector('.head').onclick = () => card.classList.toggle('open');
       if (ep.syncFromTxId) card.dataset.syncTxId = '1';
+      if (ep.syncFromExportId) card.dataset.syncExportId = '1';
 
       const statusEl = () => $('status-' + key), outEl = () => $('out-' + key);
       const pathEl = () => $('path-' + key), hdrEl = () => $('hdr-' + key), bodyEl = () => $('body-' + key);
@@ -3055,6 +3103,8 @@ data:{"transactionId":"tx-5ef0aa55-59c9-4dc6-85a3-1d2860b46fcb","type":"PixSettl
                          userTokenOnly: !!ep.forceUserToken });
         // A returned transactionId is remembered and pushed into any status card that follows a payment.
         if (r.json && r.json.transactionId) captureTxId(r.json.transactionId);
+        // Ditto for an export request's id (step 53).
+        if (r.json && r.json.exportId) captureExportId(r.json.exportId);
         statusEl().textContent = `${r.status} ${r.statusText}`;
         statusEl().className = 'status ' + (r.ok ? 'ok' : 'bad');
         outEl().style.display = 'block'; outEl().textContent = pretty(r);
@@ -3760,6 +3810,183 @@ data:{"transactionId":"tx-5ef0aa55-59c9-4dc6-85a3-1d2860b46fcb","type":"PixSettl
               return { ok: r.status === 400 && code === 'INVALID_CURSOR',
                 state: `${r.status} · ${code || ''}`,
                 note: r.status === 400 ? 'problem+json, with the correlationId that greps every service log.' : null };
+            },
+          },
+        ],
+      },
+
+      // ---------------------------------------------------------------------------------------- //
+      {
+        id: 'export', name: 'Cold export', phone: false,
+        title: 'Ask for a slow read — 202, a status URL, and a CSV out of object storage',
+        blurb: 'The last user-facing flow the platform grows (step 53), and the only one that answers a read '
+          + 'with a REQUEST RESOURCE instead of data. The statement journey serves the hot window straight out '
+          + 'of the ledger; everything older lives in object storage as one JSONL object per account and month, '
+          + 'and merging a range of them is slow enough that holding a request thread open for it would be a '
+          + 'design mistake. So the platform hands back a 202 and an id, assembles the artifact on a queue-driven '
+          + 'worker, and lets the client poll politely. Everything it is built from already existed — outbox, '
+          + 'SNS fan-out, a filtered queue, a DLQ, the S3 archive — which is the point: a new flow should mostly '
+          + 'be a new arrangement of mechanisms that are already load-bearing.',
+        steps: [
+          {
+            title: 'Log in as alice (whose history we export)', call: 'POST :8081 /v1/auth/login',
+            why: 'The export is <code>/me</code>: the account comes from this token\'s <b>accountId</b> claim, '
+              + 'and the request body has no account field at all. "Export someone else\'s history" is not a '
+              + 'request this API can express (Domain Safety Rule #1).',
+            run: async (ctx) => {
+              const r = await doLogin('alice', 'alice');
+              ctx.aliceToken = r.json && r.json.accessToken;
+              ctx.vars.alice = identity ? identity.accountId : '';
+              return { ok: r.ok, state: `${r.status} ${r.statusText}`, body: redactedLogin(r) };
+            },
+          },
+          {
+            title: 'Ask ledger-service where the hot window ends', call: 'GET :8085 /internal/ledger/statement-window',
+            why: 'The one number this whole flow is judged against, read from <b>the service that owns it</b>. '
+              + 'payment-service does not configure its own copy: the window is ledger-service\'s property (it '
+              + 'owns the table and runs the archiving job), and one policy constant with two definitions is the '
+              + 'class of bug step 52 refused for clearing shards. This step is shown for what it teaches — '
+              + 'payment-service makes this call itself, memoized ~30s, on every export request. '
+              + '<b>Note the sandbox value:</b> compose sets it to <b>0 days</b> so the archive is demonstrable '
+              + 'at all, which is also why <code>422 USE_HOT_STATEMENT</code> is unreachable here without '
+              + 'changing that dial (docs/local-dev.md §5.8.1).',
+            run: async (ctx) => {
+              const r = await send({ method: 'GET', base: baseOf('ledger'),
+                path: '/internal/ledger/statement-window' });
+              ctx.vars.window = r.json ? `${r.json.hotWindowDays}d` : '';
+              return { ok: r.ok, state: `${r.status} · hotWindowDays=${r.json && r.json.hotWindowDays}`,
+                body: pretty(r) };
+            },
+          },
+          {
+            title: 'Request the export', call: 'POST :8084 /v1/accounts/me/statement/exports',
+            why: 'The 202. Note what comes back and what does not: an <b>exportId</b> and a <b>statusUrl</b>, and '
+              + 'no data at all. The id is <b>derived</b> — SHA-256(accountId + " " + Idempotency-Key) — which is '
+              + 'what lets the conditional put of the request item BE the idempotency claim, with no second store '
+              + 'to keep in step. The request item and the event that will wake the worker are written in <b>one '
+              + 'TransactWriteItems</b>, so an accepted export is never an export nothing will pick up (ADR-0004).',
+            run: async (ctx) => {
+              ctx.exportKey = crypto.randomUUID();
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/statement/exports',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': ctx.exportKey },
+                body: JSON.stringify({ fromMonth: EXPORT_MONTHS.from, toMonth: EXPORT_MONTHS.to }) });
+              ctx.exportId = r.json && r.json.exportId;
+              if (ctx.exportId) captureExportId(ctx.exportId);
+              ctx.vars.exportId = ctx.exportId || '';
+              return { ok: r.status === 202, state: `${r.status} · ${r.json && r.json.status}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Retry the SAME key — one export, not two', call: 'POST :8084 /v1/accounts/me/statement/exports',
+            why: 'Exactly what a client that lost the first response would do. It gets a <b>202 with the same '
+              + 'exportId</b>, indistinguishable from the original — which is the property that makes retrying '
+              + 'safe to do blindly — and no second job is queued, because the conditional put lost and nothing '
+              + 'was written.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/statement/exports',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': ctx.exportKey },
+                body: JSON.stringify({ fromMonth: EXPORT_MONTHS.from, toMonth: EXPORT_MONTHS.to }) });
+              const same = r.json && r.json.exportId === ctx.exportId;
+              return { ok: r.status === 202 && same,
+                state: same ? `202 · same exportId` : `${r.status} · DIFFERENT id`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Same key, different range — 409', call: 'POST :8084 /v1/accounts/me/statement/exports',
+            why: 'The other thing a collision can mean. One key identifies one business operation, so reusing it '
+              + 'for a <b>different</b> range is a client bug, not a retry — and the platform can tell only '
+              + 'because the request item stores a <b>hash of the range</b> it was created for. The derived id '
+              + 'alone does not remember what was asked for.',
+            run: async (ctx) => {
+              const r = await send({ method: 'POST', base: baseOf('payment'), token: ctx.aliceToken,
+                path: '/v1/accounts/me/statement/exports',
+                headers: { 'Content-Type': 'application/json', 'Idempotency-Key': ctx.exportKey },
+                body: JSON.stringify({ fromMonth: EXPORT_MONTHS.to, toMonth: EXPORT_MONTHS.to }) });
+              const code = r.json && r.json.code;
+              return { ok: r.status === 409 && code === 'IDEMPOTENCY_KEY_REUSED',
+                state: `${r.status} · ${code || ''}`, body: pretty(r) };
+            },
+          },
+          {
+            title: 'Poll it to READY', call: 'GET :8084 /v1/statement-exports/{exportId}',
+            why: 'While <b>PENDING</b> the response carries <code>Retry-After: 5</code> — the platform telling a '
+              + 'front-end how to poll politely rather than leaving it to invent an interval. Behind the scenes '
+              + 'the event drained an outbox lane to SNS, passed the queue\'s filter policy, and a worker in '
+              + 'payment-service read the archive months, merged them and flipped a <b>guarded</b> '
+              + 'PENDING → READY. That guard is what makes a redelivered message harmless.',
+            run: async (ctx) => {
+              let last = null;
+              for (let i = 0; i < 30; i++) {
+                last = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                  path: `/v1/statement-exports/${ctx.exportId}` });
+                if (last.json && last.json.status !== 'PENDING') break;
+                await sleep(1000);
+              }
+              const status = last && last.json && last.json.status;
+              ctx.downloadUrl = last && last.json && last.json.downloadUrl;
+              ctx.vars.status = status || '';
+              return { ok: status === 'READY', state: `${last && last.status} · ${status}`, body: pretty(last),
+                note: status === 'READY' ? null : 'Still PENDING after 30s — is payment-service up?' };
+            },
+          },
+          {
+            title: 'The link is minted fresh, not stored', call: 'GET :8084 /v1/statement-exports/{exportId}',
+            why: 'Poll again a second later and compare: <b>a later expiresAt, and a different signature, for the same object</b>. The item holds the '
+              + 'S3 object <i>key</i>, never a URL — one signed when the worker finished would start expiring '
+              + 'while the customer was still being told the file was ready, and an export whose only handle had '
+              + 'expired would be permanently undownloadable even though the bytes are right there.',
+            run: async (ctx) => {
+              // Past a second, because a SigV4 signature's timestamp has second granularity: two links
+              // computed inside one second are byte-identical even though both were freshly signed.
+              await sleep(1100);
+              const r = await send({ method: 'GET', base: baseOf('payment'), token: ctx.aliceToken,
+                path: `/v1/statement-exports/${ctx.exportId}` });
+              const fresh = r.json && r.json.downloadUrl;
+              const differs = !!fresh && !!ctx.downloadUrl && fresh !== ctx.downloadUrl;
+              ctx.downloadUrl = fresh || ctx.downloadUrl;
+              return { ok: differs, state: differs ? 'two polls, two signatures' : 'same URL twice',
+                note: `expiresAt=${r.json && r.json.expiresAt} — a stored link could not have moved` };
+            },
+          },
+          {
+            title: 'Download the CSV — straight at object storage, no token', call: 'GET the presigned URL',
+            why: 'The bytes never pass through the platform. A presigned URL is signed locally and used by the '
+              + 'browser directly, so a two-year export is a redirect rather than an unbounded response held on '
+              + 'a request thread. The trade is stated plainly: while it lives, <b>that URL is the credential</b> '
+              + '— which is exactly why it is short-lived and never stored. Money ships as BOTH '
+              + '<code>amountCents</code> and a decimal <code>amount</code>: a person reads one, a machine '
+              + 're-importing the file reads the other, and emitting only the decimal would make this artifact '
+              + 'the single place in the platform where an amount exists solely as a formatted string.',
+            run: async (ctx) => {
+              if (!ctx.downloadUrl) return { ok: false, state: 'no download link — the export never became READY' };
+              const res = await fetch(ctx.downloadUrl);
+              const text = await res.text();
+              const lines = text.split('\n').filter((l) => l.length > 0);
+              ctx.vars.rows = String(Math.max(lines.length - 1, 0));
+              return { ok: res.ok, state: `${res.status} · ${Math.max(lines.length - 1, 0)} rows`,
+                body: lines.slice(0, 6).join('\n'),
+                note: lines.length <= 1
+                  ? 'Header only — this sandbox has nothing archived for those months yet. Run the cold-archive '
+                    + 'step of docs/local-dev.md §5.8 first; an empty month is skipped, not failed.'
+                  : null };
+            },
+          },
+          {
+            title: 'Another account cannot read it', call: 'GET :8084 /v1/statement-exports/{exportId} as bob',
+            why: 'The id is not a capability. bob holds a perfectly valid token and the real exportId, and gets '
+              + '<b>404, never 403</b> — the two cases ("no such export" and "not yours") are deliberately '
+              + 'indistinguishable, because a 403 would confirm that a guessed id is real. And the ownership '
+              + 'check runs <b>before</b> the link is minted: a presigned URL handed to the wrong caller is a '
+              + 'leak no later status code could take back.',
+            run: async (ctx) => {
+              const login = await doLogin('bob', 'bob');
+              const r = await send({ method: 'GET', base: baseOf('payment'),
+                token: login.json && login.json.accessToken,
+                path: `/v1/statement-exports/${ctx.exportId}` });
+              return { ok: r.status === 404, state: `${r.status} · ${(r.json && r.json.code) || ''}`,
+                body: pretty(r) };
             },
           },
         ],

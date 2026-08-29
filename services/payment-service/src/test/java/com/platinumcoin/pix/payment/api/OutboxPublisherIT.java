@@ -238,6 +238,39 @@ class OutboxPublisherIT extends LocalStackTestBase {
                 .isBetween(295.0, 360.0);
     }
 
+    /**
+     * <b>An outbox event whose partition is not a transaction still leaves the index</b> (step 53).
+     *
+     * <p>Every event in the platform used to live under {@code TX#<txId>}, and the publisher exploited
+     * that: it recovered the item's key by stripping {@code "TX#"} off the index projection and putting
+     * it back on to mark the event published. Step 53 added a second kind of outbox item —
+     * {@code EXPORT#<exportId>} — and that reconstruction silently produced a key nothing lives under,
+     * so {@code REMOVE gsi3pk} hit its {@code attribute_exists} guard, logged "already published", and
+     * left the item <b>in the sparse index for ever</b>. The publisher then re-found and re-published it
+     * on every single tick: an infinite publish loop, a lane that can never drain, and a worker handed
+     * the same message until someone noticed.
+     *
+     * <p>Nothing about it was visible in isolation — a test that ticks the publisher a bounded number of
+     * times sees a successful publish every time. It took the whole module's suite, where
+     * {@code drainOutbox()} insists every lane reaches empty, to make it fail.
+     */
+    @Test
+    void anEventInANonTransactionPartitionAlsoLeavesTheSparseIndex() {
+        String exportId = "exp-" + UUID.randomUUID().toString().replace("-", "");
+        String eventId = "evt-" + UUID.randomUUID();
+        putExportOutboxEvent(exportId, eventId);
+
+        assertThat(unpublishedEventIds(OutboxLane.NOTIFICATION))
+                .as("the freshly written event is waiting on its lane")
+                .contains(eventId);
+
+        publisher.publishLane(OutboxLane.NOTIFICATION);
+
+        assertThat(unpublishedEventIds(OutboxLane.NOTIFICATION))
+                .as("published once means gone from the index — otherwise every tick republishes it")
+                .doesNotContain(eventId);
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -286,6 +319,37 @@ class OutboxPublisherIT extends LocalStackTestBase {
                 .items();
         assertThat(items).as("one outbox event for an approved external send").hasSize(1);
         return items.get(0);
+    }
+
+    /**
+     * An outbox item in an {@code EXPORT#} partition, written the way
+     * {@code DynamoStatementExportRepository} writes it — by hand rather than through that repository,
+     * so this test keeps failing if the export flow ever changes its partition prefix again.
+     */
+    private void putExportOutboxEvent(String exportId, String eventId) {
+        dynamo.putItem(request -> request.tableName(TABLE).item(Map.of(
+                "pk", AttributeValue.fromS("EXPORT#" + exportId),
+                "sk", AttributeValue.fromS("OUTBOX#" + eventId),
+                "eventId", AttributeValue.fromS(eventId),
+                "eventType", AttributeValue.fromS("StatementExportRequested"),
+                "payload", AttributeValue.fromS("{\"exportId\":\"" + exportId + "\"}"),
+                "occurredAt", AttributeValue.fromS(Instant.now().toString()),
+                "lane", AttributeValue.fromS(OutboxLane.NOTIFICATION.name()),
+                "gsi3pk", AttributeValue.fromS(OutboxLane.NOTIFICATION.gsi3pk()),
+                "gsi3sk", AttributeValue.fromS(Instant.now().toString()))));
+    }
+
+    /** What the publisher would find on its next poll, read the way the publisher reads it. */
+    private List<String> unpublishedEventIds(OutboxLane lane) {
+        return dynamo.query(request -> request
+                        .tableName(TABLE)
+                        .indexName("gsi3")
+                        .keyConditionExpression("gsi3pk = :p")
+                        .expressionAttributeValues(
+                                Map.of(":p", AttributeValue.fromS(lane.gsi3pk()))))
+                .items().stream()
+                .map(item -> item.get("eventId").s())
+                .toList();
     }
 
     /** What the publisher would find on its next poll, read the way the publisher reads it. */

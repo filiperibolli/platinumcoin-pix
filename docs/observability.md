@@ -100,6 +100,7 @@ Who emits which stage:
 | `pix_cache_hit_total` / `pix_cache_miss_total` | counter (`cache=balance`) | payment-service | hit-rate floor | 40 |
 | `pix_outbox_lag_seconds` | gauge (`lane=settlement\|notification\|audit`) | payment-service | per lane: `> 12s` / `> 60s` / `> 300s` | 29, 71 |
 | `pix_settlement_dlq_depth_messages` | gauge | settlement-service | `> 0` | 32 |
+| `pix_statement_export_dlq_depth_messages` | gauge | payment-service | `> 0` | 53 |
 | `pix_reconciliation_oldest_seconds` | gauge | settlement-service | `> 300s` | 34/35/67 |
 | `pix_fraud_score_seconds` | timer | fraud-service | — (budget lives in ADR-0005) | 24 |
 | `pix_dependency_seconds` | timer (`dependency`, `operation`) | every service that calls DynamoDB or Redis | — (feeds the p99-per-dependency panel) | 72 |
@@ -204,6 +205,7 @@ thresholds come from `pix.settlement.alerts.*` so a drill can tighten a window f
 |---|---|---|---|---|
 | `settlement_silence` | silence | debits flowing **and** `SETTLED` unchanged | 120s | `docs/local-dev.md` §5.5 |
 | `settlement_dlq_depth` | threshold | DLQ depth `> 0` | 0 | `docs/local-dev.md` §5.5 |
+| `statement_export_dlq_depth` | threshold | export DLQ depth `> 0` | 0 | `docs/local-dev.md` §5.8 |
 | `reconciliation_backlog_age` | threshold | oldest stuck `> 300s` | 300s | `docs/local-dev.md` §5.5 |
 | `outbox_publisher_lag_settlement` | threshold | oldest unpublished on the **settlement** lane `> 12s` | 12s | `docs/local-dev.md` §5.4 |
 | `outbox_publisher_lag_notification` | threshold | oldest unpublished on the **notification** lane `> 60s` | 60s | `docs/local-dev.md` §5.4 |
@@ -216,9 +218,18 @@ thresholds come from `pix.settlement.alerts.*` so a drill can tighten a window f
 | `balance_error_budget_fast_burn` | burn rate | balance p99 budget burning `> 14.4×` over **1h and 5m** | 14.4× | this file, §4.1 |
 | `balance_error_budget_slow_burn` | burn rate | balance p99 budget burning `> 6×` over **6h and 30m** | 6× | this file, §4.1 |
 
+> **Why `statement_export_dlq_depth` is a separate rule from `settlement_dlq_depth`** (step 53). Same
+> shape, same zero bound, different sentence. A settlement in the DLQ means *money is parked in clearing
+> with no automatic path releasing it*. An export request there means something narrower and stranger:
+> the export worker turns a repeatedly failing job into a `FAILED` export the customer can read, and its
+> attempt budget (3) is deliberately below the queue's `maxReceiveCount` (5) — so an ordinary failure
+> never reaches this queue. What does reach it is a message the worker could not parse or could not
+> resolve to an export at all, i.e. **a defect in the platform's own message production**, whose only
+> other symptom would be a handful of customers whose exports silently never completed.
+
 ### 4.1 Error budgets — the difference between a threshold and a budget (step 72, ADR-0021)
 
-The nine rules above are **absolute thresholds**, and all nine stay: *"the DLQ has a message in it"* is a
+The ten rules above are **absolute thresholds**, and all nine stay: *"the DLQ has a message in it"* is a
 fact worth saying whatever else is true. What none of them can say is **how much of the period's tolerance
 a breach has already cost** — so every one of them reads with the same urgency, and the question an
 operator actually has at 03:00 (*is this eating the quarter's budget, or is it a blip?*) has no source.

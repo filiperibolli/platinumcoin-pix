@@ -11,4 +11,13 @@ public class IdempotencyKeyReuseException extends RuntimeException {
     public IdempotencyKeyReuseException() {
         super("Idempotency-Key reused with a different payload");
     }
+
+    /**
+     * With a detail naming what the key was originally used for (step 53). Safe to return: the stored
+     * request is the caller's own, and saying which one it was is the difference between a client
+     * fixing its bug and a client guessing.
+     */
+    public IdempotencyKeyReuseException(String message) {
+        super(message);
+    }
 }

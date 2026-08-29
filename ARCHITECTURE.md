@@ -245,7 +245,7 @@ nothing to orchestrate on our side of an already-settled inbound payment.
 | `GET /v1/notifications/stream` | SSE stream | notification-service |
 | `POST /v1/inbound/pix` | **Not a client endpoint** — the webhook BACEN calls to deliver a Pix to us (§6.8) | settlement-service. JWT-exempt (an external party holds no token of ours) and guarded by the shared `SPI_WEBHOOK_TOKEN`; idempotent by `endToEndId`. Deliberately **absent from `docs/api/openapi.yaml`**, which is the *client-facing* contract — no app ever calls this |
 | `POST /v1/accounts/me/statement/exports` | Async cold-statement export | `202` + `statusUrl`; `Idempotency-Key` required (S14 — added to the OpenAPI contract-first in step 53) |
-| `GET /v1/statement-exports/{exportId}` | Export status / download | `PENDING → READY` with a presigned `downloadUrl` (S14, §6.14) |
+| `GET /v1/statement-exports/{exportId}` | Export status / download | `PENDING → READY \| FAILED`; a presigned `downloadUrl` signed per read, `Retry-After: 5` while `PENDING` (S14, §6.14) |
 
 **Internal ports (`/internal/**`) are not part of this contract.** They are the seam services use to
 read and write each other's data (ADR-0006) — `POST /internal/ledger/postings`,
@@ -1028,9 +1028,10 @@ sequenceDiagram
     Note over PAY,Q: export request item + outbox event →<br/>SNS → filtered subscription → queue
     Q->>PAY: export requested (worker · dedupe by eventId)
     PAY->>S3: read archive account=<id>/yyyy-MM.jsonl for the range
-    PAY->>S3: write exports/<accountId>/<exportId>.csv · presign (1h)
-    PAY->>PAY: guarded PENDING → READY
+    PAY->>S3: write exports/<accountId>/<exportId>.csv
+    PAY->>PAY: guarded PENDING → READY (stores the object KEY)
     App->>PAY: GET /v1/statement-exports/{exportId}
+    PAY->>S3: presign the stored key (1h from this read)
     PAY-->>App: 200 {status: READY, downloadUrl, expiresAt}
 ```
 
@@ -1038,6 +1039,40 @@ sequenceDiagram
 replays the same `exportId`), same guarded transitions (redelivery cannot double-produce artifacts),
 same DLQ + alerting. Ranges inside the hot window are steered to the hot statement API
 (`422 USE_HOT_STATEMENT`) instead of silently duplicating it. Step 53.
+
+Four decisions in it are worth stating, because each one is a place the obvious version is worse:
+
+1. **The `exportId` is derived, so the request item's conditional put *is* the idempotency claim.**
+   `exp-<SHA-256(accountId + " " + idempotencyKey)>`, which means a retry computes the same id and
+   collides with the item already there. There is no companion record in `pix_idempotency`: that store
+   is shaped around money operations, where ADR-0014 makes the claim carry the `txId`/`endToEndId`
+   every monetary effect will bear. An export has neither, so reusing it would mean writing a
+   placeholder into the one field that ADR exists to protect. Nothing here moves money, and that is
+   precisely what buys the cheaper structure.
+2. **The download URL is signed per read, never stored.** The item holds the S3 object key. A URL
+   minted when the worker finished would start expiring while the customer was still being told the
+   file was ready, and an export whose only handle had expired would be permanently undownloadable
+   even though the bytes are right there.
+3. **payment-service asks ledger-service where the hot window ends** (`GET
+   /internal/ledger/statement-window`, scoped `ledger:read`) rather than reading the same environment
+   variable. The window is ledger-service's property — it owns the table and runs the archiving job —
+   and one policy constant with two definitions is the shape of bug §6.3 records for clearing shards.
+   The cost is one internal call on the request path (memoized ~30s) and an export refused when the
+   ledger is unreachable, which is the correct direction: nothing else can say what is exportable.
+4. **The artifact is streamed, never assembled in memory.** The archive is read a line at a time and
+   each row goes straight into the object-storage sink, which buffers 5 MiB (S3's minimum non-final
+   part size) before flushing a multipart part — so memory is bounded by the part size rather than by
+   the export. It matters because the worker runs in the same JVM as `POST /v1/payments/pix`: a
+   buffered two-year export of an active account would be an `OutOfMemoryError` on the money path, and
+   the cold tier is *by definition* the one allowed to hold more than fits in RAM. Below the threshold
+   it stays a single `PutObject`, which is nearly every export; a failure mid-stream aborts the upload,
+   because abandoned parts stay billable and never appear in a bucket listing.
+5. **The worker's attempt budget (3) sits *below* the queue's `maxReceiveCount` (5), on purpose.** The
+   two budgets answer different questions: the worker's decides when the *customer* gets an answer (a
+   `FAILED` export with a reason), the queue's decides when an *operator* does. Ordering them this way
+   means an ordinary failing export never reaches the DLQ, so a non-zero DLQ depth means the platform
+   produced a message its own worker cannot parse or resolve — a defect, which is what makes that
+   alert worth waking up for.
 
 ---
 

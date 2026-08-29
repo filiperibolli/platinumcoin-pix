@@ -211,8 +211,8 @@ public class PublishOutboxEventsUseCase {
                 done.countDown();
                 log.error("An outbox lane could not hand an event to its publisher pool, the event "
                                 + "stays on the index for the next tick | lane={} eventId={} "
-                                + "eventType={} txId={}",
-                        lane, event.eventId(), event.eventType(), event.txId(), e);
+                                + "eventType={} pk={}",
+                        lane, event.eventId(), event.eventType(), event.partitionKey(), e);
             }
         }
         await(done);
@@ -235,7 +235,7 @@ public class PublishOutboxEventsUseCase {
         // the AWS SDK's — with [cid=… tx=…], which is what keeps `grep <correlationId>` returning the
         // WHOLE path of a payment once the flow has left the request thread (ADR-0012). Cleared in the
         // finally: pool threads are reused, and a leaked id would mislabel the next event.
-        CorrelationId.restore(event.correlationId(), event.txId());
+        CorrelationId.restore(event.correlationId(), event.partitionKey());
         try {
             return publishAndMarkInContext(event);
         } finally {
@@ -249,8 +249,8 @@ public class PublishOutboxEventsUseCase {
         } catch (RuntimeException e) {
             log.error("Publishing an outbox event failed, it stays in the sparse index and the next "
                             + "tick will retry it, nothing is lost | lane={} eventId={} eventType={} "
-                            + "txId={} occurredAt={} correlationId={}",
-                    event.lane(), event.eventId(), event.eventType(), event.txId(), event.occurredAt(),
+                            + "pk={} occurredAt={} correlationId={}",
+                    event.lane(), event.eventId(), event.eventType(), event.partitionKey(), event.occurredAt(),
                     event.correlationId(), e);
             return false;
         }
@@ -262,8 +262,8 @@ public class PublishOutboxEventsUseCase {
             // exactly the failure this ordering was chosen to accept.
             log.warn("An outbox event was published but marking it published failed, the next tick "
                             + "will publish it again and consumers will dedupe it by eventId | "
-                            + "lane={} eventId={} eventType={} txId={}",
-                    event.lane(), event.eventId(), event.eventType(), event.txId(), e);
+                            + "lane={} eventId={} eventType={} pk={}",
+                    event.lane(), event.eventId(), event.eventType(), event.partitionKey(), e);
             return false;
         }
         return true;

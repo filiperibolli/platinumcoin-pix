@@ -190,7 +190,9 @@ class PublishOutboxEventsUseCaseTest {
     private static PendingOutboxEvent event(String eventId, Instant occurredAt, OutboxLane lane) {
         String eventType = lane == OutboxLane.SETTLEMENT ? "PixDebited" : "PixSettled";
         return new PendingOutboxEvent(
-                "tx-" + eventId, eventId, eventType, "{\"amountCents\":12550}", occurredAt, "corr-1",
+                // A WHOLE partition key, the way the index hands it over — not a bare id the adapter
+                // would have to re-prefix (step 53; see PendingOutboxEvent).
+                "TX#tx-" + eventId, eventId, eventType, "{\"amountCents\":12550}", occurredAt, "corr-1",
                 // No traceparent: this use case never reads one — carrying the trace across the broker is
                 // the publisher adapter's job (step 72), which is exactly why the seam stays testable here.
                 null,

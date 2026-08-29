@@ -9,6 +9,7 @@ import com.platinumcoin.pix.ledger.domain.service.AccountPolicy;
 import com.platinumcoin.pix.ledger.domain.usecase.ArchiveOldEntriesUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetBalanceUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetClearingPositionUseCase;
+import com.platinumcoin.pix.ledger.domain.usecase.GetStatementWindowUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.GetStatementUseCase;
 import com.platinumcoin.pix.ledger.domain.usecase.PostDoubleEntryUseCase;
 import java.time.Clock;
@@ -136,6 +137,18 @@ public class LedgerBeansConfig {
      * one enormous one. Same {@link Clock} as the postings, so the cutoff is measured against the very
      * clock that stamped the entries being compared.
      */
+    /**
+     * The hot/cold boundary, published for payment-service's export validation (step 53). It takes the
+     * <b>same</b> {@code hot-window-days} property and the same {@link Clock} the archiving job below
+     * takes, which is what makes the published boundary the one the job actually applies rather than a
+     * second opinion about it.
+     */
+    @Bean
+    GetStatementWindowUseCase getStatementWindowUseCase(
+            @Value("${pix.archive.hot-window-days}") long hotWindowDays, Clock clock) {
+        return new GetStatementWindowUseCase(Duration.ofDays(hotWindowDays), clock);
+    }
+
     @Bean
     ArchiveOldEntriesUseCase archiveOldEntriesUseCase(
             LedgerArchiveReader archiveReader,

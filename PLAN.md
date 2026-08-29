@@ -166,7 +166,6 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > infrastructure (or the deviation documented against `docs/load/BOTTLENECK.md`), a WCU/RCU + cost budget,
   > p99 **per dependency** (fed by step 72's tracing), and a degradation scenario. Best run after
   > [step 71](docs/steps/step-71.md), or it measures a ~25 events/s outbox drain.
-- [ ] [Step 64](docs/steps/step-64.md) — **PROPOSED**, not yet prioritized: fraud-service runtime latency/failure injection (`AdminConfigController`, mirrors mock-bacen-spi) — closes a gap `docs/load/RESULTS.md` found (fraud-service has no runtime dial, unlike mock-bacen-spi, so its fail-open path can't be drilled outside a test process). Numbered 64 (next free number) because it was drafted out of band, not in top-to-bottom order — see the step file's own note.
 
 ## Sprint 13 — API tooling & DX
 **Flow delivered:** the two living manual-test harnesses — Postman collection + single-file HTML API explorer — **finalized** (both grown incrementally, one entry per endpoint, since their first endpoint).
@@ -234,14 +233,49 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > req/s ceiling). The point is a correctness property no benchmark would have caught — a reversal
   > that re-derives its shard is perfectly balanced, leaves Σ untouched, and still drains the wrong
   > sub-account. Pinned by `ReversalShardIT`, proven non-vacuous by mutation.
-- [ ] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
+- [x] [Step 53](docs/steps/step-53.md) — cold statement retrieval: async export with `202` + polling status URL + download artifact
+  > **Done 2026-08-29.** Three spec corrections are recorded rather than worked around: the download URL
+  > is signed **per read** instead of at completion (a link minted when the worker finishes starts
+  > expiring while the customer is still being told the file is ready, and an export whose only handle
+  > expired is permanently undownloadable); the hot-window boundary is **asked of ledger-service** over a
+  > new `GET /internal/ledger/statement-window` instead of being configured twice; and the step's own
+  > verify block names months this sandbox has never archived, so `docs/local-dev.md` §5.8.1 computes
+  > them instead.
+  > **What the build caught that no isolated test could — the result worth carrying out of this step.**
+  > Four defects survived a green module and a green test class and died only to the *full reactor*
+  > `mvn verify`. (1) The outbox publisher rebuilt an item's key as `"TX#" + <stripped id>`, an unstated
+  > assumption that every outbox item belongs to a transaction; `EXPORT#` items broke it silently, so
+  > the mark-published update hit a key nothing lives under and **the event never left the sparse index
+  > — republished on every tick, for ever**. The writer had been duplicated and the reader shared, and
+  > the duplication even carried a javadoc defending itself. (2) Resolving the SQS queue URL in a bean
+  > constructor made an unreachable *reporting* queue a startup failure for the service that runs
+  > `POST /v1/payments/pix` — and destroyed a property `ApplicationContextIT`'s own javadoc had written
+  > down. (3) `/money-safety-review` found the worker buffering an unbounded range in the JVM that
+  > serves the money path. (4) The worker IT assumed a shared outbox lane was its own; 2024 `PixSettled`
+  > items left by sibling ITs meant its event was never reached.
+  > **The lesson, stated plainly:** a green module proves less than it looks like it does. Every one of
+  > these needed the whole suite, sharing one LocalStack and one set of tables, to become visible.
 
 ---
 
 ## Backlog — noted, deliberately not scheduled as steps
 
-From the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)). Recorded here so a
-reader finds the answer next to the question; none of these is an unfinished task.
+Mostly from the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)), plus
+anything else the project decided to name rather than schedule. Recorded here so a reader finds the answer
+next to the question; none of these is an unfinished task.
+
+- **Fraud-service runtime latency/failure injection** — an `AdminConfigController` mirroring
+  mock-bacen-spi's. It was drafted as [step 64](docs/steps/step-64.md) (the next free number, out of
+  top-to-bottom order) and stayed `PROPOSED` without ever being prioritized; **moved here instead of
+  being carried as a permanently-unstarted step**, because an item nobody intends to take next is
+  backlog whatever the file calls it. The step file stays where it is — the design work in it is done
+  and is what makes this cheap to promote later.
+  **The real gap it names, which is still open:** fraud-service has no runtime dial, unlike
+  mock-bacen-spi, so **its fail-open path cannot be drilled against the running stack** — only inside a
+  test process. `docs/load/RESULTS.md` found this: the design's most load-bearing availability claim
+  (ADR-0005/ADR-0018 — a slow or broken fraud check must never block a payment) is proven by tests and
+  by argument, never by a lever an operator can pull on the sandbox and watch. Promote it the day
+  someone wants to *demonstrate* fail-open rather than read about it.
 
 - **P2 · a self-transfer answers `503 LEDGER_UNAVAILABLE`, and asks the client to retry it.** Found by the
   step-49 explorer audit, not fixed there (adjacent to that step's scope). Paying your own Pix key reaches

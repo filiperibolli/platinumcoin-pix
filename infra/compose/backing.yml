@@ -132,21 +132,22 @@ services:
       # and simply died with `QueueDoesNotExist`.
       #
       # So "healthy" here means "seeded", which is what the rest of the stack actually depends on. The
-      # probe asserts the LAST resource created by the LAST init script (09-audit.sh, step 42) exists —
+      # probe asserts the LAST resource created by the LAST init script (10-statement-exports.sh,
+      # step 53) exists —
       # scripts run in lexical order (inside THIS container's init runner, regardless of which endpoint
       # each one targets), so that one existing means all of them ran, including 01-05/07 against
-      # dynamodb-local. The last script now ends on S3, so the probe checks the pix-statement-archive
+      # dynamodb-local. The last script now ends on S3, so the probe checks the pix-statement-exports
       # bucket via `aws s3api head-bucket` against LocalStack itself at localhost:4566 (S3, like SQS,
       # lives here — unlike DynamoDB, which moved to dynamodb-local). This mirrors exactly what the
       # Testcontainers harness does (LocalStackTestBase waits on that same script's final log line);
       # compose and the tests agree on what readiness means.
       #
-      # IF YOU ADD A SCRIPT THAT SORTS AFTER 09, MOVE THIS PROBE (and the harness's marker) TO IT.
+      # IF YOU ADD A SCRIPT THAT SORTS AFTER 10, MOVE THIS PROBE (and the harness's marker) TO IT.
       # (tools/k6/seed/ deliberately does NOT live here, even though it seeds DynamoDB too: this
       # directory is glob-mounted verbatim into every module's Testcontainers LocalStack container
       # (LocalStackTestBase), so anything dropped here runs on every `mvn verify`, not just load tests.
       # The k6 fixture script is run manually, once, against the already-up compose stack instead.)
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3api head-bucket --bucket pix-statement-archive >/dev/null 2>&1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null && AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1 aws --endpoint-url=http://localhost:4566 s3api head-bucket --bucket pix-statement-exports >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5

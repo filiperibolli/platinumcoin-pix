@@ -82,6 +82,25 @@
             <artifactId>sns</artifactId>
         </dependency>
 
+        <!-- S3 SDK v2 (step 53): the cold statement export READS ledger-service's archive bucket
+             (pix-statement-archive, an object-storage artifact with a published layout, not a table —
+             so ADR-0006 is untouched) and WRITES its own CSV artifacts to pix-statement-exports. The
+             same artifact carries S3Presigner, which signs a download URL locally and never calls S3,
+             so a two-year export never streams through this JVM. Confined to infra/. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
+        <!-- SQS SDK v2 (step 53): payment-service's FIRST queue consumer — the statement-export worker
+             long-polls statement-export-queue. Until this step SQS was test-scope only, and the IAM
+             policy said "no SQS permission at all"; both change here, narrowed to that one queue and
+             its DLQ (infra/iam/payment-service-policy.json). -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sqs</artifactId>
+        </dependency>
+
         <!-- Context-load + controller ITs (*IT → failsafe, runs on `mvn verify`). -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -107,15 +126,6 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>localstack</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- SQS SDK, TEST scope only (step 29): OutboxPublisherIT asserts a published event actually
-             ARRIVES on settlement-queue — i.e. that the fan-out and the eventType filter policy of
-             step 26 accept what this service publishes. The service itself never touches SQS. -->
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>sqs</artifactId>
             <scope>test</scope>
         </dependency>
 

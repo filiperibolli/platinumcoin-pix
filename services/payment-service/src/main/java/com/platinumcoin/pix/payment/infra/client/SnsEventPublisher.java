@@ -131,9 +131,9 @@ public class SnsEventPublisher implements EventPublisher {
                 sns.publish(request -> request.topicArn(topicArn).message(body).messageAttributes(attributes));
 
         log.info("Outbox item published to SNS, subscriptions matching its eventType will receive it | "
-                        + "eventId={} eventType={} txId={} correlationId={} traceparent={} topicArn={} "
+                        + "eventId={} eventType={} pk={} correlationId={} traceparent={} topicArn={} "
                         + "messageId={}",
-                event.eventId(), event.eventType(), event.txId(), event.correlationId(), traceparent,
+                event.eventId(), event.eventType(), event.partitionKey(), event.correlationId(), traceparent,
                 topicArn, response.messageId());
     }
 

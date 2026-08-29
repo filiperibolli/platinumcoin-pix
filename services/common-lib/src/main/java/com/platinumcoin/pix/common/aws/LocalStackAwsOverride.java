@@ -2,6 +2,7 @@ package com.platinumcoin.pix.common.aws;
 
 import java.net.URI;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 
@@ -80,5 +81,31 @@ public record LocalStackAwsOverride(
     /** {@link #applyTo(AwsClientBuilder, String)} against the standalone DynamoDB endpoint. */
     public <B extends AwsClientBuilder<B, ?>> B applyToDynamoDb(B builder) {
         return applyTo(builder, dynamoDbEndpointUrl == null ? endpointUrl : dynamoDbEndpointUrl);
+    }
+
+    /**
+     * The same override, exposed as its two parts, for a builder that {@link #applyTo} cannot type.
+     *
+     * <h2>Why this exists (step 53)</h2>
+     * {@code S3Presigner.Builder} is an {@code SdkPresigner} builder, not an {@code AwsClientBuilder},
+     * so it does not satisfy {@link #applyTo}'s bound — and the first attempt at that presigner built
+     * its own {@code StaticCredentialsProvider} inside payment-service, which is precisely the shape
+     * ADR-0013 removed. The ArchUnit rule
+     * ({@code PlatformArchRules.noServiceCarriesAStaticAwsCredential}) caught it, and the honest fix is
+     * this pair of accessors rather than an exception to the rule: the credential is still constructed
+     * <b>only here</b>, in the one class that exists only under the {@code local} profile, and a caller
+     * receives it already built.
+     *
+     * <p>The alternative — an S3-typed overload — would make common-lib depend on the S3 SDK for the
+     * sake of one service's presigner. These two accessors depend on nothing new.
+     */
+    public AwsCredentialsProvider credentialsProvider() {
+        return StaticCredentialsProvider.create(
+                AwsBasicCredentials.create(accessKeyId, secretAccessKey));
+    }
+
+    /** The SNS/SQS/S3 endpoint as a {@link URI}, for the same callers as {@link #credentialsProvider()}. */
+    public URI endpointUri() {
+        return URI.create(endpointUrl);
     }
 }
