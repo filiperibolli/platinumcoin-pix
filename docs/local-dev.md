@@ -78,11 +78,9 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `PIX_SCHEDULERS_ENABLED` | `true` | Master switch for background jobs; integration tests set it `false` and drive each tick explicitly |
 | `NOTIFICATION_QUEUE_NAME` | `notification-queue` | The queue notification-service consumes (step 38). Resolved to its URL at **startup**, like settlement's — a push service that boots healthy while consuming nothing is the worst failure mode it has |
 | `NOTIFICATION_STREAM_TIMEOUT_MS` | `1800000` (30 min) | How long one SSE connection may live before the server closes it. A closing stream is a non-event: `EventSource` reconnects on its own, which is much of why SSE was chosen over WebSocket |
-| `STATEMENT_ARCHIVE_BUCKET` | `pix-statement-archive` | The cold archive. It is **ledger-service's output and payment-service's input**, so both service blocks in compose name it explicitly — a mismatch would produce empty exports with no error anywhere (step 53) |
 | `STATEMENT_EXPORT_BUCKET` | `pix-statement-exports` | Where the assembled CSV artifacts land |
 | `EXPORT_LINK_TTL_MINUTES` | `60` | Lifetime of a presigned download link. Signed per read and never stored, so this is "how long one answer's link lasts", not "how long the export lasts" |
 | `EXPORT_MAX_ATTEMPTS` | `3` | How many deliveries the worker spends on one export before turning it into a visible `FAILED`. **Must stay below the queue's `maxReceiveCount` (5)** so the customer gets an answer before the message reaches the DLQ |
-| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` | `0` in compose, `90` in the jar | Where the online statement ends. Set to 0 locally so the archive (and therefore the export) is demonstrable in a fresh sandbox; it is also why `422 USE_HOT_STATEMENT` is unreachable by default — see §5.8.1 |
 | `NOTIFICATION_HEARTBEAT_DELAY_MS` | `25000` | Heartbeat sweep interval. Under the ~30s idle timeout common in proxies/load balancers, so a silent stream is never reclaimed underneath us — and it doubles as the registry's garbage collector, since a vanished client is only discovered by a failed write |
 | `NOTIFICATION_TOKEN_PARAM` | `access_token` | Query parameter the SSE handshake accepts a token in, because a browser's `EventSource` cannot set headers. **Blank it to accept only the `Authorization` header.** The route is *not* on the JWT allow-list: the parameter is rewritten into a header before common-lib's filter runs, so there is still exactly one JWT verifier in the platform |
 | `AUDIT_QUEUE_NAME` | `audit-queue` | The **unfiltered** queue settlement-service's audit writer consumes (step 43). Resolved to its URL at startup — an audit writer that boots healthy while consuming nothing leaves a five-year compliance obligation silently unmet |
@@ -91,8 +89,8 @@ Set in `infra/docker-compose.yml`; local defaults in each service's `application
 | `AUDIT_BATCH_MAX_EVENTS` / `AUDIT_BATCH_MAX_AGE_SECONDS` | `100` / `30` | The cost/latency dial: an object is written when it holds 100 events **or** when its *oldest* buffered event has waited 30s. Raising the count means fewer, larger objects (cheaper, faster to scan) at the price of holding an event in memory longer — durably held by SQS the whole time |
 | `AUDIT_LEASE_SECONDS` | `120` | How long the writer owns a buffered message. **Must exceed** `AUDIT_BATCH_MAX_AGE_SECONDS` plus the write: the batch holds messages past the queue's own 30s visibility timeout, so whoever holds a message extends its lease or SQS hands it to another receiver and the line is written twice for nothing |
 | `AUDIT_BATCH_SIZE` / `AUDIT_WAIT_TIME_SECONDS` / `AUDIT_CONSUMER_DELAY_MS` | `10` / `20` / `500` | audit-queue long-poll tuning. The wait is capped at runtime by the time left before the flush deadline — a static 20s poll against a 30s promise would let a batch age up to 50s |
-| `STATEMENT_ARCHIVE_BUCKET` | `pix-statement-archive` | The cold statement archive (step 43), written by **ledger-service** — the owner of `pix_ledger` (ADR-0006). A deliberately *plain* bucket: derived, rebuildable data whose monthly object each run rewrites whole |
-| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` | `90` (**`0` in compose**) | Where the online statement ends and the archive begins. Compose overrides it to `0` on purpose: a freshly seeded sandbox has no entry older than 90 days, so the demo job would archive nothing and look broken. With `0` the cutoff is "now" and every posting is archived on the next run |
+| `STATEMENT_ARCHIVE_BUCKET` | `pix-statement-archive` | The cold statement archive (step 43), written by **ledger-service** — the owner of `pix_ledger` (ADR-0006). A deliberately *plain* bucket: derived, rebuildable data whose monthly object each run rewrites whole. It is **ledger-service's output and payment-service's input**, so both service blocks in compose name it explicitly — a mismatch would produce empty exports with no error anywhere (step 53) |
+| `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` | `90` (**`0` in compose**) | Where the online statement ends and the archive begins. Compose overrides it to `0` on purpose: a freshly seeded sandbox has no entry older than 90 days, so the demo job would archive nothing and look broken. With `0` the cutoff is "now" and every posting is archived on the next run — which is also why `422 USE_HOT_STATEMENT` is unreachable by default (§5.8.1) |
 | `STATEMENT_ARCHIVE_DELAY_MS` | `3600000` (**`60000` in compose**) | How often the archive job runs — hourly in production (batch work over cold data), every minute in the sandbox so a demo does not wait an hour |
 | `STATEMENT_ARCHIVE_MAX_ACCOUNTS` | `500` | Per-run bound on the account **scan**. A larger ledger degrades into more runs rather than one enormous one |
 | `NOTIFICATION_BATCH_SIZE` / `NOTIFICATION_WAIT_TIME_SECONDS` / `NOTIFICATION_CONSUMER_DELAY_MS` | `10` / `20` / `500` | notification-queue long-poll tuning. Batch is larger than settlement's 5 because handling one message is a map lookup and a socket write, not a 12s call to BACEN |
@@ -772,6 +770,40 @@ aws --endpoint-url=http://localhost:4566 s3api delete-object --bucket pix-audit-
 > and IAM actually denying anything (ADR-0013: LocalStack emulates the IAM APIs but enforces nothing).
 > Locally we prove the posture is *configured and refused*; we never prove the bytes are immutable.
 
+#### Statement export fan-out + artifact bucket (mirror of `infra/localstack/init/10-statement-exports.sh`, step 53)
+
+**This is the LAST init script**, and its final log line is the readiness marker both
+`LocalStackTestBase` and the compose healthcheck wait on. A script sorting after it must move **both**
+markers or every integration test in the repo starts failing with a two-minute startup timeout.
+
+```bash
+awslocal sqs create-queue --queue-name statement-export-queue-dlq
+awslocal sqs set-queue-attributes --queue-url <dlq-url> \
+  --attributes '{"MessageRetentionPeriod":"1209600"}'          # 14 days
+
+awslocal sqs create-queue --queue-name statement-export-queue
+awslocal sqs set-queue-attributes --queue-url <url> --attributes '{
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"<dlq-arn>\",\"maxReceiveCount\":\"5\"}",
+  "VisibilityTimeout": "120",
+  "ReceiveMessageWaitTimeSeconds": "20"
+}'
+
+awslocal sns subscribe --topic-arn <pix-events> --protocol sqs --notification-endpoint <queue-arn>
+awslocal sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name FilterPolicy --attribute-value '{"eventType":["StatementExportRequested"]}'
+awslocal sns set-subscription-attributes --subscription-arn <arn> \
+  --attribute-name RawMessageDelivery --attribute-value true
+
+awslocal s3api create-bucket --bucket pix-statement-exports          # plain: derived, rewritable
+```
+
+| Choice | Why it is that number |
+|---|---|
+| `VisibilityTimeout` 120s — **four times** the other queues' | Assembling an export reads S3 objects and renders a CSV; a 30s lease would have SQS hand the message to a second worker while the first was still writing |
+| `maxReceiveCount` 5 while the worker gives up at **3** (`EXPORT_MAX_ATTEMPTS`) | Two different budgets. The worker's 3 exist so the **customer** gets a visible `FAILED` with a reason; the queue's 5 exist so a message the worker cannot even parse still leaves the queue. A `FAILED` export is normal operation; anything reaching `statement-export-queue-dlq` is a defect, which is why the DLQ depth is alerted on as one (`docs/observability.md` §4) |
+| `FilterPolicy` on exactly one event type | The export worker must never be woken by a payment event — that would cost a receive, a parse and a rejection for every Pix the platform processes |
+| A **plain** bucket, unlike `pix-audit-log` | An export artifact is derived data twice over and a retry rewrites the same key whole; on a version-locked bucket that would pile up undeletable copies of a regenerable file (`docs/data-model.md` §8.3) |
+
 #### Consumer dedup table (mirror of `infra/localstack/init/07-processed-events.sh`, step 29)
 
 One tiny table shared by **every** consumer, with the consumer name in the key — the deliberate
@@ -981,9 +1013,11 @@ a sandbox with seeded fixtures; secrets (passwords, hashes, JWTs, credentials) n
 
 ## 5. Testing each flow by hand
 
-> This section documents the **target** state — the platform is built vertically (`PLAN.md`),
-> so a subsection only works once its sprint is checked off. Today: **5.1** (Sprint 1) and
-> **5.2** (Sprint 2) run; everything from 5.3 on is written ahead of the code.
+> **Every subsection below runs today** — `PLAN.md` is complete, so this section stopped documenting a
+> target state and started documenting the platform. It is written to be pasted **top to bottom**: §5.1
+> exports `$TOKEN` and §5.2 registers the two named Pix keys that §5.3 and §5.6 send to. Jumping
+> straight into the middle is the one way to make these blocks fail, and it fails honestly —
+> `422 KEY_NOT_FOUND` for a directory nobody has registered anything in.
 
 ### 5.1 Login
 
@@ -995,11 +1029,34 @@ TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login \
 
 ### 5.2 Pix keys
 
+> **Run this section before §5.3 and §5.6, and not only because the docs are ordered.** `pix_keys` is
+> created empty and **no key is ever seeded** — deliberately, so that the conditional-put uniqueness
+> path of step 10 is exercised by a real registration rather than assumed
+> (`infra/localstack/init/04-seed-accounts.sh`). A fresh sandbox therefore knows `alice@platinum.com`
+> and `bob@platinum.com` only after the two registrations below; skip them and every later send
+> answers `422 KEY_NOT_FOUND`, which is the platform being right about an empty directory.
+
 ```bash
+# An EVP key: the value is server-generated, so this is the one registration that cannot collide.
 curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"keyType":"EVP"}' | jq
+
+# The two named keys the rest of §5 sends to. alice's is what makes resolution case 1 below
+# interesting; bob's is the destination of §5.3 and the payee of §5.6.
+curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"alice@platinum.com"}' | jq
+
+BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
+curl -s -X POST localhost:8082/v1/pix-keys -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' -d '{"keyType":"EMAIL","keyValue":"bob@platinum.com"}' | jq
+
 curl -s localhost:8082/v1/pix-keys -H "Authorization: Bearer $TOKEN" | jq
 ```
+
+> Re-running the two named registrations answers `409 KEY_ALREADY_EXISTS` — that is the
+> `attribute_not_exists(pk)` condition doing its job, not a broken command. `docker compose -f
+> infra/docker-compose.yml down -v` puts the directory back to empty.
 
 **Resolution — the DICT role, and its four answers (steps 11 + 30).** The interesting one is the last:
 
@@ -1022,6 +1079,8 @@ docker compose -f infra/docker-compose.yml start mock-bacen-spi
 ```
 
 ### 5.3 Send Pix (internal: alice → bob's key)
+
+Needs `bob@platinum.com` registered — §5.2 does it. Without it this is a `422 KEY_NOT_FOUND`.
 
 ```bash
 IDEM=$(uuidgen)
@@ -1154,9 +1213,12 @@ curl -s -X POST localhost:9090/simulate/inbound-pix -H 'Content-Type: applicatio
 #    "outcome":"CREDITED","deliveryAttempts":1}
 
 # bob was credited: debit SPI_CLEARING / credit acc-002 (entryType=PIX_IN) — the MIRROR of an
-# outbound send, which debits the payer and credits clearing
+# outbound send, which debits the payer and credits clearing.
+# NOTE the credential: this is an /internal/** port, so bob's USER token gets 403
+# INTERNAL_PORT_FORBIDDEN here (step 68, ADR-0017 — see §3.1). Reading the ledger directly is a
+# service operation; bob's own view of the same money is GET /v1/accounts/me/balance (§5.7).
 curl -s localhost:8085/internal/ledger/accounts/acc-002/balance \
-  -H "Authorization: Bearer $BOB" | jq
+  -H "Authorization: Bearer $(scripts/service-token.sh ledger-service ledger:read)" | jq
 ```
 
 **Prove the dedupe.** Re-present the same payment straight at the webhook with the id the call above
@@ -1422,7 +1484,7 @@ curl -s -X POST localhost:8084/v1/accounts/me/statement/exports \
 
 # 3. Someone else's export is 404, never 403 — the id is not confirmed to exist.
 BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
-  -d '{"email":"bob@platinum.com","password":"senha123"}' | jq -r .accessToken)
+  -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
 curl -s -o /dev/null -w '%{http_code}\n' "localhost:8084/v1/statement-exports/$EXP" \
   -H "Authorization: Bearer $BOB"    # 404
 
@@ -1473,13 +1535,13 @@ catalog, alert-rule table and the reasoning behind both: **`docs/observability.m
 curl -s localhost:8084/actuator/prometheus | grep '^pix_payments_stage_total'
 
 # (b) Prometheus — all nine targets should be `up` (eight services + itself)
-open http://localhost:9091/targets
+xdg-open http://localhost:9091/targets   # macOS: `open`
 curl -s 'localhost:9091/api/v1/query?query=up{job="pix-services"}' | jq -r \
   '.data.result[] | "\(.metric.service)\t\(.value[1])"'
 
 # (c) Grafana — anonymous Viewer, so there is no login to get past (admin/admin to edit).
 #     Home is the funnel; both dashboards are provisioned from infra/observability/, never click-ops.
-open http://localhost:3000
+xdg-open http://localhost:3000           # macOS: `open`
 
 # (d) the funnel, straight from Prometheus — send a Pix first, then watch it move
 curl -s 'localhost:9091/api/v1/query?query=sum by (stage) (pix_payments_stage_total{outcome="ok"})' \
@@ -1632,7 +1694,7 @@ bash load/k6/run-degradation.sh                  # the peak with an 8s BACEN, Σ
 # Postman (living since step 04, finalized step 48): import tools/postman/pix-platform.postman_collection.json + environment
 
 # API explorer (living since auth-service, finalized step 49): open from disk, log in, click any request
-open tools/api-explorer/index.html
+xdg-open tools/api-explorer/index.html   # macOS: `open`
 ```
 
 **Read the exit code, not the graph.** `run.sh` exits with k6's own code — non-zero means an SLO
@@ -1661,7 +1723,7 @@ artifact that proves the vertical slices **compose** into a system, and then bre
 prove the system recovers.
 
 ```bash
-bash scripts/e2e-journey.sh              # ~6 min: the journey + both failure drills
+bash scripts/e2e-journey.sh              # 7-10 min: the journey + both failure drills
 bash scripts/e2e-journey.sh --quick      # ~40s: happy path only — does NOT prove KR3.1/KR3.2
 bash scripts/e2e-journey.sh --verbose    # echo every response body as it arrives
 ```
@@ -1684,7 +1746,16 @@ Nine acts and two drills, each line of output one claim:
 > **The drills use the shipped timers on purpose.** Restarting settlement-service with
 > `RECONCILIATION_STUCK_AFTER_SECONDS=5` would finish the run in forty seconds and prove nothing: the
 > claim is "*< 5 min with the thresholds we ship*". The SQS backoff ladder (5, 10, 20, 40, 60s capped)
-> puts the sixth receive at ~135s, which is when the message dead-letters.
+> puts the sixth receive at ~135s in principle; **measured on the reference machine it dead-letters at
+> 205-225s**, because each delivery also pays the client's own 12s SPI timeout before it fails. Budget
+> the wall clock from the measured number, not the ladder.
+>
+> **DRILL A is tight by construction, and knowing the margin is the point.** Its 300s SLO clock starts
+> at the send and includes the dead-lettering, the wait to be paged, and the operator's redrive — so on
+> the reference machine the transaction resolves at ~270s with roughly **30s of headroom**. A slower
+> host will blow it, and that is the drill reporting the truth about that host rather than a broken
+> assertion. `SLO_SECONDS`, `DLQ_WAIT_SECONDS` and `ALERT_WAIT_SECONDS` are env-overridable for exactly
+> that case; overriding them changes what the run proves, so say so if you do.
 
 > **Safe to Ctrl-C.** An `EXIT` trap always restores mock-bacen's knobs (`failureRate`, `rejectKeys`), so
 > an aborted drill never leaves a sandbox that refuses every payment afterwards.
@@ -1724,9 +1795,10 @@ bash scripts/e2e-journey.sh                     # or: mvn -Pe2e -pl tests/e2e -a
 ```
 
 ```bash
-# The Postman collection (step 48) is a test suite, not only a workbench: 85 requests and ~220
-# assertions over every public and internal endpoint, runnable headless. (223 on a freshly
-# reseeded stack, 221 after: a few assertions are conditional on what the stack already holds.) It exercises what the other
+# The Postman collection (step 48) is a test suite, not only a workbench: 92 requests and 241-243
+# assertions over every public and internal endpoint, runnable headless. (Grown since step 48 by
+# steps 52 and 53; a few assertions are conditional on what the stack already holds, so the exact
+# count moves by one or two between a freshly reseeded stack and a used one.) It exercises what the other
 # two do not — the RFC 7807 body of every documented refusal, the identity rules on the internal
 # seam, and the two journeys' conservation checks (Σ balances before and after a payment, and again
 # after replaying its Idempotency-Key). Needs the stack up and `newman` (`npm i -g newman`).
