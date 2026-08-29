@@ -161,6 +161,9 @@ services:
       # `load/k6/run.sh` sets TRACING_SAMPLING_PROBABILITY for its measured runs and restores it after
       # (step 47); everything else gets 1.0 by simply not setting it.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${TRACING_SAMPLING_PROBABILITY:-1.0}
+      # Clearing write shards (step 52): see the CLEARING_SHARDS comment in the settlement-service
+      # block. Every service that assigns, sums or seeds a clearing account reads this same value.
+      CLEARING_SHARDS: ${CLEARING_SHARDS:-16}
       # Must match auth-service's JWT_SECRET — ledger-service only validates tokens. Every one of
       # its endpoints is authenticated (/internal/** is not on jwt.public-paths).
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
@@ -257,6 +260,9 @@ services:
       JWT_SECRET: dev-only-hs256-secret-change-me-please-32b
       # PlatinumCoin's Pix participant id, baked into every endToEndId (E<ISPB><ts><random>).
       PIX_ISPB: "12345678"
+      # Clearing write shards (step 52): see the CLEARING_SHARDS comment in the settlement-service
+      # block. Every service that assigns, sums or seeds a clearing account reads this same value.
+      CLEARING_SHARDS: ${CLEARING_SHARDS:-16}
       # account-service base URL: payment-service reads the debtor's dailyLimitCents from its
       # internal endpoint before reserving daily-limit headroom (step 20), and resolves the
       # destination Pix key against its DICT seam (step 21). Service name on the shared network;
@@ -507,6 +513,12 @@ services:
       # Where an external send parks money and where an inbound Pix draws it from (step 37). MUST be the
       # identical id payment-service uses, or the two directions stop netting against one balance.
       PIX_CLEARING_ACCOUNT_ID: SPI_CLEARING
+      # How many sub-accounts that clearing position is spread over (step 52). ONE variable for the
+      # whole stack: payment-service assigns shards, settlement-service assigns them on arrivals,
+      # ledger-service sums them, and the seed script creates them — four readers of one number,
+      # because a disagreement parks money in an account nobody else sums. `1` is the un-sharded
+      # baseline (docs/sharding-findings.md).
+      CLEARING_SHARDS: ${CLEARING_SHARDS:-16}
       # account-service's DICT, called by the inbound flow to turn the destination key into the account
       # to credit. Reached by service name on the shared network.
       ACCOUNT_SERVICE_BASE_URL: http://account-service:8082

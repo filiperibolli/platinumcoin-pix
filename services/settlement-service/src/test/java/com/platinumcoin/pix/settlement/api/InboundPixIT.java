@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.platinumcoin.pix.common.event.OutboxLane;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.common.testsupport.LocalStackTestBase;
 import com.platinumcoin.pix.settlement.support.SettlementTestSupport;
 import com.platinumcoin.pix.settlement.support.StubLedgerClient;
@@ -59,13 +60,24 @@ class InboundPixIT extends LocalStackTestBase {
     @Autowired
     StubPixKeyResolver keys;
 
+    /**
+     * The clearing shard map the application is wired with (step 52). An arrival debits one of
+     * {@code SPI_CLEARING#00..#15}, chosen by hash of its own {@code in-<endToEndId>} identity, so this
+     * IT asks the resolver which account to look at instead of naming one — the same question the use
+     * case asked.
+     */
+    @Autowired
+    ClearingAccountResolver clearing;
+
     @BeforeEach
     void resetStubs() {
         ledger.reset();
         keys.reset();
         keys.register(PAYEE_KEY, PAYEE);
-        // The world before the payment: nothing parked in clearing, the payee holding a balance.
+        // The world before the payment: nothing parked in clearing (any of its accounts), the payee
+        // holding a balance.
         ledger.setBalance(CLEARING, 0L);
+        clearing.allShards().forEach(shard -> ledger.setBalance(shard, 0L));
         ledger.setBalance(PAYEE, 100_000L);
     }
 
@@ -84,7 +96,13 @@ class InboundPixIT extends LocalStackTestBase {
         // The mirror of an outbound send: debit clearing, credit the payee, keyed by in-<endToEndId>.
         assertThat(ledger.postings()).extracting(StubLedgerClient.Posting::txId).contains("in-" + e2eId);
         assertThat(ledger.balance(PAYEE)).as("the payee received the money").isEqualTo(130_000L);
-        assertThat(ledger.balance(CLEARING))
+        // The mirror leg lands on the SHARD this arrival's txId resolves to, and the clearing position
+        // as a whole is down by exactly the amount — the money entered the bank from the Pix network.
+        String shard = clearing.shardFor("in-" + e2eId);
+        assertThat(ledger.balance(shard))
+                .as("the resolved shard carries the mirror leg")
+                .isEqualTo(-AMOUNT);
+        assertThat(clearingPosition())
                 .as("clearing carries the mirror leg — money that entered from the Pix network")
                 .isEqualTo(-AMOUNT);
 
@@ -93,7 +111,9 @@ class InboundPixIT extends LocalStackTestBase {
         assertThat(meta.get("direction").s()).isEqualTo("INBOUND");
         assertThat(meta.get("creditorAccountId").s()).isEqualTo(PAYEE);
         assertThat(meta.get("creditorKey").s()).isEqualTo(PAYEE_KEY);
-        assertThat(meta.get("clearingAccountId").s()).isEqualTo(CLEARING);
+        // The exact sub-account that was debited is recorded, not the base id: any later correction
+        // has to name it back (step 52).
+        assertThat(meta.get("clearingAccountId").s()).isEqualTo(shard);
         assertThat(meta.get("amountCents").n()).isEqualTo(Long.toString(AMOUNT));
         assertThat(meta.get("payerName").s()).isEqualTo("External Payer");
         // Index-consistent from the moment it is written: the endToEndId lookup and the status scan.
@@ -128,7 +148,7 @@ class InboundPixIT extends LocalStackTestBase {
                 .andExpect(jsonPath("$.outcome").value("ALREADY_PROCESSED"));
 
         assertThat(ledger.balance(PAYEE)).as("credited exactly once").isEqualTo(130_000L);
-        assertThat(ledger.balance(CLEARING)).isEqualTo(-AMOUNT);
+        assertThat(clearingPosition()).as("drawn down once, not twice").isEqualTo(-AMOUNT);
         assertThat(outboxEvents("in-" + e2eId)).as("one payment, one announcement").hasSize(1);
     }
 
@@ -221,5 +241,10 @@ class InboundPixIT extends LocalStackTestBase {
                 .expressionAttributeValues(Map.of(
                         ":pk", AttributeValue.fromS("TX#" + txId),
                         ":prefix", AttributeValue.fromS("OUTBOX#")))).items();
+    }
+
+    /** Σ over every clearing account — the position, which is what one arrival moves (step 52). */
+    private long clearingPosition() {
+        return clearing.clearingAccounts().stream().mapToLong(ledger::balance).sum();
     }
 }

@@ -61,6 +61,14 @@ pix:
   # not a constant, because step 52 shards it into SPI_CLEARING#00..#15 to spread a hot partition —
   # a change of which id is passed, never of the orchestration or of the ledger contract.
   clearing-account-id: ${PIX_CLEARING_ACCOUNT_ID:SPI_CLEARING}
+  # How many sub-accounts that clearing position is spread over (step 52). One DynamoDB partition caps
+  # at 1,000 WCU/s and a transactional write costs 2x, so a single clearing item ceilings near 500
+  # transactional updates/s — and every external send credits it. 16 shards move that ceiling an order
+  # of magnitude out; `1` returns the bare id and is the un-sharded baseline the findings doc measures
+  # against. THE COUNT IS A CAPACITY KNOB, NOT A CORRECTNESS ONE: the shard a debit used is persisted on
+  # the transaction and a reversal reads it back, so changing this never strands an in-flight payment.
+  # It must match the shard count the ledger seeds and sums (CLEARING_SHARDS in docker-compose).
+  clearing-shards: ${CLEARING_SHARDS:16}
   # Balance cache-aside (step 40, ADR-0008). The TTL is deliberately SHORT and does two jobs: on the
   # happy path it caps how long a balance may be displayed after an unrelated write elsewhere, and when
   # ledger-service's post-commit eviction is lost (it is best-effort — a Redis blip, a crash between the

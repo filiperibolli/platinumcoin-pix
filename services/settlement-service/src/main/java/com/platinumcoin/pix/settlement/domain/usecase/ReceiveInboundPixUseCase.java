@@ -2,6 +2,7 @@ package com.platinumcoin.pix.settlement.domain.usecase;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.web.CorrelationId;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.settlement.domain.exception.InboundAlreadyRecordedException;
 import com.platinumcoin.pix.settlement.domain.exception.InboundKeyNotFoundException;
 import com.platinumcoin.pix.settlement.domain.exception.InvalidWebhookTokenException;
@@ -77,11 +78,15 @@ public class ReceiveInboundPixUseCase {
     private final LedgerClient ledger;
     private final InboundTransactionStore transactions;
     private final byte[] expectedToken;
-    private final String clearingAccountId;
+    /**
+     * Which clearing sub-account this arrival is debited from (step 52) — resolved per Pix by hash of
+     * {@code in-<endToEndId>}, because an inbound credit hits the same hot item an outbound send does.
+     */
+    private final ClearingAccountResolver clearing;
     private final Clock clock;
 
     public ReceiveInboundPixUseCase(PixKeyResolver keys, LedgerClient ledger,
-            InboundTransactionStore transactions, String webhookToken, String clearingAccountId,
+            InboundTransactionStore transactions, String webhookToken, ClearingAccountResolver clearing,
             Clock clock) {
         this.keys = keys;
         this.ledger = ledger;
@@ -92,7 +97,7 @@ public class ReceiveInboundPixUseCase {
         this.expectedToken = webhookToken == null || webhookToken.isBlank()
                 ? new byte[0]
                 : webhookToken.getBytes(StandardCharsets.UTF_8);
-        this.clearingAccountId = clearingAccountId;
+        this.clearing = clearing;
         this.clock = clock;
     }
 
@@ -115,6 +120,9 @@ public class ReceiveInboundPixUseCase {
 
         String creditorAccountId = resolvePayee(command);
         String txId = InboundTransaction.txIdFor(command.endToEndId());
+        // The shard is keyed by that same txId, so a redelivery of this arrival debits the account the
+        // first delivery debited and the ledger's txId guard still recognises one operation.
+        String clearingAccountId = clearing.shardFor(txId);
         Instant now = clock.instant();
 
         // Debit clearing / credit the payee — the mirror of an outbound send. Idempotent by txId, which is

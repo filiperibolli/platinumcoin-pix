@@ -136,9 +136,12 @@ flight* in an internal clearing account. Double-entry symmetry holds — the pos
 transaction is persisted **`DEBITED`** with **no** `settledAt` and `creditorInternal=false`: claiming
 `SETTLED` would be a lie the client could act on, since only BACEN can say whether the payee was paid.
 Nothing is published here — the outbox event that drives settlement is written atomically with the
-transaction (step 28, below), consumed in step 31, and reconciled in Sprint 7. The clearing account is
-**configuration** (`pix.clearing-account-id`, default `SPI_CLEARING`), never a literal, so step 52 can
-shard it into `SPI_CLEARING#00..#15` without touching the orchestration. Failure mapping is unchanged
+transaction (step 28, below), consumed in step 31, and reconciled in Sprint 7. Since **step 52** the
+clearing account is not one account but one of `CLEARING_SHARDS` sub-accounts, picked per payment by
+`CRC32(txId) % N` (`ClearingAccountResolver`, common-lib): one DynamoDB item taking every external
+send's credit ceilings near ~500 transactional updates/s, and this spreads it. The resolved id is
+persisted on the transaction as `clearingAccountId`, which is what a reversal reads (step 33) instead of
+re-deriving — so **changing `CLEARING_SHARDS` is a capacity decision, never a correctness one**. Failure mapping is unchanged
 from the internal path (`INSUFFICIENT_FUNDS` ⇒ `422` + reservation released; ledger down ⇒ `503`,
 nothing debited). Since **step 30** an external key resolves end-to-end for real — account-service delegates
 keys it does not hold to mock-bacen's DICT — so `bob@otherbank.com` now takes this branch over live HTTP;
@@ -368,7 +371,8 @@ which is ADR-0008's "the cache never feeds a money decision" turned into a build
 | `SERVICE_TOKEN_TTL_SECONDS` / `jwt.service-token-ttl` | `60s` | Lifetime of a minted service token. Generous for a call whose own timeout budget is milliseconds; it absorbs clock skew between containers, not a token outliving its call. |
 | `PIX_ISPB` / `pix.ispb` | `12345678` | PlatinumCoin's 8-digit Pix participant id, baked into every `endToEndId`. |
 | `ACCOUNT_SERVICE_BASE_URL` / `services.account-service.base-url` | `http://localhost:8082` | account-service base URL for the daily-limit lookup **and** key resolution (step 21); compose overrides to `http://account-service:8082`. |
-| `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | The ledger account an **external** send parks its debited money in (step 27) — money in flight to BACEN, exempt from the ledger's non-negative rule. Config, not a constant, because step 52 shards it into `SPI_CLEARING#00..#15`. |
+| `PIX_CLEARING_ACCOUNT_ID` / `pix.clearing-account-id` | `SPI_CLEARING` | The ledger account an **external** send parks its debited money in (step 27) — money in flight to BACEN, exempt from the ledger's non-negative rule (a **prefix** exemption, so the shards inherit it). |
+| `CLEARING_SHARDS` / `pix.clearing-shards` | `16` | How many sub-accounts that clearing position is spread over (step 52): the credit leg goes to `SPI_CLEARING#00..#15`, chosen by `CRC32(txId) % N`. `1` returns the bare id and reproduces the pre-sharding behaviour (the baseline of `docs/sharding-findings.md`). **Must match** the value ledger-service sums, settlement-service assigns and `05-seed-ledger.sh` creates — one env var for the whole stack. |
 | `LEDGER_SERVICE_BASE_URL` / `services.ledger-service.base-url` | `http://localhost:8085` | ledger-service base URL for the atomic debit/credit (step 21); compose overrides to `http://ledger-service:8085`. Connect/read timeouts default 2000/3000 ms (`services.ledger-service.*-timeout-ms`). |
 | `FRAUD_SERVICE_BASE_URL` / `services.fraud-service.base-url` | `http://localhost:8083` | fraud-service base URL for in-path scoring (step 25); compose overrides to `http://fraud-service:8083`. Connect/read timeouts default **50/150 ms** = the 200ms budget (`services.fraud-service.*-timeout-ms`); a slow/down fraud-service fails open (`SKIPPED`). |
 | `AWS_ENDPOINT_URL` / `aws.endpoint-url` | `http://localhost:4566` | LocalStack edge; compose overrides to `http://localstack:4566`. |

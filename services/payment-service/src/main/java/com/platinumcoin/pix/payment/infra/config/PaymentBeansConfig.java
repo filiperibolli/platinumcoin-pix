@@ -1,6 +1,7 @@
 package com.platinumcoin.pix.payment.infra.config;
 
 import com.platinumcoin.pix.common.event.OutboxLane;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.payment.domain.port.AccountLimitClient;
 import com.platinumcoin.pix.payment.domain.port.BalanceCache;
 import com.platinumcoin.pix.payment.domain.port.DailyLimitReservation;
@@ -59,10 +60,24 @@ public class PaymentBeansConfig {
     }
 
     /**
-     * The send use case, wired to its ports. {@code pix.clearing-account-id} is configuration rather
-     * than a constant in the domain: an external send parks the money in that ledger account, and step
-     * 52 shards it into {@code SPI_CLEARING#00..#15} to spread a hot partition — a change that must
-     * land here (and later in a selector), never in the orchestration.
+     * Which clearing sub-account each external send parks its money in (step 52). Both halves are
+     * configuration, not constants in the domain: the base id names the ledger's system account, and
+     * {@code pix.clearing-shards} is the capacity knob that spreads its writes over
+     * {@code SPI_CLEARING#00..#15}. Setting the count to {@code 1} returns the bare id and reproduces
+     * the pre-sharding behaviour exactly, which is how the findings doc measures a "before" run on this
+     * same build rather than on an older one.
+     */
+    @Bean
+    ClearingAccountResolver clearingAccountResolver(
+            @Value("${pix.clearing-account-id}") String clearingAccountId,
+            @Value("${pix.clearing-shards:16}") int clearingShards) {
+        return new ClearingAccountResolver(clearingAccountId, clearingShards);
+    }
+
+    /**
+     * The send use case, wired to its ports. The clearing account it credits is chosen per payment by
+     * {@link ClearingAccountResolver} — the orchestration never names an account, which is why sharding
+     * landed as a wiring change and left this use case's contract alone.
      */
     @Bean
     SendPixUseCase sendPixUseCase(
@@ -75,7 +90,7 @@ public class PaymentBeansConfig {
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
             PaymentFunnelMetrics funnel,
-            @Value("${pix.clearing-account-id}") String clearingAccountId,
+            ClearingAccountResolver clearing,
             // How an ambiguous ledger outcome is resolved (step 66, ADR-0015): re-POST the SAME txId,
             // at most this many times in total, pausing this long in between. Config rather than
             // constants because the right bound is an operational judgement about how long a user's
@@ -85,7 +100,7 @@ public class PaymentBeansConfig {
             Clock clock) {
         return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, funnel, clearingAccountId, ledgerAttempts, ledgerBackoff, clock);
+                endToEndIds, funnel, clearing, ledgerAttempts, ledgerBackoff, clock);
     }
 
     @Bean

@@ -467,16 +467,33 @@ Guards enforced *inside* the transaction (never as a prior read):
 
 Property-style concurrency tests (Sprint 3, step 15) fire N parallel debits exceeding the balance and assert exactly ⌊balance/amount⌋ succeed and `Σ entries == Δ balances`.
 
-**Clearing-account hot partition (forward reference to Sprint 14).** All external sends credit
-`ACCOUNT#SPI_CLEARING` → at 500 TPS that single item exceeds its real ceiling (a partition caps at
+**Clearing-account write sharding (step 52).** All external sends credit `ACCOUNT#SPI_CLEARING`, and
+every arrival debits it → at 500 TPS that single item exceeds its real ceiling (a partition caps at
 1,000 WCU/s and transactional writes cost 2× WCU → ~500 transactional updates/s for one item).
-Mitigation: **write sharding** — N clearing sub-accounts (`SPI_CLEARING#00..#15`) picked by hash of
-`txId`; the logical balance is the sum. Implemented and **proven under the Black Friday k6 profile in
-step 52** (before/after in `docs/sharding-findings.md`); the shard used at debit time is stored on the
-transaction item so a reversal always compensates the same shard. **Design note for the incremental
-build:** because the ledger posting is keyed by explicit `debitAccount`/`creditAccount` from Sprint 3,
-introducing shards later changes only *which* clearing id the caller passes — the posting contract,
-invariants and Sprint 4 code are untouched. That isolation is deliberate.
+Mitigation, **implemented**: **write sharding** — N clearing sub-accounts (`SPI_CLEARING#00..#15`,
+`CLEARING_SHARDS`, default 16) picked by `CRC32(txId) % N`; the logical balance is the sum, read via
+`GET /internal/ledger/clearing-balance`.
+
+- **Who resolves.** The **caller** does — payment-service on an outbound debit, settlement-service on an
+  inbound credit — never the ledger. Because the posting contract is keyed by explicit
+  `debitAccount`/`creditAccount` from Sprint 3, sharding changed only *which id the caller passes*: the
+  posting contract, its guards and the Sprint 4 code are untouched. That isolation was deliberate from
+  step 14, and it is why the resolver (`ClearingAccountResolver`, common-lib) is ~30 lines of pure Java
+  shared by three services rather than a change to the ledger.
+- **The sharp edge: a reversal must compensate the shard that was credited.** The shard used at debit
+  time is persisted on the transaction (`clearingAccountId`, step 33) and the reversal **reads** it —
+  it never re-derives. Re-derivation would make a months-old reversal's correctness depend on
+  `CLEARING_SHARDS` still holding the value it had at debit time; change N and every in-flight payment
+  would compensate the wrong sub-account, each posting individually balanced, Σ over all accounts
+  unchanged, one shard silently drained into another. Persisting the id is what makes N a **capacity
+  knob rather than a correctness-critical constant**. `ReversalShardIT` pins it by pinning a transaction
+  to a shard its own txId does *not* hash to.
+- **What conservation stops proving.** Global Σ is blind to a wrong-shard posting. `ClearingShardInvariantsIT`
+  therefore asserts the stronger per-shard statement under a storm of sends with reversals mixed in:
+  each shard holds exactly the money posted into it, and its own entry history agrees.
+- **Measured, not asserted:** before/after under the Black Friday k6 profile in
+  [`docs/sharding-findings.md`](docs/sharding-findings.md) — including an honest account of what this
+  local emulator can and cannot show about partition throttling.
 
 ---
 

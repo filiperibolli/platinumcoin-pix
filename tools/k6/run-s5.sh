@@ -20,10 +20,15 @@ mkdir -p "$RAW_DIR"
 export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
 DDB="aws --endpoint-url=${DYNAMODB_ENDPOINT:-http://localhost:8000} dynamodb"
 
+# The whole clearing POSITION, not one item: step 52 spreads external sends over SPI_CLEARING#00..#15
+# by hash of the txId, so a get-item on the bare account would read 0 while money is in flight and this
+# scenario's "clearing returned to where it started" assertion would be vacuously true.
 clearing_balance() {
-  $DDB get-item --table-name pix_ledger \
-    --key '{"pk":{"S":"ACCOUNT#SPI_CLEARING"},"sk":{"S":"BALANCE"}}' \
-    --query 'Item.balanceCents.N' --output text 2>/dev/null
+  $DDB scan --table-name pix_ledger \
+    --filter-expression 'sk = :b AND begins_with(pk, :c)' \
+    --expression-attribute-values '{":b":{"S":"BALANCE"},":c":{"S":"ACCOUNT#SPI_CLEARING"}}' \
+    --output json 2>/dev/null \
+  | jq '[.Items[].balanceCents.N | tonumber] | add // 0'
 }
 settled_balance() {
   $DDB get-item --table-name pix_ledger \
@@ -47,7 +52,7 @@ bash "$SCRIPT_DIR/verify/ledger-snapshot.sh" > "$RAW_DIR/s5-before.json"
 CLEARING_BEFORE=$(clearing_balance)
 SETTLED_BEFORE=$(settled_balance)
 SUM_BEFORE=$(jq '.sumBalanceCents' "$RAW_DIR/s5-before.json")
-echo "sumBalanceCents=$SUM_BEFORE  SPI_CLEARING=$CLEARING_BEFORE  SPI_SETTLED=$SETTLED_BEFORE"
+echo "sumBalanceCents=$SUM_BEFORE  clearingPosition=$CLEARING_BEFORE  SPI_SETTLED=$SETTLED_BEFORE"
 
 echo "=== S5 — k6 external-send storm (3 min) ==="
 k6_run run -e S5_RUN_ID="$(date +%s)" "tools/k6/s5-async-conservation.js" 2>&1 | tee "$RAW_DIR/s5.log"
@@ -67,7 +72,7 @@ CLEARING_AFTER=$(clearing_balance)
 SETTLED_AFTER=$(settled_balance)
 SUM_AFTER=$(jq '.sumBalanceCents' "$RAW_DIR/s5-after.json")
 NEG_AFTER=$(jq '.negativeAccounts | length' "$RAW_DIR/s5-after.json")
-echo "sumBalanceCents=$SUM_AFTER  SPI_CLEARING=$CLEARING_AFTER  SPI_SETTLED=$SETTLED_AFTER"
+echo "sumBalanceCents=$SUM_AFTER  clearingPosition=$CLEARING_AFTER  SPI_SETTLED=$SETTLED_AFTER"
 
 echo "=== S5 — bucketing every accepted TXID by terminal status (from DynamoDB) ==="
 # k6-in-Docker wraps each console line as `msg="TXID tx-..."`, so match the UUID shape explicitly
@@ -91,7 +96,8 @@ while read -r tx; do
   esac
 done < "$RAW_DIR/s5-txids.txt"
 
-# Orphaned-clearing check: after everything is terminal, SPI_CLEARING must equal its BEFORE value,
+# Orphaned-clearing check: after everything is terminal, the clearing POSITION (Σ over the shards,
+# step 52) must equal its BEFORE value,
 # and there must be no in-flight tx. Money in clearing with a non-terminal owner is "in flight";
 # money in clearing with zero in-flight owners is ORPHANED (the finding to chase).
 IF_FINAL=$(inflight_count)

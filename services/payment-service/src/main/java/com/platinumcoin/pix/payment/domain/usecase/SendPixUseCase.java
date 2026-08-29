@@ -2,6 +2,7 @@ package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.event.OutboxEvent;
 import com.platinumcoin.pix.common.idempotency.CanonicalJson;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
 import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
@@ -128,7 +129,12 @@ public class SendPixUseCase {
     private final LedgerClient ledger;
     private final EndToEndIdGenerator endToEndIds;
     private final PaymentFunnelMetrics funnel;
-    private final String clearingAccountId;
+    /**
+     * Which clearing sub-account this send's money is parked in — chosen per payment by hash of the
+     * {@code txId}, not a constant (step 52). See {@link ClearingAccountResolver}: the id it returns is
+     * persisted on the transaction, and the reversal path reads that id rather than asking again.
+     */
+    private final ClearingAccountResolver clearing;
 
     /**
      * How many times ONE operation may be POSTed to the ledger before the platform gives up and calls the
@@ -154,7 +160,7 @@ public class SendPixUseCase {
             LedgerClient ledger,
             EndToEndIdGenerator endToEndIds,
             PaymentFunnelMetrics funnel,
-            String clearingAccountId,
+            ClearingAccountResolver clearing,
             int ledgerAttempts,
             Duration ledgerBackoff,
             Clock clock) {
@@ -167,7 +173,7 @@ public class SendPixUseCase {
         this.ledger = ledger;
         this.endToEndIds = endToEndIds;
         this.funnel = funnel;
-        this.clearingAccountId = clearingAccountId;
+        this.clearing = clearing;
         this.ledgerAttempts = ledgerAttempts;
         this.ledgerBackoff = ledgerBackoff;
         this.clock = clock;
@@ -788,6 +794,12 @@ public class SendPixUseCase {
         String txId = operation.txId();
         String endToEndId = operation.endToEndId();
         String description = command.description() == null ? "" : command.description();
+
+        // Step 52: the clearing account is one of N shards, picked by hash of the txId. Keyed by txId
+        // and not by anything request-scoped, so a resumed operation (ADR-0014 mints the txId before
+        // the claim) resolves to the shard the first attempt used and the ledger's txId guard still
+        // sees one operation.
+        String clearingAccountId = clearing.shardFor(txId);
 
         log.info("Commanding the ledger to debit the payer and park the money in the clearing account "
                         + "atomically (external destination, no ACID transaction spans two banks) | "

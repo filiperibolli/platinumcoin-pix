@@ -9,6 +9,7 @@
 #   ACCOUNT#acc-002 (bob)     +1_000_000  ← credit leg of tx-seed-bob
 #   ACCOUNT#SEED             -2_000_000  ← the two debit legs (funding source)
 #   ACCOUNT#SPI_CLEARING              0  ← money in flight to/from BACEN, empty at rest
+#   ACCOUNT#SPI_CLEARING#00..#NN      0  ← its write shards (step 52), also empty at rest
 #   ACCOUNT#SPI_SETTLED              0  ← money that has settled OUT to the SPI network
 #                            -----------
 #   Σ balanceCents                    0   ← the conservation invariant's baseline
@@ -100,6 +101,35 @@ put_balance SPI_CLEARING        0
 put_balance SPI_SETTLED         0
 put_balance SEED         -2000000
 
+# ── CLEARING WRITE SHARDS (step 52) ───────────────────────────────────────────
+# Every external send credits the clearing position, so at peak it is ONE DynamoDB
+# item taking every write: a partition caps at 1,000 WCU/s and a transactional
+# write costs 2x, which ceilings that item near 500 transactional updates/s. The
+# mitigation is to spread the writes over CLEARING_SHARDS sub-accounts named
+# SPI_CLEARING#00..#NN, chosen by hash of the txId (ClearingAccountResolver).
+#
+# They MUST exist before the first payment: the ledger's credit leg is conditioned
+# on `attribute_exists(pk)` (UpdateItem is an upsert, and an upsert would happily
+# invent an account), so a missing shard is not a silent zero — it is a refused
+# posting on the money path.
+#
+# All at 0, so Σ over the table is still exactly 0 whatever N is. Keeping the bare
+# SPI_CLEARING item alongside them is deliberate: CLEARING_SHARDS=1 uses it (that
+# is the un-sharded baseline the load study measures against), and the clearing
+# position is summed over it too, so money parked there before N was raised stays
+# visible instead of quietly dropping out of the platform's own books.
+#
+# N is init-time configuration: the same CLEARING_SHARDS the services read, set
+# once in docker-compose. Seeding a different N than the services assign would
+# leave writes landing on an item nobody created (a 4xx on a payment) or a shard
+# summed by nobody.
+CLEARING_SHARDS="${CLEARING_SHARDS:-16}"
+if [ "$CLEARING_SHARDS" -gt 1 ]; then
+  for i in $(seq 0 $((CLEARING_SHARDS - 1))); do
+    put_balance "$(printf 'SPI_CLEARING#%02d' "$i")" 0
+  done
+fi
+
 # ── ENTRY items ───────────────────────────────────────────────────────────────
 # The immutable history behind those balances: two postings, two legs each.
 # DEBIT amounts are negative, CREDIT positive, so Σ amountCents of a posting is
@@ -127,4 +157,4 @@ put_entry acc-002 "$BOB_FUNDED_AT"   tx-seed-bob   CREDIT  1000000 SEED    "Init
 
 # Last line of the last init script — the Testcontainers harness
 # (LocalStackTestBase) waits on it to know the whole world is seeded.
-echo "[seed] ledger ready: acc-001/acc-002 at 1000000 cents each, funded by ACCOUNT#SEED, SPI_CLEARING and SPI_SETTLED at 0 (sum 0)"
+echo "[seed] ledger ready: acc-001/acc-002 at 1000000 cents each, funded by ACCOUNT#SEED, SPI_CLEARING (+${CLEARING_SHARDS} write shards) and SPI_SETTLED at 0 (sum 0)"

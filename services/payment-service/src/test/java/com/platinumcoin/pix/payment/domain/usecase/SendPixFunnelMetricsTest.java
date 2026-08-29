@@ -2,6 +2,7 @@ package com.platinumcoin.pix.payment.domain.usecase;
 
 import com.platinumcoin.pix.common.metrics.PixMetrics.Outcome;
 import com.platinumcoin.pix.common.metrics.PixMetrics.Stage;
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.InsufficientFundsException;
@@ -43,6 +44,12 @@ class SendPixFunnelMetricsTest {
     private static final String KEY = "idem-key-1";
     private static final String CLEARING = "SPI_CLEARING";
 
+    /**
+     * The default wiring for every test that is not about sharding: one shard, which the resolver
+     * returns as the bare {@code SPI_CLEARING} — the pre-step-52 account, unchanged.
+     */
+    private static final ClearingAccountResolver UNSHARDED = new ClearingAccountResolver(CLEARING, 1);
+
     private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
     private final EndToEndIdGenerator endToEndIds = new EndToEndIdGenerator("12345678");
     private final FakeTransactionRepository transactions = new FakeTransactionRepository();
@@ -59,7 +66,7 @@ class SendPixFunnelMetricsTest {
 
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, funnel, CLEARING, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
+            endToEndIds, funnel, UNSHARDED, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
 
     @BeforeEach
     void seedDestinations() {

@@ -1,5 +1,6 @@
 package com.platinumcoin.pix.payment.domain.usecase;
 
+import com.platinumcoin.pix.common.ledger.ClearingAccountResolver;
 import com.platinumcoin.pix.payment.domain.exception.FraudDeniedException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyRequiredException;
 import com.platinumcoin.pix.payment.domain.exception.IdempotencyKeyReuseException;
@@ -45,6 +46,12 @@ class SendPixUseCaseTest {
     /** The clearing account money in flight is parked in (step 27); an id, injected, never hard-coded. */
     private static final String CLEARING = "SPI_CLEARING";
 
+    /**
+     * The default wiring for every test that is not about sharding: one shard, which the resolver
+     * returns as the bare {@code SPI_CLEARING} — the pre-step-52 account, unchanged.
+     */
+    private static final ClearingAccountResolver UNSHARDED = new ClearingAccountResolver(CLEARING, 1);
+
     /** The production default (step 66): the original POST plus at most one resolving re-POST. */
     private static final int LEDGER_ATTEMPTS = 2;
 
@@ -62,7 +69,7 @@ class SendPixUseCaseTest {
     private final FakeLedgerClient ledger = new FakeLedgerClient();
     private final SendPixUseCase useCase = new SendPixUseCase(
             transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-            endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
+            endToEndIds, new RecordingPaymentFunnelMetrics(), UNSHARDED, LEDGER_ATTEMPTS, NO_BACKOFF, clock);
 
     private static SendPixCommand command(String pixKey, String amount, String description, String key) {
         return new SendPixCommand("acc-001", pixKey, amount, description, key);
@@ -464,20 +471,60 @@ class SendPixUseCaseTest {
         assertThat(persisted.fraudDecision()).isEqualTo(FraudDecision.APPROVE);
     }
 
-    @Test
-    void theClearingAccountIsWhicheverIdWasInjectedSoItCanBeShardedLater() {
-        // Step 52 shards the clearing account into SPI_CLEARING#00..#15 to spread a hot partition. The
-        // id is an input to this use case, so that change is a configuration/selection concern — this
-        // orchestration does not name the account and needs no edit.
-        SendPixUseCase sharded = new SendPixUseCase(
+    // --- step 52: the clearing account is a shard chosen by txId ------------------------------------
+
+    /** A use case identical to the default one except for how many clearing shards it spreads over. */
+    private SendPixUseCase shardedOver(int shards) {
+        return new SendPixUseCase(
                 transactions, idempotency, pixKeys, accountLimits, dailyLimits, fraudScorer, ledger,
-                endToEndIds, new RecordingPaymentFunnelMetrics(), "SPI_CLEARING#07", LEDGER_ATTEMPTS,
-                NO_BACKOFF, clock);
+                endToEndIds, new RecordingPaymentFunnelMetrics(),
+                new ClearingAccountResolver(CLEARING, shards), LEDGER_ATTEMPTS, NO_BACKOFF, clock);
+    }
+
+    @Test
+    void theCreditLegGoesToTheShardThatTheTxIdResolvesToAndThatExactIdIsPersisted() {
         pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
 
-        sharded.execute(command("bob@otherbank.com", "10.00", "x", KEY));
+        shardedOver(16).execute(command("bob@otherbank.com", "10.00", "x", KEY));
 
-        assertThat(ledger.only().creditor()).isEqualTo("SPI_CLEARING#07");
+        Transaction persisted = transactions.only();
+        String expected = new ClearingAccountResolver(CLEARING, 16).shardFor(persisted.txId());
+
+        // It really sharded — not the base id under a new name.
+        assertThat(expected).isNotEqualTo(CLEARING).startsWith(CLEARING + "#");
+        // The ledger was told to credit that shard...
+        assertThat(ledger.only().creditor()).isEqualTo(expected);
+        // ...and the transaction records the SAME id, which is the only thing a reversal will ever
+        // read (step 33). If these two could differ, a compensating posting would drain a shard that
+        // was never credited: both postings balanced, Σ unchanged, one sub-account quietly emptied
+        // into another.
+        assertThat(persisted.clearingAccountId()).isEqualTo(expected);
+    }
+
+    @Test
+    void differentPaymentsSpreadOverManyShardsRatherThanPilingOntoOne() {
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        SendPixUseCase sharded = shardedOver(16);
+        for (int i = 0; i < 40; i++) {
+            sharded.execute(command("bob@otherbank.com", "1.00", "x", "idem-" + i));
+        }
+
+        // The whole point of the step: 40 external sends must not all hit one item. This is the
+        // use-case-level statement of it; the load evidence is docs/sharding-findings.md.
+        assertThat(transactions.created().stream().map(Transaction::clearingAccountId).distinct())
+                .hasSizeGreaterThan(1);
+    }
+
+    @Test
+    void oneShardReproducesTheUnshardedAccountExactlyForTheBaselineRun() {
+        // CLEARING_SHARDS=1 is how the findings doc measures the "before" picture on the same build.
+        pixKeys.mapExternal("bob@otherbank.com", "OTHER_BANK");
+
+        shardedOver(1).execute(command("bob@otherbank.com", "10.00", "x", KEY));
+
+        assertThat(ledger.only().creditor()).isEqualTo(CLEARING);
+        assertThat(transactions.only().clearingAccountId()).isEqualTo(CLEARING);
     }
 
     @Test
@@ -825,7 +872,7 @@ class SendPixUseCaseTest {
      */
     private SendPixUseCase useCaseAt(Instant at) {
         return new SendPixUseCase(transactions, idempotency, pixKeys, accountLimits, dailyLimits,
-                fraudScorer, ledger, endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
+                fraudScorer, ledger, endToEndIds, new RecordingPaymentFunnelMetrics(), UNSHARDED,
                 LEDGER_ATTEMPTS, NO_BACKOFF, Clock.fixed(at, ZoneOffset.UTC));
     }
 
@@ -835,7 +882,7 @@ class SendPixUseCaseTest {
         FakeIdempotencyRepository probe = new FakeIdempotencyRepository();
         new SendPixUseCase(new FakeTransactionRepository(), probe, new FakePixKeyResolver(),
                 new FakeAccountLimitClient(), new FakeDailyLimitReservation(), new FakeFraudScorer(),
-                new FakeLedgerClient(), endToEndIds, new RecordingPaymentFunnelMetrics(), CLEARING,
+                new FakeLedgerClient(), endToEndIds, new RecordingPaymentFunnelMetrics(), UNSHARDED,
                 LEDGER_ATTEMPTS, NO_BACKOFF,
                 clock)
                 .execute(command("bob@platinum.com", "10.00", "lunch", "probe-key"));
