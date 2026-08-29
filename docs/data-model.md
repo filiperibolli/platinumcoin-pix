@@ -625,9 +625,17 @@ Redis is not a table, but it is state with a schema, and — uniquely in this pl
 
 ---
 
-## 8. Object storage (S3) — the audit trail and the cold archive
+## 8. Object storage (S3) — the audit trail, the cold archive and the export artifacts
 
-Two buckets, created by `infra/localstack/init/09-audit.sh` (step 42) and written in step 43. They hold **append-only files**, not items, but they are schema all the same: something has to read them back in five years.
+**Three buckets**, and they sit at three different points on the same spectrum — how much of this data could be rebuilt if the bucket vanished, which is what decides whether it is worth locking:
+
+| Bucket | Created by | Owner (only writer) | Rebuildable from | Posture |
+|---|---|---|---|---|
+| `pix-audit-log` (§8.1) | `09-audit.sh` (step 42) | settlement-service | **nothing** — it *is* the record | Versioned + Object Lock COMPLIANCE, 5-year retention |
+| `pix-statement-archive` (§8.2) | `09-audit.sh` (step 42) | ledger-service | `pix_ledger` | Plain, rewritten whole |
+| `pix-statement-exports` (§8.3) | `10-statement-exports.sh` (step 53) | payment-service | the archive, itself a projection of the ledger | Plain, rewritten whole |
+
+The first two hold **append-only files**, not items, but they are schema all the same: something has to read them back in five years.
 
 ### 8.1 `pix-audit-log` — the immutable trail (owner: settlement-service, the only writer)
 
@@ -675,6 +683,24 @@ Two buckets, created by `infra/localstack/init/09-audit.sh` (step 42) and writte
 **The line is not `LedgerEntry`.** It carries its own `accountId` (in the table that is the partition key, but an archive object is read alone, years later, by a process that has only the file) and the `description` (which the statement API composes at its edge — an archive without it is a statement nobody can read back). Money stays **signed integer cents**: this is an internal artefact, not an API edge, and decimal formatting is exactly the lossy convenience a five-year record must not carry.
 
 **Nothing is deleted from `pix_ledger` — locally, on purpose.** A production deployment finishes the job: once an object is written *and verified*, the entries it covers are removed (a TTL attribute on the archived items, or a bounded delete pass), and that removal is what reclaims the hot storage the cold tier exists for. It is skipped here because the emulator's S3 state is ephemeral (a `down -v` would take the archive with it, so deleting would destroy history in exchange for nothing) and because *no code path capable of deleting a ledger entry* is a stronger guarantee of append-only history (safety rule 5) than a careful one. The ports enforce it: `LedgerArchiveReader` can only read, `StatementArchive` can only write.
+
+### 8.3 `pix-statement-exports` — the export artifacts (owner: payment-service, the only writer)
+
+| | Value |
+|---|---|
+| Key | `exports/<accountId>/<exportId>.csv` — one object per export request |
+| Body | CSV with a header row: `txId,timestamp,direction,amountCents,amount,counterpartAccountId,entryType,description` |
+| Written by | `StatementExportQueueConsumer` (payment-service), draining `statement-export-queue`; the rows come from `StatementCsv` |
+| Source | the §8.2 archive objects covering the requested months |
+| Created by | `infra/localstack/init/10-statement-exports.sh` (step 53) |
+
+**Not `pix-statement-archive`, and the split is deliberate.** The archive is *ledger-service's* output — it owns `pix_ledger` (ADR-0006), so it owns the projection of it. An export is *payment-service's* output, assembled per customer request from that projection. One bucket for both would mean two services writing the same namespace, and the second-order effect is the one that decides it: the archive's key space is `account=<id>/yyyy-MM.jsonl`, a stable address a job rewrites, while an export's is a per-request id nobody rewrites twice. Different owners, different lifecycles, different retention — the same three reasons that keep them separate tables would keep them separate buckets.
+
+**Plain, like the archive and unlike the audit log.** An export artifact is derived data *twice over* — a rendering of the archive, which is itself a projection of the ledger — so it can be regenerated from the source of truth at any time, and a retry rewrites the same key whole. On a version-locked bucket that same behaviour would pile up undeletable copies of a regenerable file and buy no compliance at all.
+
+**The URL is never stored, only the key.** `downloadKey` on the `EXPORT#` item (§4) is the S3 object key; the presigned URL is minted **per read** with a 1h life from *that* read. A link signed when the worker finished would start expiring while the customer was still being told the file was ready, and an export whose only handle had expired would be permanently undownloadable.
+
+**What a real deployment adds, and why it is not configured here:** a lifecycle rule expiring objects after ~30 days — an export is a convenience copy a customer downloads once, so keeping it for five years would be paying audit-grade storage for a cache. LocalStack accepts the lifecycle API but never runs the expiration, so configuring it locally would look like a guarantee the sandbox does not provide. Documented instead, here and in the init script.
 
 ---
 
