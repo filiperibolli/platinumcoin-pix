@@ -123,7 +123,18 @@ response, not by trusting the checklist.
 
    **Severity: low, and it is not an authentication bypass.** Nothing is resolved, credited or persisted
    on that path; the guard still refuses every actual delivery, which `InboundWebhookAuthIT` asserts.
-   What leaks is a schema that is also published in `docs/api/openapi.yaml`.
+   What leaks is a field list, to a caller who already knows the route exists and is talking to a
+   participant of a **public, specified** rail — the shape of a Pix delivery is BACEN's, not ours, and an
+   attacker who can reach port 8086 can read it in the SPI manual. Every field name it reveals
+   (`endToEndId`, `pixKey`, `amountCents`, `payerName`, `payerIspb`) is already printed in this repo, in
+   `docs/steps/step-37.md` and `docs/local-dev.md` §5.6.
+
+   > **Corrected 2026-08-29 (audit).** This paragraph used to justify the severity by saying the schema
+   > "is also published in `docs/api/openapi.yaml`". It is not, and deliberately so: that file is the
+   > *client-facing* contract and `POST /v1/inbound/pix` is a rail webhook no app ever calls, which
+   > `ARCHITECTURE.md` §5 states explicitly. The finding's severity is unchanged; the reason given for
+   > it was wrong, which is worse than no reason — a deferral is only as good as the sentence holding
+   > it up.
 
    **Recorded, not fixed here.** The correct fix is ordering — authenticate before you validate, by
    moving the token check into a filter ahead of argument resolution, the way the JWT filter already

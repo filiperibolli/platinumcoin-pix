@@ -171,7 +171,7 @@ check 'a statement cursor that does not decode' 400 INVALID_CURSOR         "${AU
 
 section 'Domain refusals — settlement-service'
 # The body is deliberately VALID. With an empty one, bean validation answers 400 VALIDATION_ERROR
-# before the webhook token is ever looked at — see the finding in docs/security-checklist.md §6.4 —
+# before the webhook token is ever looked at — see docs/security-checklist.md §6, finding 4 —
 # and this probe would then be testing the validator rather than the guard it is named after.
 check 'the inbound webhook without its token'   401 WEBHOOK_UNAUTHORIZED   -X POST "${JSON[@]}" \
   -d '{"endToEndId":"E99999999202608241200audit00000","pixKey":"bob@platinum.com","amountCents":100,"payerName":"Audit Probe","payerIspb":"99999999"}' \
