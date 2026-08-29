@@ -30,7 +30,7 @@ newman run tools/postman/pix-platform.postman_collection.json \
   -e tools/postman/pix-platform.local.postman_environment.json
 ```
 
-85 requests (84 sent; the SSE stream is skipped by design). 223 assertions on a freshly reseeded stack, 221 on any run after — a handful are conditional on state (a registration answers `201` the first time and `409` the next, and each branch asserts a different contract), which is the collection reporting the stack it found rather than pretending every run is the first. It is registered in `docs/local-dev.md` §6 alongside the other checks
+91 request items in the file, which `newman run` reports as 92 executed and **241-243 assertions**, 0 failed (the SSE stream is skipped by design). The count moves by one or two between runs — a handful are conditional on state (a registration answers `201` the first time and `409` the next, and each branch asserts a different contract), which is the collection reporting the stack it found rather than pretending every run is the first. It is registered in `docs/local-dev.md` §6 alongside the other checks
 that cannot be a `mvn verify`, because their facts live in eight processes rather than one JVM.
 
 ## What the collection does for you

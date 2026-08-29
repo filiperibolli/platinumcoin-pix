@@ -267,7 +267,7 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 ├── CHANGELOG.md               ← Keep a Changelog; one entry per completed step
 ├── docs/
 │   ├── brief.md               ← the exercise brief + the 7 design questions, verbatim
-│   ├── adr/                   ← Architecture Decision Records (0001–0013)
+│   ├── adr/                   ← Architecture Decision Records (0001–0021)
 │   ├── api/openapi.yaml       ← REST contract
 │   ├── data-model.md          ← DynamoDB tables, keys, GSIs, ledger invariants
 │   ├── messaging-kafka-appendix.md ← SNS/SQS ↔ Kafka concept mapping
@@ -285,9 +285,9 @@ This set is deliberately **trimmed to the outcomes an operator can verify from l
 └── pom.xml                    ← (created in step 01) parent POM
 ```
 
-## Running locally (once implemented)
+## Running locally
 
-Prerequisites: Docker + Docker Compose, Java 21, Maven 3.9+. Sized for a 32GB RAM / 6-core desktop.
+Prerequisites: Docker + Docker Compose, Java 21, Maven 3.9+, plus `jq`, `curl` and `uuidgen`. Sized for a 32GB RAM / 6-core desktop.
 
 ```bash
 # 1. Build all services
@@ -303,10 +303,23 @@ docker compose -f infra/docker-compose.yml up -d
 curl -s http://localhost:8081/actuator/health   # auth-service
 curl -s http://localhost:8084/actuator/health   # payment-service
 
-# 5. Send your first Pix (full walkthrough in docs/local-dev.md)
+# 5. Log in as both demo users
 TOKEN=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
   -d '{"username":"alice","password":"alice"}' | jq -r .accessToken)
+BOB=$(curl -s -X POST localhost:8081/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"bob"}' | jq -r .accessToken)
 
+# 6. Give bob a Pix key to be paid on. NOTHING is seeded into the key directory on purpose — a key
+#    exists because somebody registered it, which is what makes the global-uniqueness conditional
+#    write (ADR-0002) a real code path here rather than a claim. Skip this and step 7 is a truthful
+#    422 KEY_NOT_FOUND.
+curl -s -X POST localhost:8082/v1/pix-keys \
+  -H "Authorization: Bearer $BOB" \
+  -H 'Content-Type: application/json' \
+  -d '{"keyType":"EMAIL","keyValue":"bob@platinum.com"}'
+# → 201 Created { "keyType": "EMAIL", "keyValue": "bob@platinum.com", ... }
+
+# 7. Send your first Pix (full walkthrough in docs/local-dev.md)
 curl -s -X POST localhost:8084/v1/payments/pix \
   -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: $(uuidgen)" \

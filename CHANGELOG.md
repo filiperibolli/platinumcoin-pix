@@ -10,6 +10,110 @@ Each step file specifies the exact entry to add under `[Unreleased]` on completi
 
 ## [Unreleased]
 
+### Fixed
+- **Repo-wide coherence & portfolio-readiness audit — remediation** · 2026-08-29
+  **Not an implementation step.** `PLAN.md` was complete (61 steps, 0 open) and this pass audited the
+  artifact as a whole rather than building anything new; the findings and the evidence behind each one
+  are in [`docs/audit-2026-08-29.md`](docs/audit-2026-08-29.md). Nothing here changes platform
+  behaviour: the money paths, the ledger and every service are untouched. What changed is the three
+  things a reader *executes* first, plus the documents that had drifted away from the code.
+
+  **The three that broke, and what they had in common.** Each was a harness or a document lying about a
+  platform that was working correctly underneath — the most expensive kind of defect in an artifact
+  whose whole purpose is to be read and run by somebody else.
+  - **`scripts/e2e-journey.sh` failed 3 of 51 assertions, and the platform was right every time.**
+    `alerts_since | grep -q 'ALERT FIRING'` runs under `set -o pipefail`; `grep -q` exits at the first
+    match, `docker compose logs` dies of SIGPIPE and returns 255, and the pipeline reports "not found"
+    for a line sitting in the log. Reproduced 10/10 with the match at line 1 of 3,430; 0/10 after
+    capturing the output first. The twin predicate `alert_resolved` *passed* in the same run because
+    `ALERT RESOLVED` is the newest line in the stream, so grep reaches it at EOF with the producer
+    already finished — which is precisely why this read as a platform bug rather than a shell one.
+    The cascade was the expensive part: the false negative burned the whole 120s paging budget, which
+    pushed the drill past its own 300s SLO clock, which clamped the KR3.1 wait to 5s, which failed the
+    reconciliation assertion, which failed the clearing assertion. **One `grep -q`, three red lines,
+    and the headline reliability claim of the project unproven.** After the fix the alert is seen on
+    the first poll (**0s in all three verification runs**, against 50s in the one run that had passed
+    before) and KR3.1 resolves in **208-218s against its 300s SLO — 82-92s of headroom where there had
+    been 31s**. Run three consecutive times end to end: 51/51, 51/51, 51/51.
+  - **The Postman collection failed on any stack that had ever received a Pix.** `no shard is negative
+    at rest` treated a negative clearing shard as proof that "a reversal hit the wrong sub-account".
+    But an inbound Pix *debits* a clearing shard and credits the customer (`entryType=PIX_IN`), so the
+    shard sits negative until an outbound send happens to hash to the same one — which is the entire
+    reason clearing is exempt from the no-negative-balance guard (`AccountPolicy`, ARCHITECTURE §6.7):
+    it is an inter-bank **position**, not a wallet. Measured at the moment of failure: six shards at
+    exactly `-30000` = the six R$300 inbound Pix of the session. Replaced with the property step 52
+    actually established and which *is* true in every state — the bare, un-sharded `SPI_CLEARING`
+    account is still at `balanceCents=0, version=0`, which is where a caller that forgot to shard would
+    show up and nowhere else (the total would still reconcile). Verified non-vacuous: the new assertion
+    passes with three shards negative.
+  - **The README's first money command answered `422` on a fresh stack.** `pix_keys` is created empty
+    and no key is ever seeded — a deliberate choice recorded in `04-seed-accounts.sh` (a key exists
+    because somebody registered it, which is what keeps the global-uniqueness conditional write a real
+    code path). The quickstart and `docs/local-dev.md` §5.3/§5.6 simply assumed `bob@platinum.com` was
+    there. **The seed was left alone and the documents were made self-contained instead**: the README
+    now logs in as both users and registers the key before sending, and §5.2 registers the two named
+    keys the rest of §5 depends on. Note what the automated harnesses had been hiding — the E2E journey
+    and the Postman collection both self-provision, so only the paths a *human* follows were broken.
+    `PLAN.md` records that step 49 found this exact defect in the API explorer and fixed it there; the
+    fix never propagated.
+
+  **Documents that no longer match the code they describe.**
+  - `ARCHITECTURE.md` §7.4 — the answer to design question 7 — described the ledger call as "timeout
+    1s, circuit breaker opens after N failures". There is no circuit breaker anywhere in the repo and
+    the timeouts are 2s connect + 3s read. Corrected, and the *absence* of the breaker is now stated
+    rather than implied, because "fails fast" and "fails fast **and stops asking**" are different
+    availability stories. The same section now says what a second replica would need and does not have:
+    the request paths are replica-safe by construction, the `@Scheduled` work has no leader election.
+  - `docs/security-checklist.md` §6 finding 4 justified deferring a security finding by saying the
+    leaked schema "is also published in `docs/api/openapi.yaml`". It is not, deliberately —
+    `POST /v1/inbound/pix` is a rail webhook and ARCHITECTURE §5 says it is absent from the
+    client-facing contract on purpose. Severity unchanged (nothing is resolved, credited or persisted
+    on that path, and the field list is BACEN's public rail shape); the reason was rewritten, because a
+    deferral is only as good as the sentence holding it up.
+  - `docs/data-model.md` §8 said "Two buckets" and documented two. There are three: `pix-statement-exports`
+    (step 53) now has its own §8.3 — key layout, owner, why it is a separate bucket from the archive
+    and not a prefix in it, and why the URL is never stored. `docs/local-dev.md` §4 gained the mirror
+    subsection for `10-statement-exports.sh`, the only init script that lacked one.
+  - `docs/api/openapi.yaml` documented error codes for `payments` and almost nowhere else. **All 22
+    public-facing codes are now in the contract**, including two that were not merely unnamed but
+    undeclared: `POST /payments/pix` can answer `502 ACCOUNT_LOOKUP_FAILED` (no 502 was listed) and
+    `GET /accounts/me/statement` can answer `400 INVALID_CURSOR` (the route declared no error response
+    at all). `Problem.code` stays an explicitly open set — that is ARCHITECTURE §7.8's additive-change
+    policy, not an omission.
+  - `ADR-0007` was the only amended ADR without a backlink. ADR-0017 declared "Amends: ADR-0007" while
+    0007 still read as though the JWT posture step 68 changed were current. It now carries the
+    amendment: `typ: user` on `/v1/**`, `typ: service` on `/internal/**`, disjoint in both directions,
+    and the honest local limit (one shared HS256 secret — scoping, not cryptographic separation).
+  - Counts and timings that had drifted: the Postman collection is **92 requests / 241-243 assertions**,
+    not 85/223 (it grew in steps 52 and 53); the E2E journey takes **7-10 min**, not ~6; the settlement
+    message dead-letters at **205-225s measured**, not the ~135s the backoff ladder alone suggests,
+    because each delivery also pays the client's 12s SPI timeout. The DRILL A margin is now written
+    down instead of being discovered by whoever runs it on a slower host.
+  - Smaller: README said "(0001–0013)" for 21 ADRs and "Running locally (once implemented)";
+    `docs/local-dev.md` §5 still told the reader that only §5.1 and §5.2 ran; §5.6 read an
+    `/internal/**` port with a user token (`403` since step 68) and §5.8.1 logged bob in with
+    `{"email":…,"password":"senha123"}`, fields the API does not have; the env-var table carried
+    `STATEMENT_ARCHIVE_BUCKET` and `STATEMENT_ARCHIVE_HOT_WINDOW_DAYS` twice with different wording;
+    `open` (macOS) became `xdg-open`; the two different `RESULTS.md` now each say which deliverable
+    they are.
+  - `.github/workflows/ci.yml` still explained that "the project is in its planning phase" and guarded
+    every step behind `if [ -f pom.xml ]`, 61 steps after step 01 landed it. The dead guard and the
+    "Planning phase — no build yet" step are gone; the header now says what the job does **not** run
+    (`tests/e2e`, which needs the compose stack) so a green badge is not read as more than it is.
+
+  **Three debts promoted from a results document to `PLAN.md`'s backlog.** `load/RESULTS.md` §5/§5.1 is
+  scrupulously honest about them — "belongs in its own step", "Also noted, not changed", "Recorded here,
+  not built" — but none had reached the roadmap, so a reader asking "what is left?" in the obvious place
+  saw nothing: the AWS SDK connection pool shared between the send path and the outbox drain (the
+  measured cause of 8.4% of sends failing at 58 TPS and 39.8% at peak), `SdkClientException` surfacing
+  as `500 INTERNAL_ERROR` instead of the retry-safe `503` ADR-0015 prescribes, and leader election for
+  the scheduled work. Naming them where the question gets asked is the whole fix; building them is not
+  this pass.
+
+  Verified on a stack reset with `down -v` twice over: `mvn verify` 1,070 tests green, `scripts/e2e-journey.sh`
+  51/51 three consecutive runs, `newman` 0 failed, `scripts/error-contract-audit.sh` 24/24, and every
+  `docs/local-dev.md` §5 block plus the README quickstart pasted verbatim into a fresh sandbox.
+
 ### Added
 - Async cold statement export: 202 + polling status URL + presigned CSV artifact from the S3 archive (step 53) · 2026-08-29
   AI: est 9h / actual 3h / ~92% generated / 5 issues caught in review

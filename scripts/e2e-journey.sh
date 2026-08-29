@@ -735,8 +735,15 @@ fi
 # the same time, and the SLO is still measured from the SEND (below), reaction time included. That is
 # deliberate — a promise that only holds if somebody reacts instantly is not a promise.
 alerts_since() { docker compose -f "$COMPOSE_FILE" logs --no-color --since "$(( $(date +%s) - $1 ))s" settlement-service 2>/dev/null; }
-alert_fired()    { alerts_since "$DRILL_STARTED"  | grep -q 'ALERT FIRING'; }
-alert_resolved() { alerts_since "$ALERT_FIRED_AT" | grep -q 'ALERT RESOLVED'; }
+# NEVER pipe alerts_since into `grep -q`, and this is not style. `grep -q` exits at the FIRST match,
+# which closes the pipe while `docker compose logs` is still writing; compose dies of SIGPIPE and exits
+# 255, and `set -o pipefail` (line 43) turns that into a FALSE NEGATIVE — the drill reports "no ALERT
+# FIRING" while the line is sitting in the log. It is load-bearing that the two cases behave
+# differently: ALERT RESOLVED is the newest line in the stream, so grep reaches it at EOF and the
+# producer has already finished — that predicate passes while its twin fails, which is what made this
+# look like a platform bug for one whole audit. Capturing first removes the pipe and the race with it.
+alert_fired()    { local l; l="$(alerts_since "$DRILL_STARTED")";  [[ "$l" == *'ALERT FIRING'* ]]; }
+alert_resolved() { local l; l="$(alerts_since "$ALERT_FIRED_AT")"; [[ "$l" == *'ALERT RESOLVED'* ]]; }
 ALERT_FIRED_AT="$DRILL_STARTED"
 if wait_until "$ALERT_WAIT_SECONDS" 'the platform to page us about the stuck money' alert_fired; then
   ok 'the platform announced the incident while the money was still stuck (ALERT FIRING)'

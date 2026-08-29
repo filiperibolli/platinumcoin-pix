@@ -76,7 +76,13 @@ paths:
                   accessToken: { type: string }
                   tokenType: { type: string, example: Bearer }
                   expiresIn: { type: integer, example: 900 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '401':
+          description: |
+            `INVALID_CREDENTIALS` — unknown username or wrong password, deliberately the same answer
+            for both so the endpoint does not confirm which usernames exist.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /auth/me:
     servers:
@@ -151,7 +157,16 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PaymentAccepted' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: |
+            IDEMPOTENCY_KEY_REQUIRED — the header is missing; the platform will not accept a
+            money-moving POST it cannot deduplicate (ADR-0002);
+            INVALID_AMOUNT — the amount parsed but is not strictly positive ("0.00" is rejected here,
+            not by the pattern);
+            MALFORMED_REQUEST / VALIDATION_ERROR — the generic pair described in the `Problem` schema.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: |
@@ -170,8 +185,19 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: |
+            ACCOUNT_LOOKUP_FAILED — the payer's own account could not be read, so the daily limit
+            could not be evaluated. The send is refused rather than let through on a guessed limit.
+            Nothing was debited. Safe to retry with the SAME Idempotency-Key.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Ledger unavailable — retry with the SAME Idempotency-Key
+          description: |
+            LEDGER_UNAVAILABLE — retry with the SAME Idempotency-Key. Either nothing was debited, or
+            the debit's outcome is unknown and the replay resolves it against the stored operation
+            identity (ADR-0014/ADR-0015) — which is exactly why the key must not be regenerated.
           headers:
             Retry-After: { schema: { type: integer, example: 5 } }
           content:
@@ -225,7 +251,13 @@ paths:
                     description: Daily Pix limit as a decimal BRL string (stored internally as integer cents)
                     example: "5000.00"
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404':
+          description: |
+            ACCOUNT_NOT_FOUND — the token validated but names an account this service does not hold.
+            A configuration or data problem, never a caller error.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /accounts/me/balance:
     get:
@@ -302,6 +334,16 @@ paths:
                   nextCursor:
                     type: string
                     nullable: true
+        '400':
+          description: |
+            INVALID_CURSOR — the `cursor` did not decode. Cursors are opaque and only ever come from a
+            previous page's `nextCursor`; a hand-written or truncated one is refused rather than
+            silently restarting from the newest entry, which would make a client's paging loop repeat
+            forever without ever erroring.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /accounts/me/statement/exports:
     post:
@@ -409,7 +451,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/StatementExport' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404':
+          description: |
+            EXPORT_NOT_FOUND — no export with this id belongs to the caller. Another customer's
+            export is 404 and never 403: unlike a Pix key, an export id is not a public identifier,
+            so confirming it exists would leak that somebody requested it.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /notifications/stream:
     servers:
@@ -509,7 +558,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PixKey' }
         '409':
-          description: Key already registered (globally unique)
+          description: |
+            KEY_ALREADY_EXISTS — the value is registered, by this account or any other. Pix keys are
+            globally unique and the uniqueness is decided by the conditional write itself, not by a
+            read-then-check.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            INVALID_PIX_KEY — the value does not match the shape its `keyType` requires. A 422 and not
+            a 400: the body parsed, a business rule refused it.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -541,13 +600,17 @@ paths:
         '204': { description: Deleted }
         '403':
           description: >-
-            Key belongs to another account. Deliberately 403 (not 404): Pix keys are
-            globally resolvable identifiers, so their existence is not secret — unlike
+            KEY_FORBIDDEN — the key belongs to another account. Deliberately 403 (not 404): Pix keys
+            are globally resolvable identifiers, so their existence is not secret — unlike
             payments, where a foreign transactionId returns 404 to avoid leaking existence.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404':
+          description: KEY_NOT_FOUND — no account registered this value.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
 components:
   securitySchemes:
