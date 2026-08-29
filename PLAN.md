@@ -166,7 +166,6 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
   > infrastructure (or the deviation documented against `docs/load/BOTTLENECK.md`), a WCU/RCU + cost budget,
   > p99 **per dependency** (fed by step 72's tracing), and a degradation scenario. Best run after
   > [step 71](docs/steps/step-71.md), or it measures a ~25 events/s outbox drain.
-- [ ] [Step 64](docs/steps/step-64.md) — **PROPOSED**, not yet prioritized: fraud-service runtime latency/failure injection (`AdminConfigController`, mirrors mock-bacen-spi) — closes a gap `docs/load/RESULTS.md` found (fraud-service has no runtime dial, unlike mock-bacen-spi, so its fail-open path can't be drilled outside a test process). Numbered 64 (next free number) because it was drafted out of band, not in top-to-bottom order — see the step file's own note.
 
 ## Sprint 13 — API tooling & DX
 **Flow delivered:** the two living manual-test harnesses — Postman collection + single-file HTML API explorer — **finalized** (both grown incrementally, one entry per endpoint, since their first endpoint).
@@ -261,8 +260,22 @@ user's token. **Infra que sobe:** OTLP collector + Jaeger (step 72 only). · **D
 
 ## Backlog — noted, deliberately not scheduled as steps
 
-From the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)). Recorded here so a
-reader finds the answer next to the question; none of these is an unfinished task.
+Mostly from the external review ([PR #58](https://github.com/filiperibolli/platinumcoin-pix/pull/58)), plus
+anything else the project decided to name rather than schedule. Recorded here so a reader finds the answer
+next to the question; none of these is an unfinished task.
+
+- **Fraud-service runtime latency/failure injection** — an `AdminConfigController` mirroring
+  mock-bacen-spi's. It was drafted as [step 64](docs/steps/step-64.md) (the next free number, out of
+  top-to-bottom order) and stayed `PROPOSED` without ever being prioritized; **moved here instead of
+  being carried as a permanently-unstarted step**, because an item nobody intends to take next is
+  backlog whatever the file calls it. The step file stays where it is — the design work in it is done
+  and is what makes this cheap to promote later.
+  **The real gap it names, which is still open:** fraud-service has no runtime dial, unlike
+  mock-bacen-spi, so **its fail-open path cannot be drilled against the running stack** — only inside a
+  test process. `docs/load/RESULTS.md` found this: the design's most load-bearing availability claim
+  (ADR-0005/ADR-0018 — a slow or broken fraud check must never block a payment) is proven by tests and
+  by argument, never by a lever an operator can pull on the sandbox and watch. Promote it the day
+  someone wants to *demonstrate* fail-open rather than read about it.
 
 - **P2 · a self-transfer answers `503 LEDGER_UNAVAILABLE`, and asks the client to retry it.** Found by the
   step-49 explorer audit, not fixed there (adjacent to that step's scope). Paying your own Pix key reaches
